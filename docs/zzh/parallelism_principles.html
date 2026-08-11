@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>并行策略实现原理 · TP/SP/CP/PP/DP/FSDP/EP 怎么实现的</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    --tp:#3498db; --sp:#f1c40f; --cp:#e74c3c; --pp:#1abc9c;
+    --dp:#2ecc71; --fsdp:#e67e22; --ep:#9b59b6;
+    --bg:#0d0f14; --card:#161a22; --txt:#d7dde6; --dim:#8b94a3; --line:#272d39; --acc:#9be0a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1200px;margin:0 auto;padding:26px 20px 90px}
+  h1{font-size:26px;margin:.2em 0 .1em;color:#fff}
+  h2{font-size:21px;margin:1.6em 0 .4em;padding-bottom:7px;border-bottom:2px solid var(--line);
+    color:#fff;display:flex;align-items:center;gap:10px}
+  h3{font-size:16.5px;margin:1.1em 0 .35em;color:#cdd4df}
+  p{margin:.5em 0}
+  code{background:#0a0c11;border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+    font-family:"JetBrains Mono",Consolas,Menlo,monospace;font-size:13px;color:var(--acc)}
+  .sub{color:var(--dim);font-size:12.5px}
+  svg{display:block;margin:6px auto;max-width:100%;height:auto}
+  .figcap{text-align:center;color:var(--dim);font-size:12px;margin:2px 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:.9em 0}
+  .warn{border-left:3px solid #f0ad4e;padding:7px 13px;background:#1a160d;border-radius:0 6px 6px 0;margin:.6em 0}
+  table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{background:#1c212c;color:#eef2f8;font-weight:600}
+  .shape{font-family:"JetBrains Mono",Consolas,monospace;font-size:12.5px;color:var(--acc)}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;font-weight:700;color:#0d0f14}
+  .t-tp{background:var(--tp)} .t-sp{background:var(--sp)} .t-cp{background:var(--cp)}
+  .t-pp{background:var(--pp)} .t-dp{background:var(--dp)} .t-fsdp{background:var(--fsdp)} .t-ep{background:var(--ep);color:#fff}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="wrap">
+
+<h1>并行策略实现原理 · 每个策略数学上怎么切、通信上怎么传</h1>
+<p class="sub">配合 <a href="parallelism_code_map.html">代码地图</a> 和 <a href="spmd_backends.html">SPMD 后端对比</a> 阅读。本页讲"为什么",那两页讲"在哪儿"。示例配置沿用 DeepSeek-V3 671B:TP2/SP2/CP2/PP3/EP4/DP8,96 GPU。</p>
+
+<!-- ============ TP ============ -->
+<h2><span class="num" style="background:#3498db;color:#fff">1</span><span class="tag t-tp">TP</span> 张量并行:列并行切输出维,行并行切输入维</h2>
+<p>TP 把线性层的权重矩阵沿行或列切成 2 份,每块 GPU 只算一半,然后通过集合通信拼回完整输出。核心是 <b>DTensor placement</b>——权重被声明为 <code>Shard(0)</code>(列并行)或 <code>Shard(1)</code>(行并行),DTensor 自动管理 redistribute。</p>
+
+<svg viewBox="0 0 1160 440" font-family="monospace" font-size="11">
+  <defs><marker id="tp1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+
+  <g transform="translate(40,10)">
+    <text x="0" y="20" fill="#3498db" font-weight="700" font-size="14">列并行(Colwise) —— 切输出维,如 wqkv/w1/w3/embed</text>
+    <text x="0" y="38" fill="#8b94a3" font-size="10">权重 W[6144,4096] → Shard(0) 沿 dim 0 切 → 每块 GPU [3072,4096];输入 x 完整 [1,2048,4096];输出 y 各一半需拼接</text>
+
+    <!-- colwise diagram -->
+    <rect x="0" y="56" width="100" height="60" rx="6" fill="#0e1219" stroke="#c8d0dc"/><text x="50" y="80" text-anchor="middle" fill="#c8d0dc" font-size="10">x [1,2048,4096]</text><text x="50" y="96" text-anchor="middle" fill="#8b94a3" font-size="9">输入(完整)</text>
+    <path d="M 102 86 L 138 86" stroke="#8b94a3" stroke-width="2" marker-end="url(#tp1)"/>
+    <rect x="142" y="46" width="100" height="80" rx="6" fill="#101f2c" stroke="#3498db"/><text x="192" y="68" text-anchor="middle" fill="#c8d0dc" font-size="10">GPU0 W0</text><text x="192" y="84" text-anchor="middle" fill="#c8d0dc" font-size="10">[3072,4096]</text><text x="192" y="100" text-anchor="middle" fill="#8b94a3" font-size="9">x @ W0^T →</text><text x="192" y="116" text-anchor="middle" fill="#c8d0dc" font-size="10">y0 [1,2048,3072]</text>
+    <rect x="142" y="136" width="100" height="80" rx="6" fill="#101f2c" stroke="#3498db"/><text x="192" y="158" text-anchor="middle" fill="#c8d0dc" font-size="10">GPU1 W1</text><text x="192" y="174" text-anchor="middle" fill="#c8d0dc" font-size="10">[3072,4096]</text><text x="192" y="190" text-anchor="middle" fill="#8b94a3" font-size="9">x @ W1^T →</text><text x="192" y="206" text-anchor="middle" fill="#c8d0dc" font-size="10">y1 [1,2048,3072]</text>
+    <path d="M 244 86 L 280 86" stroke="#3498db" stroke-width="2" marker-end="url(#tp1)"/>
+    <path d="M 244 176 L 280 176" stroke="#3498db" stroke-width="2" marker-end="url(#tp1)"/>
+    <rect x="284" y="56" width="100" height="60" rx="6" fill="#0e1219" stroke="#c8d0dc"/><text x="334" y="80" text-anchor="middle" fill="#c8d0dc" font-size="10">y = cat(y0,y1)</text><text x="334" y="96" text-anchor="middle" fill="#c8d0dc" font-size="10">[1,2048,6144]</text>
+    <text x="400" y="86" fill="#8b94a3" font-size="10">→ forward 无通信,拼接需要后续通信</text>
+
+    <text x="0" y="250" fill="#3498db" font-weight="700" font-size="14">行并行(Rowwise) —— 切输入维,如 wo/w2</text>
+    <text x="0" y="268" fill="#8b94a3" font-size="10">权重 W[4096,4096] → Shard(1) 沿 dim 1 切 → 每块 GPU [4096,2048];输入 x 各一半 [1,2048,2048];输出 y 各完整但需求和</text>
+
+    <rect x="0" y="286" width="100" height="60" rx="6" fill="#0e1219" stroke="#c8d0dc"/><text x="50" y="310" text-anchor="middle" fill="#c8d0dc" font-size="10">x0 [1,2048,2048]</text><text x="50" y="326" text-anchor="middle" fill="#8b94a3" font-size="9">前 2048 维</text>
+    <path d="M 102 316 L 138 316" stroke="#8b94a3" stroke-width="2" marker-end="url(#tp1)"/>
+    <rect x="142" y="286" width="100" height="80" rx="6" fill="#101f2c" stroke="#3498db"/><text x="192" y="308" text-anchor="middle" fill="#c8d0dc" font-size="10">GPU0 W0</text><text x="192" y="324" text-anchor="middle" fill="#c8d0dc" font-size="10">[4096,2048]</text><text x="192" y="340" text-anchor="middle" fill="#8b94a3" font-size="9">x0@W0^T →</text><text x="192" y="356" text-anchor="middle" fill="#c8d0dc" font-size="10">y0 [1,2048,4096]</text>
+    <rect x="0" y="356" width="100" height="60" rx="6" fill="#0e1219" stroke="#c8d0dc"/><text x="50" y="380" text-anchor="middle" fill="#c8d0dc" font-size="10">x1 [1,2048,2048]</text><text x="50" y="396" text-anchor="middle" fill="#8b94a3" font-size="9">后 2048 维</text>
+    <path d="M 102 386 L 138 386" stroke="#8b94a3" stroke-width="2" marker-end="url(#tp1)"/>
+    <rect x="142" y="376" width="100" height="80" rx="6" fill="#101f2c" stroke="#3498db"/><text x="192" y="398" text-anchor="middle" fill="#c8d0dc" font-size="10">GPU1 W1</text><text x="192" y="414" text-anchor="middle" fill="#c8d0dc" font-size="10">[4096,2048]</text><text x="192" y="430" text-anchor="middle" fill="#8b94a3" font-size="9">x1@W1^T →</text><text x="192" y="446" text-anchor="middle" fill="#c8d0dc" font-size="10">y1 [1,2048,4096]</text>
+    <path d="M 244 326 L 280 326" stroke="#3498db" stroke-width="2" marker-end="url(#tp1)"/>
+    <path d="M 244 416 L 280 416" stroke="#3498db" stroke-width="2" marker-end="url(#tp1)"/>
+    <rect x="284" y="286" width="130" height="60" rx="6" fill="#0e1219" stroke="#c8d0dc"/><text x="349" y="310" text-anchor="middle" fill="#c8d0dc" font-size="10">y = y0 + y1</text><text x="349" y="326" text-anchor="middle" fill="#c8d0dc" font-size="10">[1,2048,4096]</text>
+    <text x="420" y="316" fill="#f0ad4e" font-size="10">→ 需要 all-reduce 或 reduce-scatter</text>
+
+    <text x="0" y="470" fill="#8b94a3" font-size="10">代码实现:权重声明为 DTensor Shard(0)或 Shard(1)(<span class="loc">decoder_sharding.py:65-94</span>);前向输入输出通过 local_map 的 redistribute 自动通信(<span class="loc">module.py:418-513</span>)。</text>
+  </g>
+</svg>
+<p class="figcap">图 1-1:TP 列并行和行并行的数学原理。列并行:切权重 dim 0,输入完整,输出各半需拼接;行并行:切权重 dim 1,输入各半,输出各一份需求和。</p>
+
+<!-- ============ SP ============ -->
+<h2><span class="num" style="background:#f1c40f;color:#0d0f14">2</span><span class="tag t-sp">SP</span> 序列并行:激活在层间按序列切分,通信复用 TP 对</h2>
+<p>SP 把激活张量沿序列维(dim 1)在 TP 对之间切分。norm/FFN 间以 <code>[1,seq/2,hidden]</code> 形态存在;进线性层前 all-gather 拼回整序列,出行并行后 reduce-scatter 切回。SP 不额外开通信组,复用 TP 对的通信。</p>
+
+<svg viewBox="0 0 1160 280" font-family="monospace" font-size="11">
+  <g transform="translate(40,10)">
+    <text x="0" y="20" fill="#f1c40f" font-weight="700" font-size="14">一层内 SP 激活的 shape 变化(TP=2)</text>
+
+    <rect x="0" y="40" width="120" height="46" rx="6" fill="#0e2225" stroke="#f1c40f"/><text x="60" y="56" text-anchor="middle" fill="#f1c40f" font-size="10" font-weight="700">norm 输入</text><text x="60" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,1024,7168]</text>
+    <path d="M 122 63 L 158 63" stroke="#8b94a3" stroke-width="2" marker-end="url(#sp1)"/>
+    <rect x="162" y="40" width="120" height="46" rx="6" fill="#0e2225" stroke="#f1c40f"/><text x="222" y="56" text-anchor="middle" fill="#f1c40f" font-size="10" font-weight="700">norm 输出</text><text x="222" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,1024,7168]</text>
+    <path d="M 284 63 L 320 63" stroke="#3498db" stroke-width="2" marker-end="url(#sp1)"/>
+    <rect x="324" y="40" width="130" height="46" rx="6" fill="#101f2c" stroke="#3498db"/><text x="389" y="56" text-anchor="middle" fill="#3498db" font-size="10" font-weight="700">all-gather</text><text x="389" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,1024]→[1,2048]</text>
+    <path d="M 456 63 L 492 63" stroke="#8b94a3" stroke-width="2" marker-end="url(#sp1)"/>
+    <rect x="496" y="40" width="120" height="46" rx="6" fill="#0e1219" stroke="#8b94a3"/><text x="556" y="56" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">进线性层</text><text x="556" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,2048,7168]</text>
+    <path d="M 618 63 L 654 63" stroke="#8b94a3" stroke-width="2" marker-end="url(#sp1)"/>
+    <rect x="658" y="40" width="130" height="46" rx="6" fill="#0e1219" stroke="#8b94a3"/><text x="723" y="56" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">wo/FFN 输出</text><text x="723" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,2048,2048] partial</text>
+    <path d="M 790 63 L 826 63" stroke="#3498db" stroke-width="2" marker-end="url(#sp1)"/>
+    <rect x="830" y="40" width="130" height="46" rx="6" fill="#101f2c" stroke="#3498db"/><text x="895" y="56" text-anchor="middle" fill="#3498db" font-size="10" font-weight="700">reduce-scatter</text><text x="895" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,2048]→[1,1024]</text>
+    <path d="M 962 63 L 998 63" stroke="#8b94a3" stroke-width="2" marker-end="url(#sp1)"/>
+    <rect x="1002" y="40" width="120" height="46" rx="6" fill="#0e2225" stroke="#f1c40f"/><text x="1062" y="56" text-anchor="middle" fill="#f1c40f" font-size="10" font-weight="700">下一层 norm</text><text x="1062" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,1024,7168]</text>
+
+    <text x="0" y="110" fill="#c8d0dc" font-size="10">a. norm 到线性层:序列维 [1,1024] → all-gather → [1,2048] (CP 粒度全序列)</text>
+    <text x="0" y="128" fill="#c8d0dc" font-size="10">b. 列并行(如 wqkv):输入全序列,输出半份 heads,无需通信(forward)</text>
+    <text x="0" y="146" fill="#c8d0dc" font-size="10">c. 行并行(如 wo):输入切半,各算一半,输出 partial(各块有完整维但缺半求和项)</text>
+    <text x="0" y="164" fill="#c8d0dc" font-size="10">d. reduce-scatter:两块求和 + 沿序列维切回 [1,1024] → 回到 SP 形态</text>
+
+    <text x="0" y="190" fill="#8b94a3" font-size="10">SP 的"序列切分"与 CP 的"序列切分"正交:SP 在 TP 对内切(2 块),CP 在 cp 组切(4 块)。两者叠加 → 每 rank 持 1/8 序列。</text>
+    <text x="0" y="210" fill="#8b94a3" font-size="10">代码实现:声明在 <span class="loc">decoder_sharding.py:53-63</span>(激活 placement)+<span class="loc">:76-94</span>(rowwise 输出 RS),通信在 <span class="loc">module.py:418-513</span>(local_map 的 redistribute)。</text>
+  </g>
+  <defs><marker id="sp1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+</svg>
+<p class="figcap">图 2-1:SP 在一层内的 shape 变化。核心:norm 间以 SP 粒度(1/2 序列)存在,进线性层前 gather,出线性层后 scatter。</p>
+
+<!-- ============ CP ============ -->
+<h2><span class="num" style="background:#e74c3c;color:#fff">3</span><span class="tag t-cp">CP</span> 上下文并行:数据序列切段,attention 内 K/V gather</h2>
+<p>CP 把每微批的数据序列沿 seq 维在 cp 组内切分(2 份)。每块 GPU 只算自己那段的 query 的注意力;K/V 通过 all-gather 拼成全量(因为每段 query 需要看到完整的序列上下文)。</p>
+
+<svg viewBox="0 0 1160 260" font-family="monospace" font-size="11">
+  <g transform="translate(40,10)">
+    <text x="0" y="20" fill="#e74c3c" font-weight="700" font-size="14">CP 工作原理(CP=2,seq=4096 → 每 rank [1,2048])</text>
+
+    <rect x="0" y="40" width="120" height="50" rx="6" fill="#1a1416" stroke="#e74c3c"/><text x="60" y="56" text-anchor="middle" fill="#e74c3c" font-size="10" font-weight="700">cp_shard</text><text x="60" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[4,4096]→[4,2048]</text>
+    <path d="M 122 65 L 158 65" stroke="#8b94a3" stroke-width="2" marker-end="url(#cp1)"/>
+    <rect x="162" y="40" width="120" height="50" rx="6" fill="#0e1219" stroke="#8b94a3"/><text x="222" y="56" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">Q 本地</text><text x="222" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,2048,64,128]</text>
+    <path d="M 284 65 L 320 65" stroke="#e74c3c" stroke-width="2" marker-end="url(#cp1)"/>
+    <rect x="324" y="40" width="140" height="50" rx="6" fill="#1a1416" stroke="#e74c3c"/><text x="394" y="56" text-anchor="middle" fill="#e74c3c" font-size="10" font-weight="700">CP all-gather K/V</text><text x="394" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,4096,4,128]</text>
+    <path d="M 466 65 L 502 65" stroke="#8b94a3" stroke-width="2" marker-end="url(#cp1)"/>
+    <rect x="506" y="40" width="140" height="50" rx="6" fill="#0e1219" stroke="#8b94a3"/><text x="576" y="56" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">attention</text><text x="576" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">Q_local x K_full V_full</text>
+    <path d="M 648 65 L 684 65" stroke="#8b94a3" stroke-width="2" marker-end="url(#cp1)"/>
+    <rect x="688" y="40" width="120" height="50" rx="6" fill="#0e1219" stroke="#8b94a3"/><text x="748" y="56" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">out 本地段</text><text x="748" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,2048,64,128]</text>
+
+    <text x="0" y="115" fill="#c8d0dc" font-size="10">a. 数据预处理:cp_shard 沿 seq 维切分,每 cp rank 持 [4,4096]→[4,2048]</text>
+    <text x="0" y="133" fill="#c8d0dc" font-size="10">b. Q 只算本地段(2048 个 token 的 query),K/V 需要看完整序列所以 all-gather</text>
+    <text x="0" y="151" fill="#c8d0dc" font-size="10">c. 反向:各 rank 的 K/V 梯度在 cp 组上 reduce(因为每段 Q 的梯度依赖所有 K/V 段)</text>
+    <text x="0" y="169" fill="#c8d0dc" font-size="10">d. CP 与 SP 正交:CP 在 cp 轴切(4 块),SP 在 tp 轴切(2 块),两者叠加 → 每 rank 1/8 序列</text>
+
+    <text x="0" y="195" fill="#8b94a3" font-size="10">代码实现:数据切分 <span class="loc">context_parallel.py:114-271</span>;attention 包装 <span class="loc">:35-109</span>(SDPA 走 dispatcher,FlexAttention 走 flex_cp_allgather);调用 <span class="loc">trainer.py:668-676</span>。</text>
+  </g>
+  <defs><marker id="cp1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+</svg>
+<p class="figcap">图 3-1:CP 工作原理。Q 本地段计算,K/V all-gather 成全量看完整上下文;反向 K/V 梯度 reduce。</p>
+
+<!-- ============ PP ============ -->
+<h2><span class="num" style="background:#1abc9c;color:#fff">4</span><span class="tag t-pp">PP</span> 流水线并行:切层 + 1F1B 调度 + p2p 通信</h2>
+<p>PP 把模型层切分成 3 段,每段放在不同 GPU 上。微批在 3 个阶段间以 1F1B 调度流动:forward 传 hidden(p2p send),backward 传梯度(p2p send)。</p>
+
+<svg viewBox="0 0 1160 380" font-family="monospace" font-size="11">
+  <g transform="translate(40,10)">
+    <text x="0" y="20" fill="#1abc9c" font-weight="700" font-size="14">PP 三要素:① 层切分 ② 微批调度 ③ p2p 通信</text>
+
+    <!-- 3 stages -->
+    <rect x="0" y="40" width="200" height="80" rx="8" fill="#0e1a17" stroke="#1abc9c"/><text x="100" y="58" text-anchor="middle" fill="#1abc9c" font-size="10" font-weight="700">stage0(GPU0)</text><text x="100" y="76" text-anchor="middle" fill="#c8d0dc" font-size="9">layers 0-20</text><text x="100" y="92" text-anchor="middle" fill="#8b94a3" font-size="9">embed + 20 层 dense/MoE</text>
+    <path d="M 202 80 L 238 80" stroke="#9be0a3" stroke-width="2" marker-end="url(#pp1)"/>
+    <text x="220" y="74" text-anchor="middle" fill="#9be0a3" font-size="9">hidden</text>
+    <rect x="242" y="40" width="200" height="80" rx="8" fill="#0e1a17" stroke="#1abc9c"/><text x="342" y="58" text-anchor="middle" fill="#1abc9c" font-size="10" font-weight="700">stage1(GPU64)</text><text x="342" y="76" text-anchor="middle" fill="#c8d0dc" font-size="9">layers 21-41</text><text x="342" y="92" text-anchor="middle" fill="#8b94a3" font-size="9">21 层 dense/MoE</text>
+    <path d="M 444 80 L 480 80" stroke="#9be0a3" stroke-width="2" marker-end="url(#pp1)"/>
+    <text x="462" y="74" text-anchor="middle" fill="#9be0a3" font-size="9">hidden</text>
+    <rect x="484" y="40" width="220" height="80" rx="8" fill="#0e1a17" stroke="#1abc9c"/><text x="594" y="58" text-anchor="middle" fill="#1abc9c" font-size="10" font-weight="700">stage2(GPU128)</text><text x="594" y="76" text-anchor="middle" fill="#c8d0dc" font-size="9">layers 42-60</text><text x="594" y="92" text-anchor="middle" fill="#8b94a3" font-size="9">+ norm + lm_head + loss</text>
+
+    <text x="0" y="145" fill="#c8d0dc" font-size="10">a. 层切分:61 层 + 1(embed)+1(norm/lm_head)=63 有效层,均分 3 段各 21:<span class="loc">pipeline_parallel.py:315-425</span></text>
+    <text x="0" y="163" fill="#c8d0dc" font-size="10">b. split:deepcopy 后删掉不属于本 stage 的模块,每块 GPU 只持——段权重:<span class="loc">:428-487,530-598</span></text>
+
+    <text x="0" y="190" fill="#1abc9c" font-weight="700" font-size="13">1F1B 调度(4 微批,3 阶段,stage0 视角)</text>
+    <text x="0" y="208" fill="#8b94a3" font-size="10">warmup(3F) → 1B1F(B1/F4) → cooldown(3B):</text>
+    <g font-size="9">
+      <rect x="0" y="220" width="36" height="24" rx="4" fill="#1abc9c" opacity=".85"/><text x="18" y="236" text-anchor="middle" fill="#0d0f14" font-weight="700">F1</text>
+      <rect x="40" y="220" width="36" height="24" rx="4" fill="#1abc9c" opacity=".85"/><text x="58" y="236" text-anchor="middle" fill="#0d0f14" font-weight="700">F2</text>
+      <rect x="80" y="220" width="36" height="24" rx="4" fill="#1abc9c" opacity=".85"/><text x="98" y="236" text-anchor="middle" fill="#0d0f14" font-weight="700">F3</text>
+      <rect x="120" y="220" width="36" height="24" rx="4" fill="#0e6b58"/><text x="138" y="236" text-anchor="middle" fill="#fff" font-weight="700">B1</text>
+      <rect x="160" y="220" width="36" height="24" rx="4" fill="#1abc9c" opacity=".85"/><text x="178" y="236" text-anchor="middle" fill="#0d0f14" font-weight="700">F4</text>
+      <rect x="200" y="220" width="36" height="24" rx="4" fill="#0e6b58"/><text x="218" y="236" text-anchor="middle" fill="#fff" font-weight="700">B2</text>
+      <rect x="240" y="220" width="36" height="24" rx="4" fill="#0e6b58"/><text x="258" y="236" text-anchor="middle" fill="#fff" font-weight="700">B3</text>
+      <rect x="280" y="220" width="36" height="24" rx="4" fill="#0e6b58"/><text x="298" y="236" text-anchor="middle" fill="#fff" font-weight="700">B4</text>
+    </g>
+    <text x="0" y="262" fill="#c8d0dc" font-size="10">c. 每次 forward 后:send hidden 到下一 stage;每次 backward 后:send grad 到上一 stage(p2p)。</text>
+    <text x="0" y="280" fill="#c8d0dc" font-size="10">d. hidden/grad 的 shape 是 [1,1024,7168](SP 局部分片),通过 DTensor 直接传 local 再重建:<span class="loc">pipeline_parallel.py:40-62</span></text>
+
+    <text x="0" y="306" fill="#8b94a3" font-size="10">调度器实现:PyTorch pipelining 库 <span class="loc">schedule.py:952-1115</span>(Schedule1F1B),torchtitan 只负责 n_microbatches 计算 <span class="loc">pipeline_parallel.py:252-260</span>。</text>
+  </g>
+  <defs><marker id="pp1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+</svg>
+<p class="figcap">图 4-1:PP 三要素。层切分(3 段)、微批调度(1F1B)、p2p 通信(hidden 前传 + grad 后传)。</p>
+
+<!-- ============ DP ============ -->
+<h2><span class="num" style="background:#2ecc71;color:#0d0f14">5</span><span class="tag t-dp">DP</span> 数据并行:切数据 + 梯度归约</h2>
+<p>DP 把数据集按 batch 轴切 8 份,每个 rank 读自己的 1/8,独立算梯度,然后归约。在 torchtitan 中,梯度归约由 FSDP 的 reduce-scatter 承担,DP 本身只负责"谁读哪批数据"。</p>
+
+<svg viewBox="0 0 1160 240" font-family="monospace" font-size="11">
+  <g transform="translate(40,10)">
+    <text x="0" y="20" fill="#2ecc71" font-weight="700" font-size="14">DP 数据切分 + 梯度归约(8 个 batch rank)</text>
+
+    <text x="0" y="42" fill="#c8d0dc" font-size="10">a. 数据集按 batch_degree=8 切分:split_dataset_by_node(ds, dp_rank, dp_world_size) → 每 rank 读 1/8</text>
+    <text x="0" y="60" fill="#9be0a3" class="loc">text_datasets.py:95</text>
+
+    <text x="0" y="82" fill="#c8d0dc" font-size="10">b. 每 rank 每梯度累积轮:local_batch_size=4 → [4,4096];batch_degree=8 → 全局每轮 32 样本</text>
+    <text x="0" y="100" fill="#c8d0dc" font-size="10">c. 梯度累积 2 轮 → 全局 batch = 32 × 2 = 64</text>
+
+    <text x="0" y="125" fill="#c8d0dc" font-size="10">d. 梯度归约:FSDP 的 reduce-scatter 在 fsdp 组(16)上做,DP rank 之间不单独 all-reduce</text>
+    <text x="0" y="143" fill="#c8d0dc" font-size="10">e. loss 归约:global_valid_tokens 在 batch mesh(8)上 all-reduce → 全局归一化分母</text>
+    <text x="0" y="161" fill="#c8d0dc" font-size="10">f. loss 在 loss_mesh(batch×cp=16)上 all-reduce → 全局平均 loss 用于日志</text>
+
+    <text x="0" y="188" fill="#8b94a3" font-size="10">代码实现:batch 轴 <span class="loc">parallel_dims.py:272</span> + <span class="loc">trainer.py:259-263</span>;数据切分 <span class="loc">trainer.py:498-509</span>;valid_tokens 归约 <span class="loc">trainer.py:780-786</span>;loss 归约 <span class="loc">trainer.py:827-850</span>。</text>
+  </g>
+</svg>
+<p class="figcap">图 5-1:DP 数据切分与梯度归约。torchtitan 中 DP 只决定数据归属,梯度归约由 FSDP 的 reduce-scatter 承载。</p>
+
+<!-- ============ FSDP ============ -->
+<h2><span class="num" style="background:#e67e22;color:#0d0f14">6</span><span class="tag t-fsdp">FSDP</span> 全分片数据并行:参数/梯度/优化器全分片</h2>
+<p>FSDP 把参数+梯度+优化器状态按 fsdp 轴分片(16 份)。前向时 all-gather 拼全参数,反向时 reduce-scatter 归约梯度。这是 Zero-3 思想的 PyTorch 实现。</p>
+
+<svg viewBox="0 0 1160 370" font-family="monospace" font-size="11">
+  <g transform="translate(40,10)">
+    <text x="0" y="20" fill="#e67e22" font-weight="700" font-size="14">FSDP 生命周期:分片 → all-gather → 计算 → reduce-scatter → 分片</text>
+
+    <rect x="0" y="40" width="180" height="52" rx="8" fill="#2a1d10" stroke="#e67e22"/><text x="90" y="56" text-anchor="middle" fill="#e67e22" font-size="10" font-weight="700">① 存储:分片</text><text x="90" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">每 rank 持 1/16 参数</text>
+    <path d="M 182 66 L 218 66" stroke="#3498db" stroke-width="2" marker-end="url(#fs1)"/>
+    <rect x="222" y="40" width="180" height="52" rx="8" fill="#101f2c" stroke="#3498db"/><text x="312" y="56" text-anchor="middle" fill="#3498db" font-size="10" font-weight="700">② all-gather</text><text x="312" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">16 块拼回完整参数</text>
+    <path d="M 404 66 L 440 66" stroke="#8b94a3" stroke-width="2" marker-end="url(#fs1)"/>
+    <rect x="444" y="40" width="180" height="52" rx="8" fill="#0e1219" stroke="#8b94a3"/><text x="534" y="56" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">③ 前向计算</text><text x="534" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">用完整参数</text>
+    <path d="M 626 66 L 662 66" stroke="#f0ad4e" stroke-width="2" marker-end="url(#fs1)"/>
+    <rect x="666" y="40" width="180" height="52" rx="8" fill="#101f2c" stroke="#f0ad4e"/><text x="756" y="56" text-anchor="middle" fill="#f0ad4e" font-size="10" font-weight="700">④ 反向</text><text x="756" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">算梯度</text>
+    <path d="M 848 66 L 884 66" stroke="#e67e22" stroke-width="2" marker-end="url(#fs1)"/>
+    <rect x="888" y="40" width="180" height="52" rx="8" fill="#2a1d10" stroke="#e67e22"/><text x="978" y="56" text-anchor="middle" fill="#e67e22" font-size="10" font-weight="700">⑤ reduce-scatter</text><text x="978" y="72" text-anchor="middle" fill="#c8d0dc" font-size="9">梯度归约回 1/16</text>
+
+    <text x="0" y="115" fill="#c8d0dc" font-size="10">a. 参数初始分片:fully_shard 时根据 fsdp 轴(16)自动切分,每 rank 持 1/16</text>
+    <text x="0" y="133" fill="#c8d0dc" font-size="10">b. 前向:首次使用参数前 all-gather,拼回完整参数(PP 下 stage 开头一次,不逐层 reshard)</text>
+    <text x="0" y="151" fill="#c8d0dc" font-size="10">c. 反向:每层 backward 后 reduce-scatter 梯度 + reshard 参数,释放显存</text>
+    <text x="0" y="169" fill="#c8d0dc" font-size="10">d. 优化器:AdamW 的 m/v 与参数同分片,每 rank 只更新自己的 1/16(无需通信)</text>
+
+    <text x="0" y="195" fill="#8b94a3" font-size="10">reshard 策略(<span class="loc">fsdp.py:54-78</span>):</text>
+    <text x="0" y="213" fill="#8b94a3" font-size="10">"default" → PP 开启时 False(不逐层 reshard),参数保持完整到 stage 反向结束;</text>
+    <text x="0" y="231" fill="#8b94a3" font-size="10">"always" → 每层 forward 后立即 reshard(省显存但增加通信次数);</text>
+    <text x="0" y="249" fill="#8b94a3" font-size="10">"never" → 全程不 reshard(最快但最费显存,仅适合小模型)。</text>
+
+    <text x="0" y="278" fill="#8b94a3" font-size="10">注意:FSDP 的 reduce-scatter 同时承担了 DP 的梯度归约功能,所以 FSDP 组 = 数据并行组。</text>
+    <text x="0" y="298" fill="#8b94a3" font-size="10">代码实现:fully_shard 每层 <span class="loc">fsdp.py:165-178,180-278,280</span>;mesh 轴 <span class="loc">parallel_dims.py:273</span>。</text>
+  </g>
+  <defs><marker id="fs1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+</svg>
+<p class="figcap">图 6-1:FSDP 生命周期。分片 → all-gather → 计算 → reduce-scatter → 分片,每步标颜色和通信方向。</p>
+
+<!-- ============ EP ============ -->
+<h2><span class="num" style="background:#9b59b6;color:#fff">7</span><span class="tag t-ep">EP</span> 专家并行:路由 + all-to-all 通信</h2>
+<p>EP 把 256 个路由专家切 4 份,每 rank 持 64 个。router 根据 token 的 top-8 选择目标专家,通过 all-to-all 把 token 发到对应专家所在 rank,专家算完后 all-to-all 发回。共享专家不走 EP,每 rank 完整持有。</p>
+
+<svg viewBox="0 0 1160 360" font-family="monospace" font-size="11">
+  <g transform="translate(40,10)">
+    <text x="0" y="20" fill="#9b59b6" font-weight="700" font-size="14">EP 工作流:router → all-to-all → 专家计算 → all-to-all 返回</text>
+
+    <rect x="0" y="40" width="130" height="60" rx="8" fill="#0e1219" stroke="#8b94a3"/><text x="65" y="60" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">输入 token</text><text x="65" y="78" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,2048,7168]</text>
+    <path d="M 132 70 L 168 70" stroke="#8b94a3" stroke-width="2" marker-end="url(#ep1)"/>
+    <rect x="172" y="40" width="130" height="60" rx="8" fill="#0e1219" stroke="#9b59b6"/><text x="237" y="60" text-anchor="middle" fill="#9b59b6" font-size="10" font-weight="700">router</text><text x="237" y="78" text-anchor="middle" fill="#c8d0dc" font-size="9">top-8 选择专家</text>
+    <path d="M 304 70 L 340 70" stroke="#9b59b6" stroke-width="2" marker-end="url(#ep1)"/>
+    <rect x="344" y="40" width="130" height="60" rx="8" fill="#1a1416" stroke="#9b59b6"/><text x="409" y="60" text-anchor="middle" fill="#9b59b6" font-size="10" font-weight="700">all-to-all</text><text x="409" y="78" text-anchor="middle" fill="#c8d0dc" font-size="9">token 送专家 rank</text>
+    <path d="M 476 70 L 512 70" stroke="#8b94a3" stroke-width="2" marker-end="url(#ep1)"/>
+    <rect x="516" y="40" width="160" height="60" rx="8" fill="#0e1219" stroke="#8b94a3"/><text x="596" y="60" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">专家计算(64/rank)</text><text x="596" y="78" text-anchor="middle" fill="#c8d0dc" font-size="9">[64, 7168, 2048] 部分</text>
+    <path d="M 678 70 L 714 70" stroke="#9b59b6" stroke-width="2" marker-end="url(#ep1)"/>
+    <rect x="718" y="40" width="130" height="60" rx="8" fill="#1a1416" stroke="#9b59b6"/><text x="783" y="60" text-anchor="middle" fill="#9b59b6" font-size="10" font-weight="700">all-to-all</text><text x="783" y="78" text-anchor="middle" fill="#c8d0dc" font-size="9">结果回原 rank</text>
+    <path d="M 850 70 L 886 70" stroke="#8b94a3" stroke-width="2" marker-end="url(#ep1)"/>
+    <rect x="890" y="40" width="130" height="60" rx="8" fill="#0e1219" stroke="#8b94a3"/><text x="955" y="60" text-anchor="middle" fill="#c8d0dc" font-size="10" font-weight="700">输出 token</text><text x="955" y="78" text-anchor="middle" fill="#c8d0dc" font-size="9">[1,2048,2048]</text>
+
+    <text x="0" y="125" fill="#c8d0dc" font-size="10">a. 专家权重:256 个专家,每个 w1/w3 [7168,2048],w2 [2048,7168];EP=4 每 rank 持 64 个</text>
+    <text x="0" y="143" fill="#c8d0dc" font-size="10">b. 路由:TokenChoiceTopKRouter,top_k=8,用 sigmoid 分数选前 8 个专家</text>
+    <text x="0" y="161" fill="#c8d0dc" font-size="10">c. 共享专家:1 个,不切(每 rank 完整持有),处理所有 token 的基础 FFN 输出</text>
+    <text x="0" y="179" fill="#c8d0dc" font-size="10">d. 专家内 FSDP:efsdp=8 组内再分片 → 每个专家参数实际 1/(8×4)=1/32</text>
+
+    <text x="0" y="205" fill="#8b94a3" font-size="10">代码实现:专家权重 <span class="loc">moe.py:40-53</span>;router <span class="loc">moe.py:173</span>;FSDP 双 mesh 分片 <span class="loc">fsdp.py:194-272</span>;EP mesh <span class="loc">parallel_dims.py:331-335</span>。</text>
+  </g>
+  <defs><marker id="ep1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+</svg>
+<p class="figcap">图 7-1:EP 工作流。router 选专家 → all-to-all 发 token → 专家计算 → all-to-all 回结果。共享专家不切。</p>
+
+<!-- ============ 总结 ============ -->
+<h2><span class="num" style="background:#fff;color:#0d0f14">8</span>总结:7 种并行策略的"切什么"和"怎么通信"</h2>
+<table>
+<tr><th>策略</th><th>切什么</th><th>切法</th><th>通信原语</th><th>时机</th></tr>
+<tr><td><span class="tag t-tp">TP</span></td><td>权重 dim 0(dim 1)</td><td>列并行/行并行各半</td><td>all-gather / reduce-scatter</td><td>每层 forward ×4</td></tr>
+<tr><td><span class="tag t-sp">SP</span></td><td>激活序列 dim 1</td><td>TP 对内切 1/2</td><td>all-gather / reduce-scatter(复用 TP 对)</td><td>每层 forward ×4</td></tr>
+<tr><td><span class="tag t-cp">CP</span></td><td>数据序列 dim 1</td><td>cp 组内切 1/2</td><td>all-gather K/V / reduce grad</td><td>每层 attention 内</td></tr>
+<tr><td><span class="tag t-pp">PP</span></td><td>层(非张量维度)</td><td>层分 3 段</td><td>p2p send/recv(hidden/grad)</td><td>每微批每阶段边界</td></tr>
+<tr><td><span class="tag t-dp">DP</span></td><td>数据(batch 维)</td><td>数据集切 8 份</td><td>all-reduce(valid_tokens/loss)</td><td>每步 1 次</td></tr>
+<tr><td><span class="tag t-fsdp">FSDP</span></td><td>参数/梯度/优化器状态 dim 0</td><td>fsdp 组内 1/16</td><td>all-gather(参数)/reduce-scatter(梯度)</td><td>stage 前向开头 + 每层反向</td></tr>
+<tr><td><span class="tag t-ep">EP</span></td><td>MoE 专家(expert 维)</td><td>ep 组内 1/4(256→64)</td><td>all-to-all(token 路由)</td><td>每层 MoE forward</td></tr>
+</table>
+
+<div class="card">
+<p><b>七个策略彼此正交,叠加在一张 96 GPU 的网格上:</b></p>
+<p style="margin-top:8px">① PP 先纵切:3 段层互不重叠,每段在 32 块 GPU 上并行(pp3 × batch8 × cp2 × tp2 = 96)。</p>
+<p>② TP 在每块 GPU 内横切权重:列并行/行并行各半,每层 4 次 TP 通信。</p>
+<p>③ SP 在 TP 对内切激活:norm/FFN 间以 1/2 序列形态存在,进出线性层 gather/scatter。</p>
+<p>④ CP 在 cp 组内切数据序列:attention 内 K/V gather 成全量。</p>
+<p>⑤ FSDP 把参数在 fsdp 组内分 16 份:前向 gather 拼全,反向 reduce-scatter 归约。</p>
+<p>⑥ EP 把专家在 ep 组内切 4 份:router 路由 token 到对应专家 rank。</p>
+<p>⑦ DP 把数据在 batch 轴上切 8 份:各 rank 读各自数据。</p>
+<p style="margin-top:8px">每个策略 = 一条 mesh 轴 + 一个通信原语 + 一个切分维度。七者组合,就是 96 GPU 上的完整训练流水线。</p>
+</div>
+
+<p class="sub">本页原理图配合 <a href="parallelism_code_map.html">parallelism_code_map.html</a>(代码位置)和 <a href="spmd_backends.html">spmd_backends.html</a>(后端对比)阅读。三份文档覆盖"原理 · 代码 · 配置"三个维度。</p>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

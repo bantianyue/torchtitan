@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TorchTitan 架构图</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f0f2f5;
+    color: #333;
+    padding: 20px;
+  }
+  h1 {
+    text-align: center;
+    font-size: 28px;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #666;
+    font-size: 14px;
+    margin-bottom: 30px;
+  }
+
+  .diagram {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .layer {
+    display: flex;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 2px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+
+  .layer-label {
+    width: 100px;
+    min-width: 100px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    color: #fff;
+    writing-mode: vertical-lr;
+    text-orientation: mixed;
+    letter-spacing: 2px;
+    padding: 10px 0;
+  }
+  .layer-content {
+    flex: 1;
+    padding: 14px 18px;
+    background: #fff;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .box {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #fff;
+    text-align: center;
+    border: 2px solid transparent;
+  }
+  .box.sm { font-size: 11px; padding: 4px 10px; }
+  .box.xs { font-size: 10px; padding: 3px 8px; }
+  .box-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .group-label {
+    font-size: 11px;
+    color: #888;
+    font-weight: 500;
+    margin-right: 4px;
+  }
+  .bracket {
+    font-size: 20px;
+    color: #aaa;
+    font-weight: 300;
+    margin: 0 2px;
+  }
+
+  .arrow-down {
+    text-align: center;
+    color: #bbb;
+    font-size: 18px;
+    line-height: 12px;
+    margin: -2px 0;
+    padding-left: 100px;
+  }
+
+  .legend {
+    max-width: 1100px;
+    margin: 30px auto 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+  }
+  .legend-color {
+    width: 20px; height: 14px;
+    border-radius: 3px;
+  }
+
+  .annotation {
+    max-width: 1100px;
+    margin: 24px auto 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .annotation-card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 16px 20px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+  .annotation-card h3 {
+    font-size: 15px;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid #eee;
+  }
+  .annotation-card p {
+    font-size: 13px;
+    line-height: 1.6;
+    color: #555;
+  }
+  .annotation-card ul {
+    font-size: 13px;
+    line-height: 1.7;
+    color: #555;
+    padding-left: 18px;
+  }
+  .annotation-card code {
+    background: #f0f2f5;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+
+  .boundary-line {
+    max-width: 1100px;
+    margin: 6px auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-left: 100px;
+  }
+  .boundary-line .line {
+    flex: 1;
+    height: 2px;
+    border: none;
+    border-top: 2px dashed #e74c3c;
+  }
+  .boundary-line .label {
+    font-size: 12px;
+    color: #e74c3c;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 700px) {
+    .layer-label { width: 60px; min-width: 60px; font-size: 11px; }
+    .arrow-down { padding-left: 60px; }
+    .annotation { grid-template-columns: 1fr; }
+    .boundary-line { padding-left: 60px; }
+  }
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+
+<h1>🏗️ TorchTitan 架构图</h1>
+<p class="subtitle">PyTorch-Native LLM 预训练平台 · 分层架构与依赖边界</p>
+
+<div class="diagram">
+
+  <!-- Layer 1: User Entry -->
+  <div class="layer">
+    <div class="layer-label" style="background:#2c3e50;">用户入口</div>
+    <div class="layer-content">
+      <span class="box" style="background:#34495e;">train.py</span>
+      <span class="box" style="background:#34495e;">run_train.sh</span>
+      <span class="box" style="background:#34495e;">CLI 参数</span>
+      <span style="font-size:12px;color:#999;margin-left:8px;">── 用户配置: --module, --config, <code>section.key=val</code></span>
+    </div>
+  </div>
+
+  <div class="arrow-down">▼</div>
+
+  <!-- Layer 2: Config System -->
+  <div class="layer">
+    <div class="layer-label" style="background:#16a085;">配置系统</div>
+    <div class="layer-content">
+      <span class="box" style="background:#1abc9c;">ConfigManager</span>
+      <span class="box" style="background:#1abc9c;">config_registry</span>
+      <span class="box" style="background:#1abc9c;">tyro 解析</span>
+      <span class="box" style="background:#1abc9c;">Override 机制</span>
+      <span style="font-size:12px;color:#999;margin-left:8px;">── 加载 → 合并 → 覆盖 → 构建</span>
+    </div>
+  </div>
+
+  <div class="arrow-down">▼</div>
+
+  <!-- Layer 3: Trainer -->
+  <div class="layer">
+    <div class="layer-label" style="background:#2980b9;">训练引擎</div>
+    <div class="layer-content">
+      <div class="box-group">
+        <span class="group-label">训练循环</span>
+        <span class="box" style="background:#3498db;">Trainer</span>
+        <span class="box sm" style="background:#3498db;">train_step</span>
+        <span class="box sm" style="background:#3498db;">forward_backward</span>
+      </div>
+      <span class="bracket">|</span>
+      <div class="box-group">
+        <span class="group-label">组件</span>
+        <span class="box sm" style="background:#5dade2;">DataLoader</span>
+        <span class="box sm" style="background:#5dade2;">Loss</span>
+        <span class="box sm" style="background:#5dade2;">Optimizer</span>
+        <span class="box sm" style="background:#5dade2;">LR Scheduler</span>
+        <span class="box sm" style="background:#5dade2;">Tokenizer</span>
+        <span class="box sm" style="background:#5dade2;">Checkpoint</span>
+        <span class="box sm" style="background:#5dade2;">Metrics</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">▼</div>
+
+  <!-- Layer 4: Models -->
+  <div class="layer">
+    <div class="layer-label" style="background:#8e44ad;">模型定义</div>
+    <div class="layer-content">
+      <div class="box-group">
+        <span class="group-label">架构</span>
+        <span class="box" style="background:#9b59b6;">llama3</span>
+        <span class="box" style="background:#9b59b6;">qwen3</span>
+        <span class="box" style="background:#9b59b6;">deepseek_v3</span>
+        <span class="box" style="background:#9b59b6;">flux</span>
+        <span class="box" style="background:#9b59b6;">gpt_oss</span>
+      </div>
+      <span class="bracket">|</span>
+      <div class="box-group">
+        <span class="group-label">共享组件</span>
+        <span class="box sm" style="background:#af7ac5;">Attention</span>
+        <span class="box sm" style="background:#af7ac5;">MoE</span>
+        <span class="box sm" style="background:#af7ac5;">RoPE</span>
+        <span class="box sm" style="background:#af7ac5;">RMSNorm</span>
+        <span class="box sm" style="background:#af7ac5;">FFN</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">▼</div>
+
+  <!-- BOUNDARY: TorchTitan vs PyTorch -->
+  <div class="boundary-line">
+    <span class="label">▲ TorchTitan 层 — 编排、策略、模型架构</span>
+    <div class="line"></div>
+    <span class="label">▼ PyTorch 层 — 分布式原语、计算、通信</span>
+  </div>
+
+  <div class="arrow-down" style="color:#e74c3c;">▼</div>
+
+  <!-- Layer 5: Distributed Parallelism (PyTorch) -->
+  <div class="layer">
+    <div class="layer-label" style="background:#c0392b;">分布式并行<br><span style="font-size:10px;">(PyTorch)</span></div>
+    <div class="layer-content">
+      <div class="box-group">
+        <span class="group-label">并行策略</span>
+        <span class="box" style="background:#e74c3c;">FSDP2</span>
+        <span class="box" style="background:#e74c3c;">Tensor Parallel</span>
+        <span class="box" style="background:#e74c3c;">Pipeline Parallel</span>
+        <span class="box" style="background:#e74c3c;">Context Parallel</span>
+        <span class="box" style="background:#e74c3c;">Expert Parallel</span>
+      </div>
+      <span class="bracket">|</span>
+      <div class="box-group">
+        <span class="group-label">基础设施</span>
+        <span class="box sm" style="background:#ec7063;">DeviceMesh</span>
+        <span class="box sm" style="background:#ec7063;">DTensor</span>
+        <span class="box sm" style="background:#ec7063;">fully_shard</span>
+        <span class="box sm" style="background:#ec7063;">all-gather</span>
+        <span class="box sm" style="background:#ec7063;">reduce-scatter</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-down">▼</div>
+
+  <!-- Layer 6: torch.compile & Inductor -->
+  <div class="layer">
+    <div class="layer-label" style="background:#d35400;">编译优化<br><span style="font-size:10px;">(PyTorch)</span></div>
+    <div class="layer-content">
+      <span class="box" style="background:#e67e22;">torch.compile</span>
+      <span class="box sm" style="background:#e67e22;">Dynamo</span>
+      <span class="box sm" style="background:#e67e22;">AOT Autograd</span>
+      <span class="box sm" style="background:#e67e22;">Inductor</span>
+      <span class="box sm" style="background:#e67e22;">FX Graph</span>
+      <span class="box sm" style="background:#e67e22;">micro_pipeline_tp</span>
+      <span class="box sm" style="background:#e67e22;">cudagraphs</span>
+      <span class="box" style="background:#e67e22;">FlexAttention</span>
+    </div>
+  </div>
+
+  <div class="arrow-down">▼</div>
+
+  <!-- Layer 7: PyTorch Core -->
+  <div class="layer">
+    <div class="layer-label" style="background:#b7950b;">PyTorch Core</div>
+    <div class="layer-content">
+      <span class="box sm" style="background:#f1c40f;color:#333;">torch.Tensor</span>
+      <span class="box sm" style="background:#f1c40f;color:#333;">autograd</span>
+      <span class="box sm" style="background:#f1c40f;color:#333;">nn.Module</span>
+      <span class="box sm" style="background:#f1c40f;color:#333;">optim</span>
+      <span class="box sm" style="background:#f1c40f;color:#333;">cuda</span>
+      <span class="box sm" style="background:#f1c40f;color:#333;">分散式通信 (c10d)</span>
+      <span class="box sm" style="background:#f1c40f;color:#333;">CUDA Graphs</span>
+    </div>
+  </div>
+
+  <div class="arrow-down">▼</div>
+
+  <!-- Layer 8: Hardware Abstraction -->
+  <div class="layer">
+    <div class="layer-label" style="background:#7f8c8d;">硬件抽象</div>
+    <div class="layer-content">
+      <span class="box" style="background:#95a5a6;">NCCL</span>
+      <span class="box" style="background:#95a5a6;">cuDNN</span>
+      <span class="box" style="background:#95a5a6;">CUDA</span>
+      <span class="box" style="background:#95a5a6;">Triton</span>
+      <span style="font-size:12px;color:#999;margin-left:8px;">── 传递依赖，非直接依赖</span>
+    </div>
+  </div>
+
+  <div class="arrow-down">▼</div>
+
+  <!-- Layer 9: Hardware -->
+  <div class="layer">
+    <div class="layer-label" style="background:#2c3e50;">硬件</div>
+    <div class="layer-content">
+      <span class="box xs" style="background:#34495e;">NVIDIA GPU (H100/H200/B200)</span>
+      <span class="box xs" style="background:#34495e;">AMD GPU (MI300X)</span>
+      <span class="box xs" style="background:#34495e;">NVLink / NVSwitch</span>
+      <span class="box xs" style="background:#34495e;">InfiniBand</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <div class="legend-item"><div class="legend-color" style="background:#2980b9;"></div> TorchTitan 训练引擎</div>
+  <div class="legend-item"><div class="legend-color" style="background:#8e44ad;"></div> TorchTitan 模型定义</div>
+  <div class="legend-item"><div class="legend-color" style="background:#c0392b;"></div> PyTorch 分布式并行</div>
+  <div class="legend-item"><div class="legend-color" style="background:#d35400;"></div> PyTorch 编译优化</div>
+  <div class="legend-item"><div class="legend-color" style="background:#f1c40f;"></div> PyTorch 核心</div>
+  <div class="legend-item"><div class="legend-color" style="background:#95a5a6;"></div> 硬件抽象层（传递依赖）</div>
+</div>
+
+<!-- Annotation Cards -->
+<div class="annotation">
+  <div class="annotation-card">
+    <h3>🔵 TorchTitan 负责什么</h3>
+    <ul>
+      <li><strong>训练编排</strong> — train() 循环、step 调度、gradient accumulation</li>
+      <li><strong>配置系统</strong> — CLI 解析、config_registry、override 机制</li>
+      <li><strong>模型架构</strong> — Llama3、Qwen3、DeepSeek-V3 等 nn.Module 定义</li>
+      <li><strong>并行策略编排</strong> — 决定<em>用哪些</em>并行维度、<em>怎么组合</em>（调用 PyTorch API）</li>
+      <li><strong>训练组件</strong> — DataLoader、Loss、Optimizer、Checkpoint、Metrics</li>
+      <li><strong>激活检查点策略</strong> — SelectiveAC / FullAC / MemoryBudgetAC</li>
+    </ul>
+    <p style="margin-top:8px;font-size:12px;color:#999;">代码量：~69,000 行 · 位置：<code>torchtitan/</code></p>
+  </div>
+  <div class="annotation-card">
+    <h3>🔴 PyTorch 负责什么</h3>
+    <ul>
+      <li><strong>集合通信</strong> — all-reduce、all-gather、reduce-scatter（c10d + NCCL）</li>
+      <li><strong>DeviceMesh</strong> — 多维度设备拓扑抽象</li>
+      <li><strong>DTensor</strong> — 分布式张量（Shard / Replicate / Partial）</li>
+      <li><strong>FSDP2</strong> — <code>fully_shard</code> 全分片数据并行</li>
+      <li><strong>Tensor / Pipeline / Context Parallel</strong> — 原生实现</li>
+      <li><strong>torch.compile</strong> — Dynamo → AOT Autograd → Inductor 编译流水线</li>
+      <li><strong>FlexAttention</strong> — 灵活注意力机制（含 CP load balancing）</li>
+      <li><strong>自动微分</strong> — autograd 引擎、CUDA graphs</li>
+    </ul>
+    <p style="margin-top:8px;font-size:12px;color:#999;">TorchTitan 通过 <code>torch.distributed</code> API 调用，不绕过 PyTorch</p>
+  </div>
+</div>
+
+<div class="annotation">
+  <div class="annotation-card">
+    <h3>🔗 边界在哪里</h3>
+    <p><strong>TorchTitan 不直接调 NCCL，不写 CUDA kernel，不实现通信原语。</strong></p>
+    <p>TorchTitan 的工作是"<strong>编排</strong>"：</p>
+    <ul>
+      <li>建 mesh → 调 <code>init_device_mesh()</code></li>
+      <li>分片参数 → 调 <code>fully_shard()</code></li>
+      <li>TP 通信 → 用 <code>DTensor</code> placement + <code>local_map</code></li>
+      <li>PP 调度 → 用 <code>torch.distributed.pipelining</code></li>
+      <li>CP 包装 → 用 <code>_context_parallel_shard</code></li>
+      <li>编译 → 调 <code>torch.compile()</code></li>
+    </ul>
+    <p style="margin-top:8px;font-size:12px;color:#999;">边界清晰：TorchTitan = 策略 + 编排；PyTorch = 原语 + 执行</p>
+  </div>
+  <div class="annotation-card">
+    <h3>📦 依赖总结</h3>
+    <p><strong>TorchTitan 的直接依赖极少：</strong></p>
+    <ul>
+      <li><code>torch</code> — 唯一硬依赖（核心）</li>
+      <li><code>torchdata</code> — Stateful DataLoader</li>
+      <li><code>datasets</code> / <code>tokenizers</code> — 数据加载</li>
+      <li><code>tyro</code> — CLI 参数解析</li>
+      <li><code>tensorboard</code> / <code>wandb</code> — 可视化（可选）</li>
+      <li><code>safetensors</code> — 权重格式（HF 互转）</li>
+      <li><code>spmd_types</code> — 分布式类型系统（可选）</li>
+    </ul>
+    <p style="margin-top:8px;font-size:12px;color:#999;">NCCL/cuDNN/CUDA 是 PyTorch 的传递依赖，TorchTitan 不直接依赖</p>
+  </div>
+</div>
+
+<script src="common.js"></script>
+</body>
+</html>

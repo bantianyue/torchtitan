@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TorchTitan 并行策略与训练流程图解（Llama3-8B 实例）</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    /* 7 种并行，色相全部错开，互不混淆 */
+    --tp:#3498db;   /* 蓝  TP */
+    --sp:#f1c40f;   /* 黄  SP */
+    --cp:#e74c3c;   /* 红  CP */
+    --pp:#1abc9c;   /* 青  PP */
+    --dp:#2ecc71;   /* 绿  DP */
+    --fsdp:#e67e22; /* 橙  FSDP */
+    --ep:#9b59b6;   /* 紫  EP */
+    --bg:#0d0f14; --card:#161a22; --txt:#d7dde6; --dim:#8b94a3; --line:#272d39; --acc:#9be0a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1200px;margin:0 auto;padding:26px 20px 90px}
+  h1{font-size:26px;margin:.2em 0 .1em;color:#fff}
+  h2{font-size:21px;margin:1.7em 0 .4em;padding-bottom:7px;border-bottom:2px solid var(--line);
+    color:#fff;display:flex;align-items:center;gap:10px}
+  h2 .num{background:linear-gradient(135deg,var(--tp),var(--cp));color:#fff;width:30px;height:30px;
+    border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:800}
+  h3{font-size:16.5px;margin:1.1em 0 .35em;color:#cdd4df}
+  p{margin:.5em 0}
+  code{background:#0a0c11;border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+    font-family:"JetBrains Mono",Consolas,Menlo,monospace;font-size:13px;color:var(--acc)}
+  pre{background:#0a0c11;border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto}
+  pre code{background:none;border:none;padding:0;color:#c8d0dc;font-size:12.5px;line-height:1.55}
+  table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#1c212c;color:#eef2f8;font-weight:600}
+  tr:nth-child(even) td{background:#11151c}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:700;color:#0d0f14;white-space:nowrap}
+  .t-tp{background:var(--tp)} .t-sp{background:var(--sp)} .t-cp{background:var(--cp)}
+  .t-pp{background:var(--pp)} .t-dp{background:var(--dp)} .t-fsdp{background:var(--fsdp)} .t-ep{background:var(--ep);color:#fff}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:.9em 0}
+  .note{border-left:3px solid var(--tp);padding:7px 13px;background:#11161e;border-radius:0 6px 6px 0;margin:.6em 0}
+  .warn{border-left:3px solid #f0ad4e;padding:7px 13px;background:#1a160d;border-radius:0 6px 6px 0;margin:.6em 0}
+  .shape{font-family:"JetBrains Mono",Consolas,monospace;font-size:12.5px;color:var(--acc)}
+  .sub{color:var(--dim);font-size:12.5px}
+  svg{display:block;margin:6px auto;max-width:100%;height:auto}
+  .figcap{text-align:center;color:var(--dim);font-size:12px;margin:2px 0 14px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:780px){.grid2{grid-template-columns:1fr}}
+  ul{margin:.4em 0;padding-left:22px} li{margin:.25em 0}
+  .hero{background:linear-gradient(135deg,#161a22,#0f1620);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+  .badge{display:inline-block;background:#1d2430;border:1px solid var(--line);border-radius:20px;padding:3px 12px;margin:3px 6px 3px 0;font-size:12.5px}
+  .pal{display:inline-flex;align-items:center;gap:5px;margin:2px 8px 2px 0;font-size:12px}
+  .pal i{width:13px;height:13px;border-radius:3px;display:inline-block}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="wrap">
+
+<h1>TorchTitan 并行策略与训练流程图解</h1>
+<p class="sub">Llama3-8B · 192 GPU · 5D 并行（TP+SP+CP+PP+FSDP）。各并行度互不相同，颜色色相全部错开。源码：torchtitan main 分支。</p>
+
+<div class="hero">
+<span class="badge">dim=4096 · layers=32 · heads=32/8(GQA) · head_dim=128 · ffn=14336 · vocab=128256</span>
+<br>
+<span class="pal"><i style="background:#3498db"></i>TP=2</span>
+<span class="pal"><i style="background:#f1c40f"></i>SP=2(随TP)</span>
+<span class="pal"><i style="background:#e74c3c"></i>CP=4</span>
+<span class="pal"><i style="background:#1abc9c"></i>PP=3</span>
+<span class="pal"><i style="background:#e67e22"></i>FSDP=8</span>
+<span class="pal"><i style="background:#2ecc71"></i>dp_replicate=1</span>
+<br>
+<span class="badge">local_batch=4 · seq_len=8192 · global_batch=64</span>
+<span class="badge">world = 3×8×4×2 = 192 GPU</span>
+</div>
+
+<!-- ============ 1 ============ -->
+<h2><span class="num">1</span>各并行策略：切的是张量的哪一维</h2>
+<p>一个激活张量 <code>[B, S, D]</code>（batch / 序列 / hidden）被五种并行分别切在不同维度。颜色全文统一，每色一种并行，互不混淆。</p>
+
+<svg viewBox="0 0 1160 310" font-family="monospace" font-size="12">
+  <!-- big tensor cuboid -->
+  <g transform="translate(30,40)">
+    <polygon points="0,0 180,0 180,150 0,150" fill="#1b2330" stroke="#3a4456" stroke-width="1.5"/>
+    <polygon points="0,0 60,-40 240,-40 180,0" fill="#222c3a" stroke="#3a4456" stroke-width="1.5"/>
+    <polygon points="180,0 240,-40 240,110 180,150" fill="#1a2230" stroke="#3a4456" stroke-width="1.5"/>
+    <text x="90" y="170" text-anchor="middle" fill="#2ecc71" font-size="14" font-weight="700">B (batch)</text>
+    <text x="-12" y="80" text-anchor="end" fill="#e74c3c" font-size="14" font-weight="700">S (seq)</text>
+    <text x="222" y="60" fill="#3498db" font-size="14" font-weight="700">D (hidden)</text>
+    <text x="90" y="-50" text-anchor="middle" fill="#8b94a3" font-size="13">激活张量 [B, S, D]</text>
+  </g>
+  <line x1="300" y1="120" x2="360" y2="120" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#a1)"/>
+  <defs><marker id="a1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+
+  <!-- 5 slice panels -->
+  <g transform="translate(370,20)" font-size="11">
+    <g transform="translate(0,0)">
+      <rect width="150" height="70" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+      <text x="75" y="20" text-anchor="middle" fill="#2ecc71" font-weight="700">DP / FSDP</text>
+      <g transform="translate(15,30)"><rect width="40" height="30" fill="#2ecc71" opacity=".25"/><rect x="42" width="40" height="30" fill="#2ecc71" opacity=".55"/></g>
+      <text x="75" y="64" text-anchor="middle" fill="#c8d0dc">切 B 维（batch）</text>
+    </g>
+    <g transform="translate(158,0)">
+      <rect width="150" height="70" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+      <text x="75" y="20" text-anchor="middle" fill="#e74c3c" font-weight="700">CP</text>
+      <g transform="translate(35,28)"><rect width="30" height="34" fill="#e74c3c" opacity=".3"/><rect y="36" width="30" height="34" fill="#e74c3c" opacity=".6"/></g>
+      <text x="75" y="86" text-anchor="middle" fill="#c8d0dc">切 S 维（序列）</text>
+    </g>
+    <g transform="translate(316,0)">
+      <rect width="150" height="70" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+      <text x="75" y="20" text-anchor="middle" fill="#f1c40f" font-weight="700">SP</text>
+      <g transform="translate(35,28)"><rect width="30" height="34" fill="#f1c40f" opacity=".3"/><rect y="36" width="30" height="34" fill="#f1c40f" opacity=".6"/></g>
+      <text x="75" y="86" text-anchor="middle" fill="#c8d0dc">切 S 维（与 CP 复合）</text>
+    </g>
+    <g transform="translate(474,0)">
+      <rect width="150" height="70" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+      <text x="75" y="20" text-anchor="middle" fill="#3498db" font-weight="700">TP</text>
+      <g transform="translate(30,28)"><rect width="24" height="34" fill="#3498db" opacity=".3"/><rect x="26" width="24" height="34" fill="#3498db" opacity=".6"/></g>
+      <text x="75" y="64" text-anchor="middle" fill="#c8d0dc">切 D / heads / vocab</text>
+    </g>
+    <g transform="translate(632,0)">
+      <rect width="150" height="70" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+      <text x="75" y="20" text-anchor="middle" fill="#1abc9c" font-weight="700">PP</text>
+      <g transform="translate(20,30)"><rect width="100" height="14" fill="#1abc9c" opacity=".3"/><rect y="18" width="100" height="14" fill="#1abc9c" opacity=".6"/></g>
+      <text x="75" y="64" text-anchor="middle" fill="#c8d0dc">切 深度（layers）</text>
+    </g>
+  </g>
+
+  <g transform="translate(30,215)">
+    <rect width="1100" height="80" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="16" y="24" fill="#8b94a3" font-size="12">复合切分结论（本例 TP=2, CP=4）：</text>
+    <text x="16" y="46" fill="#9be0a3" font-size="12.5">norm/FFN 输入处 S = 8192/(cp·tp) = 8192/(4·2) = <tspan font-weight="700">1024</tspan>　·　attention 内部 all-gather TP 后 S = 8192/cp = <tspan font-weight="700">2048</tspan>　·　attention K/V all-gather CP 后 S = <tspan font-weight="700">8192</tspan>（完整）</text>
+    <text x="16" y="66" fill="#f0ad4e" font-size="12">⚠ batch 维只被 DP 切；S 维被 CP 与 SP/TP 复合切；D/heads/vocab 被 TP 切；layers 被 PP 切。</text>
+  </g>
+</svg>
+<p class="figcap">图 1-1：五种并行各切张量哪一维（颜色：绿DP / 红CP / 黄SP / 蓝TP / 青PP / 橙FSDP / 紫EP）</p>
+
+<div class="grid2">
+<div class="card">
+<h3>关键配置（<code>ParallelismConfig</code>）</h3>
+<table>
+<tr><th>并行</th><th>字段</th><th>本例</th></tr>
+<tr><td><span class="tag t-dp">DP/FSDP</span></td><td><code>data_parallel_replicate_degree</code> / <code>data_parallel_shard_degree</code></td><td>1 / <b>8</b></td></tr>
+<tr><td><span class="tag t-tp">TP</span></td><td><code>tensor_parallel_degree</code></td><td><b>2</b></td></tr>
+<tr><td><span class="tag t-sp">SP</span></td><td><code>enable_sequence_parallel</code></td><td>true</td></tr>
+<tr><td><span class="tag t-cp">CP</span></td><td><code>context_parallel_degree</code> / <code>..._load_balancer</code></td><td><b>4</b> / headtail</td></tr>
+<tr><td><span class="tag t-pp">PP</span></td><td><code>pipeline_parallel_degree</code> / <code>..._schedule</code> / <code>..._microbatch_size</code></td><td><b>3</b> / 1F1B / 1</td></tr>
+<tr><td><span class="tag t-ep">EP</span></td><td><code>expert_parallel_degree</code></td><td>1</td></tr>
+<tr><td>-</td><td><code>spmd_backend</code></td><td>default</td></tr>
+</table>
+</div>
+<div class="card">
+<h3>核心约束（源码）</h3>
+<ul>
+<li><code>batch</code> mesh = <code>dp_r·dp_s</code>（<code>parallel_dims.py:272</code>），<b>不含 CP</b></li>
+<li>TP 必须整除 n_heads(32) 与 n_kv_heads(8)：TP=2 ✓</li>
+<li>PP 与 weight tying 不兼容；PP 与 VarlenAttention 不兼容</li>
+<li>EP mesh 约束：<code>dp_s·cp·tp == efsdp·ep</code></li>
+<li>SP 序列与 CP 复合：<code>dense_sequence_parallel_placement = (DP,(CP,TP),None)</code></li>
+<li><code>seq_len</code> 被 <code>(SP?tp:1)·(2·cp)=2·8=16</code> 整除：8192/16=512 ✓（<code>trainer.py:241</code>）</li>
+</ul>
+</div>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2><span class="num">2</span>Device Mesh：192 个 rank 怎么排</h2>
+<p>world = <code>pp·(dp_r·dp_s)·cp·tp = 3·8·4·2 = 192</code>。dataloader mesh <code>["pp","batch","cp","tp"]=[3,8,4,2]</code>。192 个 rank 太多画不全，用<b>嵌套盒</b>示意 4 层结构。</p>
+
+<svg viewBox="0 0 1160 340" font-family="monospace" font-size="12">
+  <g transform="translate(30,30)">
+    <!-- outer pp box -->
+    <rect width="720" height="260" rx="10" fill="none" stroke="#1abc9c" stroke-width="2.5"/>
+    <text x="14" y="22" fill="#1abc9c" font-weight="700">pp = 3（青）</text>
+    <!-- 3 pp cells -->
+    <g>
+      <rect x="14" y="34" width="230" height="210" rx="8" fill="#0e1219" stroke="#1abc9c"/>
+      <text x="129" y="52" text-anchor="middle" fill="#1abc9c">pp0 (layers 0-10)</text>
+      <!-- batch=8 inside -->
+      <g transform="translate(24,62)">
+        <text x="0" y="0" fill="#2ecc71" font-size="10.5">batch=8（绿）</text>
+        <g>
+          <rect x="0" y="8" width="100" height="130" rx="6" fill="#0e1219" stroke="#2ecc71"/>
+          <text x="50" y="22" text-anchor="middle" fill="#2ecc71" font-size="10">b0</text>
+          <!-- cp x tp inside b0 -->
+          <g transform="translate(8,30)">
+            <text x="0" y="0" fill="#e74c3c" font-size="9.5">cp4×tp2</text>
+            <g font-size="8" text-anchor="middle">
+              <rect x="0" y="8" width="40" height="16" fill="#1a1416" stroke="#e74c3c"/><text x="20" y="20" fill="#e74c3c">cp0,tp0</text>
+              <rect x="44" y="8" width="40" height="16" fill="#1a1416" stroke="#e74c3c"/><text x="64" y="20" fill="#e74c3c">cp0,tp1</text>
+              <rect x="0" y="26" width="40" height="16" fill="#1a1416" stroke="#e74c3c"/><text x="20" y="38" fill="#e74c3c">cp1,tp0</text>
+              <rect x="44" y="26" width="40" height="16" fill="#1a1416" stroke="#e74c3c"/><text x="64" y="38" fill="#e74c3c">cp1,tp1</text>
+              <rect x="0" y="44" width="84" height="16" fill="#1a1416" stroke="#e74c3c"/><text x="42" y="56" fill="#8b94a3">cp2/3,tp0/1 …</text>
+            </g>
+          </g>
+        </g>
+        <g transform="translate(110,8)">
+          <rect width="90" height="130" rx="6" fill="#0e1219" stroke="#2ecc71" stroke-dasharray="4,3"/>
+          <text x="45" y="70" text-anchor="middle" fill="#2ecc71" font-size="10">b1…b7</text>
+          <text x="45" y="86" text-anchor="middle" fill="#8b94a3" font-size="9">×7</text>
+        </g>
+      </g>
+    </g>
+    <g>
+      <rect x="252" y="34" width="230" height="210" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-dasharray="5,3"/>
+      <text x="367" y="52" text-anchor="middle" fill="#1abc9c">pp1 (layers 11-21)</text>
+      <text x="367" y="140" text-anchor="middle" fill="#8b94a3" font-size="11">同构：batch8×cp4×tp2</text>
+      <text x="367" y="158" text-anchor="middle" fill="#8b94a3" font-size="11">= 64 rank</text>
+    </g>
+    <g>
+      <rect x="490" y="34" width="216" height="210" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-dasharray="5,3"/>
+      <text x="598" y="52" text-anchor="middle" fill="#1abc9c">pp2 (layers 22-31)</text>
+      <text x="598" y="140" text-anchor="middle" fill="#8b94a3" font-size="11">末阶段，持 lm_head</text>
+      <text x="598" y="158" text-anchor="middle" fill="#8b94a3" font-size="11">= 64 rank</text>
+    </g>
+  </g>
+
+  <!-- right: submeshes -->
+  <g transform="translate(800,30)">
+    <text x="0" y="0" fill="#fff" font-size="14">三条子 mesh（通信域）</text>
+    <g transform="translate(0,14)">
+      <rect width="330" height="250" rx="8" fill="#0e1219" stroke="#272d39"/>
+      <g font-size="12">
+        <text x="14" y="26" fill="#2ecc71" font-weight="700">batch mesh = 8</text>
+        <text x="14" y="44" fill="#8b94a3">dp_r·dp_s = 1·8</text>
+        <text x="14" y="60" fill="#8b94a3">数据加载分片 / grad-accum</text>
+
+        <text x="14" y="96" fill="#e67e22" font-weight="700">loss mesh = 32</text>
+        <text x="14" y="114" fill="#8b94a3">dp_r·dp_s·cp = 1·8·4</text>
+        <text x="14" y="130" fill="#8b94a3">loss / 权重梯度 all-reduce（含 CP）</text>
+
+        <text x="14" y="166" fill="#e67e22" font-weight="700">fsdp mesh = 32</text>
+        <text x="14" y="184" fill="#8b94a3">dp_s·cp = 8·4</text>
+        <text x="14" y="200" fill="#8b94a3">FSDP 参数 all-gather / reduce-scatter</text>
+
+        <text x="14" y="232" fill="#f1c40f">⚠ loss/fsdp 含 CP；batch 不含</text>
+      </g>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 2-1：mesh 嵌套结构 pp3 → batch8 → cp4 → tp2 = 192 rank（每叶 = 1 rank）</p>
+
+<!-- ============ 3 ============ -->
+<h2><span class="num">3</span>Batch 分解：一次优化步的数据怎么拆</h2>
+<p>global batch=64 一路拆到单 rank 单 PP微批。每步标注切几份（注意各并行度互不相同）。</p>
+
+<svg viewBox="0 0 1160 360" font-family="monospace" font-size="12">
+  <defs><marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+  <g transform="translate(20,150)">
+    <rect x="0" y="-30" width="150" height="60" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="75" y="-10" text-anchor="middle" fill="#2ecc71" font-weight="700">global_batch</text>
+    <text x="75" y="10" text-anchor="middle" fill="#9be0a3">64 seq</text>
+    <text x="75" y="24" text-anchor="middle" fill="#8b94a3" font-size="10">8192 tok/seq</text>
+  </g>
+  <line x1="175" y1="150" x2="245" y2="150" stroke="#2ecc71" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="210" y="140" text-anchor="middle" fill="#2ecc71" font-size="11">÷ DP=8</text>
+
+  <g transform="translate(250,150)">
+    <rect x="0" y="-30" width="150" height="60" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="75" y="-10" text-anchor="middle" fill="#2ecc71" font-weight="700">每 rank 每步</text>
+    <text x="75" y="10" text-anchor="middle" fill="#9be0a3">8 seq</text>
+    <text x="75" y="24" text-anchor="middle" fill="#8b94a3" font-size="10">8副本×8=64</text>
+  </g>
+  <line x1="405" y1="150" x2="475" y2="150" stroke="#f0ad4e" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="440" y="140" text-anchor="middle" fill="#f0ad4e" font-size="11">÷ 梯度累积微批=2</text>
+
+  <g transform="translate(480,150)">
+    <rect x="0" y="-30" width="150" height="60" rx="8" fill="#0e1219" stroke="#f0ad4e" stroke-width="2"/>
+    <text x="75" y="-10" text-anchor="middle" fill="#f0ad4e" font-weight="700">每梯度累积微批</text>
+    <text x="75" y="10" text-anchor="middle" fill="#9be0a3">local_batch=4</text>
+    <text x="75" y="24" text-anchor="middle" fill="#8b94a3" font-size="10">[4, 8192]</text>
+  </g>
+  <line x1="635" y1="150" x2="705" y2="150" stroke="#e74c3c" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="670" y="140" text-anchor="middle" fill="#e74c3c" font-size="11">÷ CP=4 (切 seq)</text>
+
+  <g transform="translate(710,150)">
+    <rect x="0" y="-30" width="150" height="60" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="75" y="-10" text-anchor="middle" fill="#e74c3c" font-weight="700">CP 后</text>
+    <text x="75" y="10" text-anchor="middle" fill="#9be0a3">[4, 2048]</text>
+    <text x="75" y="24" text-anchor="middle" fill="#8b94a3" font-size="10">8192->2048</text>
+  </g>
+  <line x1="865" y1="150" x2="935" y2="150" stroke="#1abc9c" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="900" y="140" text-anchor="middle" fill="#1abc9c" font-size="11">÷ PP微批=1</text>
+
+  <g transform="translate(940,150)">
+    <rect x="0" y="-30" width="190" height="60" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+    <text x="95" y="-10" text-anchor="middle" fill="#1abc9c" font-weight="700">PP 微批</text>
+    <text x="95" y="10" text-anchor="middle" fill="#9be0a3">[1, 2048] ×4</text>
+    <text x="95" y="24" text-anchor="middle" fill="#8b94a3" font-size="10">×梯度累积微批2 = 8/步</text>
+  </g>
+
+  <g transform="translate(20,250)">
+    <rect width="1110" height="90" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="16" y="24" fill="#fff" font-size="13">Token 账本（每优化步）</text>
+    <g font-size="12" fill="#c8d0dc">
+      <text x="16" y="48">全局总 token = global_batch × seq_len = 64 × 8192 = <tspan fill="#9be0a3" font-weight="700">524288</tspan></text>
+      <text x="16" y="68">每 rank 算的 token（CP 后）= local × seq × grad_accum / cp = 4·8192·2 / 4 = <tspan fill="#9be0a3" font-weight="700">16384</tspan></text>
+      <text x="560" y="48">梯度累积微批 = global/(local·batch_degree) = 64/(4·8) = <tspan fill="#9be0a3" font-weight="700">2</tspan></text>
+      <text x="560" y="68">PP微批 = local/PP微批size = 4/1 = <tspan fill="#9be0a3" font-weight="700">4</tspan>　·　batch_degree = dp_r·dp_s = <tspan fill="#9be0a3" font-weight="700">8</tspan></text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 3-1：global 64 → DP÷8 → 每rank每步 8 → 梯度累积微批÷2 → 每梯度累积微批 4 → CP÷4 → [4,2048] → ÷PP微批=1 → [1,2048]×4（×梯度累积微批2 = 8/步）</p>
+
+<!-- ============ 4 ============ -->
+<div class="note"><b>两个"微批"别混</b>：<b>梯度累积微批</b>（grad_accum，外层）跨多次 forward/backward 累积梯度以模拟大 global batch，本例 = 2；<b>PP微批</b>（pipeline_parallel_microbatch_size，内层，仅 PP 时）一次 forward/backward 内切 local_batch 填流水线，本例 = 4。单优化步总 fwd/bwd = 梯度累积微批(2) × PP微批(4) = 8，梯度全累加后做 1 次 optimizer.step。</div>
+<h2><span class="num">4</span>前向主流程：单 rank 单 PP微批的 shape 演化</h2>
+<p>核心图：一个 PP 微批（B=1）在单个 rank 上从 token 到 loss 的完整 shape 流转。每框标 in->out shape，颜色=主导并行，实线=计算、虚线=通信。</p>
+
+<svg viewBox="0 0 1160 560" font-family="monospace" font-size="11">
+  <defs>
+    <marker id="a4" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#8b94a3"/></marker>
+    <marker id="a4g" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#9be0a3"/></marker>
+  </defs>
+  <!-- Row 1 -->
+  <g transform="translate(20,30)">
+    <rect width="120" height="60" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="60" y="22" text-anchor="middle" fill="#2ecc71" font-weight="700">tokens</text>
+    <text x="60" y="42" text-anchor="middle" fill="#9be0a3">[1, 8192]</text>
+    <text x="60" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">int64</text>
+  </g>
+  <line x1="145" y1="60" x2="195" y2="60" stroke="#e74c3c" stroke-width="2" marker-end="url(#a4)"/>
+  <text x="170" y="52" text-anchor="middle" fill="#e74c3c" font-size="10">CP 切 seq</text>
+  <g transform="translate(200,30)">
+    <rect width="140" height="60" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="70" y="22" text-anchor="middle" fill="#e74c3c" font-weight="700">CP 预切</text>
+    <text x="70" y="42" text-anchor="middle" fill="#9be0a3">[1, 2048]</text>
+    <text x="70" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">prepare_cp_input</text>
+  </g>
+  <line x1="345" y1="60" x2="395" y2="60" stroke="#3498db" stroke-width="2" marker-end="url(#a4)"/>
+  <text x="370" y="52" text-anchor="middle" fill="#3498db" font-size="10">embed</text>
+  <g transform="translate(400,30)">
+    <rect width="150" height="60" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="75" y="22" text-anchor="middle" fill="#3498db" font-weight="700">tok_embed</text>
+    <text x="75" y="42" text-anchor="middle" fill="#9be0a3">[1, 1024, 4096]</text>
+    <text x="75" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">vocab切tp; reduce-scatter->SP</text>
+  </g>
+  <line x1="555" y1="60" x2="605" y2="60" stroke="#f1c40f" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(610,30)">
+    <rect width="150" height="60" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+    <text x="75" y="22" text-anchor="middle" fill="#f1c40f" font-weight="700">attention_norm</text>
+    <text x="75" y="42" text-anchor="middle" fill="#9be0a3">[1, 1024, 4096]</text>
+    <text x="75" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">SP: S=1024</text>
+  </g>
+  <line x1="765" y1="60" x2="815" y2="60" stroke="#f1c40f" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#a4)"/>
+  <text x="790" y="52" text-anchor="middle" fill="#f1c40f" font-size="10">all-gather TP</text>
+  <g transform="translate(820,30)">
+    <rect width="150" height="60" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+    <text x="75" y="22" text-anchor="middle" fill="#f1c40f" font-weight="700">gather 后</text>
+    <text x="75" y="42" text-anchor="middle" fill="#9be0a3">[1, 2048, 4096]</text>
+    <text x="75" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">S 1024->2048</text>
+  </g>
+
+  <!-- Row 2 -->
+  <g transform="translate(20,140)">
+    <rect width="150" height="60" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="75" y="22" text-anchor="middle" fill="#3498db" font-weight="700">wqkv (列并行)</text>
+    <text x="75" y="42" text-anchor="middle" fill="#9be0a3">[1,2048,4096]->[1,2048,3072]</text>
+    <text x="75" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">6144/tp2=3072</text>
+  </g>
+  <line x1="175" y1="170" x2="225" y2="170" stroke="#8b94a3" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(230,140)">
+    <rect width="180" height="60" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="90" y="22" text-anchor="middle" fill="#3498db" font-weight="700">reshape+split</text>
+    <text x="90" y="42" text-anchor="middle" fill="#9be0a3">q[1,2048,16,128]</text>
+    <text x="90" y="55" text-anchor="middle" fill="#9be0a3">k,v[1,2048,4,128]</text>
+  </g>
+  <line x1="415" y1="170" x2="465" y2="170" stroke="#e74c3c" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#a4)"/>
+  <text x="440" y="162" text-anchor="middle" fill="#e74c3c" font-size="10">K/V all-gather</text>
+  <g transform="translate(470,140)">
+    <rect width="200" height="60" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="100" y="22" text-anchor="middle" fill="#e74c3c" font-weight="700">inner attention (CP)</text>
+    <text x="100" y="42" text-anchor="middle" fill="#9be0a3">q 局[1,2048,16,128]</text>
+    <text x="100" y="55" text-anchor="middle" fill="#9be0a3">k,v 全[1,8192,4,128]</text>
+  </g>
+  <line x1="675" y1="170" x2="725" y2="170" stroke="#8b94a3" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(730,140)">
+    <rect width="170" height="60" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="85" y="22" text-anchor="middle" fill="#e74c3c" font-weight="700">attn out</text>
+    <text x="85" y="42" text-anchor="middle" fill="#9be0a3">[1,2048,16,128]</text>
+    <text x="85" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">= [1,2048,2048]</text>
+  </g>
+  <line x1="905" y1="170" x2="955" y2="170" stroke="#3498db" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#a4)"/>
+  <text x="930" y="162" text-anchor="middle" fill="#3498db" font-size="10">reduce-scatter</text>
+  <g transform="translate(960,140)">
+    <rect width="180" height="60" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="90" y="22" text-anchor="middle" fill="#3498db" font-weight="700">wo (行并行)</text>
+    <text x="90" y="42" text-anchor="middle" fill="#9be0a3">[1, 1024, 4096]</text>
+    <text x="90" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">回 SP; D 2048->4096</text>
+  </g>
+
+  <!-- Row 3 -->
+  <g transform="translate(20,250)">
+    <rect width="140" height="60" rx="8" fill="#0e1219" stroke="#8b94a3"/>
+    <text x="70" y="22" text-anchor="middle" fill="#c8d0dc" font-weight="700">残差 +</text>
+    <text x="70" y="42" text-anchor="middle" fill="#9be0a3">[1, 1024, 4096]</text>
+    <text x="70" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">h = x + attn(norm(x))</text>
+  </g>
+  <line x1="165" y1="280" x2="215" y2="280" stroke="#f1c40f" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(220,250)">
+    <rect width="150" height="60" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+    <text x="75" y="22" text-anchor="middle" fill="#f1c40f" font-weight="700">ffn_norm</text>
+    <text x="75" y="42" text-anchor="middle" fill="#9be0a3">[1, 1024, 4096]</text>
+  </g>
+  <line x1="375" y1="280" x2="425" y2="280" stroke="#f1c40f" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#a4)"/>
+  <text x="400" y="272" text-anchor="middle" fill="#f1c40f" font-size="10">all-gather TP</text>
+  <g transform="translate(430,250)">
+    <rect width="150" height="60" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="75" y="22" text-anchor="middle" fill="#3498db" font-weight="700">w1,w3 (列并行)</text>
+    <text x="75" y="42" text-anchor="middle" fill="#9be0a3">-> [1,2048,7168]</text>
+    <text x="75" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">14336/tp2=7168</text>
+  </g>
+  <line x1="585" y1="280" x2="635" y2="280" stroke="#8b94a3" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(640,250)">
+    <rect width="150" height="60" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="75" y="22" text-anchor="middle" fill="#3498db" font-weight="700">SwiGLU</text>
+    <text x="75" y="42" text-anchor="middle" fill="#9be0a3">w2(silu(w1)·w3)</text>
+    <text x="75" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">[1,2048,7168]</text>
+  </g>
+  <line x1="795" y1="280" x2="845" y2="280" stroke="#3498db" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#a4)"/>
+  <text x="820" y="272" text-anchor="middle" fill="#3498db" font-size="10">reduce-scatter</text>
+  <g transform="translate(850,250)">
+    <rect width="150" height="60" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="75" y="22" text-anchor="middle" fill="#3498db" font-weight="700">w2 (行并行)</text>
+    <text x="75" y="42" text-anchor="middle" fill="#9be0a3">[1, 1024, 4096]</text>
+    <text x="75" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">回 SP</text>
+  </g>
+  <line x1="1005" y1="280" x2="1055" y2="280" stroke="#8b94a3" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(1060,250)">
+    <rect width="90" height="60" rx="8" fill="#0e1219" stroke="#8b94a3"/>
+    <text x="45" y="22" text-anchor="middle" fill="#c8d0dc" font-weight="700">残差</text>
+    <text x="45" y="42" text-anchor="middle" fill="#9be0a3">[1,1024,4096]</text>
+  </g>
+
+  <!-- repeat + PP boundary -->
+  <g transform="translate(20,360)">
+    <rect width="1130" height="44" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-dasharray="6,4" stroke-width="2"/>
+    <text x="565" y="20" text-anchor="middle" fill="#1abc9c" font-weight="700">↑ 上面 7 个框 = 1 个 Transformer 层。每阶段重复 ~11 层</text>
+    <text x="565" y="36" text-anchor="middle" fill="#8b94a3" font-size="10.5">PP=3 阶段：pp0(layers 0-10) → pp1(11-21) → pp2(22-31)；阶段边界点对点传 hidden [1,1024,4096]（gather 回 [1,2048,4096]）</text>
+  </g>
+
+  <!-- output head + loss -->
+  <g transform="translate(20,430)">
+    <rect width="160" height="60" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+    <text x="80" y="22" text-anchor="middle" fill="#f1c40f" font-weight="700">root norm</text>
+    <text x="80" y="42" text-anchor="middle" fill="#9be0a3">[1, 2048, 4096]</text>
+    <text x="80" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">gather TP 回 R</text>
+  </g>
+  <line x1="185" y1="460" x2="235" y2="460" stroke="#3498db" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(240,430)">
+    <rect width="170" height="60" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="85" y="22" text-anchor="middle" fill="#3498db" font-weight="700">lm_head (列并行)</text>
+    <text x="85" y="42" text-anchor="middle" fill="#9be0a3">[1, 2048, 64128]</text>
+    <text x="85" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">128256/tp2=64128</text>
+  </g>
+  <line x1="415" y1="460" x2="465" y2="460" stroke="#9be0a3" stroke-width="2" marker-end="url(#a4g)"/>
+  <g transform="translate(470,430)">
+    <rect width="200" height="60" rx="8" fill="#0e1219" stroke="#9be0a3"/>
+    <text x="100" y="22" text-anchor="middle" fill="#9be0a3" font-weight="700">ChunkedLoss (CE)</text>
+    <text x="100" y="42" text-anchor="middle" fill="#9be0a3">logits+labels -> 标量</text>
+    <text x="100" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">local_sum/global_valid_tokens</text>
+  </g>
+  <line x1="675" y1="460" x2="725" y2="460" stroke="#f0ad4e" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(730,430)">
+    <rect width="160" height="60" rx="8" fill="#0e1219" stroke="#f0ad4e" stroke-width="2"/>
+    <text x="80" y="22" text-anchor="middle" fill="#f0ad4e" font-weight="700">loss.backward()</text>
+    <text x="80" y="42" text-anchor="middle" fill="#9be0a3">逐层梯度回流</text>
+    <text x="80" y="55" text-anchor="middle" fill="#8b94a3" font-size="9">对偶通信</text>
+  </g>
+  <line x1="895" y1="460" x2="945" y2="460" stroke="#f0ad4e" stroke-width="2" marker-end="url(#a4)"/>
+  <g transform="translate(950,430)">
+    <rect width="200" height="60" rx="8" fill="#0e1219" stroke="#f0ad4e" stroke-width="2"/>
+    <text x="100" y="22" text-anchor="middle" fill="#f0ad4e" font-weight="700">8=(累积2×PP4) 梯度累加</text>
+    <text x="100" y="42" text-anchor="middle" fill="#9be0a3">梯度累积微批2 × PP微批4</text>
+  </g>
+</svg>
+<p class="figcap">图 4-1：前向 shape 演化主流程（TP=2,CP=4：norm/FFN S=1024，attn S=2048）</p>
+
+<div class="card">
+<h3>逐层 shape 明细表（对应上图每个框，本地权重 tp=2 切后）</h3>
+<table>
+<tr><th>步骤</th><th>并行</th><th>输入 shape</th><th>权重（本地）</th><th>输出 shape</th></tr>
+<tr><td>CP 预切</td><td><span class="tag t-cp">CP4</span></td><td class="shape">[1,8192]</td><td>-</td><td class="shape">[1,2048]</td></tr>
+<tr><td>tok_embed</td><td><span class="tag t-tp">TP2</span></td><td class="shape">[1,2048]</td><td class="shape">[64128,4096]</td><td class="shape">[1,1024,4096]</td></tr>
+<tr><td>attn_norm</td><td><span class="tag t-sp">SP</span></td><td class="shape">[1,1024,4096]</td><td class="shape">[4096]</td><td class="shape">[1,1024,4096]</td></tr>
+<tr><td>wqkv 列并行</td><td><span class="tag t-tp">TP2</span></td><td class="shape">[1,2048,4096]</td><td class="shape">[3072,4096]</td><td class="shape">[1,2048,3072]</td></tr>
+<tr><td>q/k/v split</td><td>-</td><td class="shape">[1,2048,3072]</td><td>-</td><td class="shape">q[1,2048,16,128] k,v[1,2048,4,128]</td></tr>
+<tr><td>inner attn</td><td><span class="tag t-cp">CP4</span></td><td class="shape">q[1,2048,16,128]; kv全[1,8192,4,128]</td><td>-</td><td class="shape">[1,2048,16,128]</td></tr>
+<tr><td>wo 行并行</td><td><span class="tag t-tp">TP2</span>+<span class="tag t-sp">SP</span></td><td class="shape">[1,2048,2048]</td><td class="shape">[4096,2048]</td><td class="shape">[1,1024,4096]</td></tr>
+<tr><td>w1,w3 列并行</td><td><span class="tag t-tp">TP2</span></td><td class="shape">[1,2048,4096]</td><td class="shape">[7168,4096]</td><td class="shape">各[1,2048,7168]</td></tr>
+<tr><td>w2 行并行</td><td><span class="tag t-tp">TP2</span>+<span class="tag t-sp">SP</span></td><td class="shape">[1,2048,7168]</td><td class="shape">[4096,7168]</td><td class="shape">[1,1024,4096]</td></tr>
+<tr><td>root norm</td><td><span class="tag t-sp">SP</span></td><td class="shape">[1,1024,4096]</td><td class="shape">[4096]</td><td class="shape">[1,2048,4096]</td></tr>
+<tr><td>lm_head 列并行</td><td><span class="tag t-tp">TP2</span></td><td class="shape">[1,2048,4096]</td><td class="shape">[64128,4096]</td><td class="shape">[1,2048,64128]</td></tr>
+<tr><td>ChunkedLoss</td><td><span class="tag t-tp">TP2</span></td><td class="shape">[1,2048,64128]+[1,2048]</td><td>-</td><td class="shape">标量</td></tr>
+</table>
+</div>
+
+<!-- ============ 5: TP+SP comm ============ -->
+<h2><span class="num">5</span>放大看：TP+SP 在一层内的通信模式</h2>
+<p>Megatron 式 SP：norm 在切小的序列上算，进 attention/FFN 前 all-gather 回完整，出来后 reduce-scatter 再切小。</p>
+<svg viewBox="0 0 1160 300" font-family="monospace" font-size="12">
+  <defs><marker id="a5" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+  <g transform="translate(30,40)">
+    <rect width="140" height="80" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+    <text x="70" y="26" text-anchor="middle" fill="#f1c40f" font-weight="700">norm (SP)</text>
+    <text x="70" y="48" text-anchor="middle" fill="#9be0a3">[1, 1024, 4096]</text>
+    <text x="70" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">S 切 (cp·tp)=8</text>
+    <line x1="145" y1="40" x2="200" y2="40" stroke="#f1c40f" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#a5)"/>
+    <text x="172" y="30" text-anchor="middle" fill="#f1c40f" font-size="11">all-gather(TP)</text>
+    <text x="172" y="56" text-anchor="middle" fill="#8b94a3" font-size="10">S: 1024->2048</text>
+    <rect x="205" width="170" height="80" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="290" y="26" text-anchor="middle" fill="#3498db" font-weight="700">wqkv 列并行</text>
+    <text x="290" y="48" text-anchor="middle" fill="#9be0a3">[1,2048,4096]->[1,2048,3072]</text>
+    <text x="290" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">切输出维 heads</text>
+    <line x1="380" y1="40" x2="435" y2="40" stroke="#8b94a3" stroke-width="2" marker-end="url(#a5)"/>
+    <rect x="440" width="160" height="80" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="520" y="26" text-anchor="middle" fill="#e74c3c" font-weight="700">attention</text>
+    <text x="520" y="48" text-anchor="middle" fill="#9be0a3">heads 各算各的</text>
+    <text x="520" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">CP 内 all-gather K/V</text>
+    <line x1="605" y1="40" x2="660" y2="40" stroke="#3498db" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#a5)"/>
+    <text x="632" y="30" text-anchor="middle" fill="#3498db" font-size="11">reduce-scatter</text>
+    <text x="632" y="56" text-anchor="middle" fill="#8b94a3" font-size="10">S: 2048->1024</text>
+    <rect x="665" width="160" height="80" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="745" y="26" text-anchor="middle" fill="#3498db" font-weight="700">wo 行并行</text>
+    <text x="745" y="48" text-anchor="middle" fill="#9be0a3">[1,1024,4096]</text>
+    <text x="745" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">回 SP</text>
+    <line x1="830" y1="40" x2="885" y2="40" stroke="#8b94a3" stroke-width="2" marker-end="url(#a5)"/>
+    <rect x="890" width="130" height="80" rx="8" fill="#0e1219" stroke="#8b94a3"/>
+    <text x="955" y="26" text-anchor="middle" fill="#c8d0dc" font-weight="700">残差 +</text>
+    <text x="955" y="48" text-anchor="middle" fill="#9be0a3">[1,1024,4096]</text>
+    <text x="955" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">喂下一层 norm</text>
+  </g>
+  <g transform="translate(30,170)">
+    <rect width="1090" height="110" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="16" y="24" fill="#fff" font-size="13">SP 通信规律</text>
+    <g font-size="12" fill="#c8d0dc">
+      <text x="16" y="48">进 attention/FFN 列并行线性前：<tspan fill="#f1c40f" font-weight="700">all-gather(TP)</tspan> 把序列从 S/(cp·tp)=1024 拼回 S/cp=2048</text>
+      <text x="16" y="70">出 wo/w2 行并行线性后：<tspan fill="#3498db" font-weight="700">reduce-scatter(TP)</tspan> -- 求和 partial 输出 + 把序列再切回 S/(cp·tp)=1024</text>
+      <text x="16" y="92">结果：norm/残差总在 SP 粒度 <tspan fill="#9be0a3">[1,1024,4096]</tspan> 算（省显存）；attention/FFN 内部短暂在 <tspan fill="#9be0a3">[1,2048,*]</tspan> 算。</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 5-1：SP 的 all-gather(进) / reduce-scatter(出) 循环</p>
+
+<!-- ============ 6: CP ============ -->
+<h2><span class="num">6</span>放大看：Context Parallel 怎么切序列（CP=4）</h2>
+<p>CP=4 把序列切成 4 段，每个 cp rank 只算自己段 query 的 attention，K/V all-gather 成完整 8192。</p>
+<svg viewBox="0 0 1160 300" font-family="monospace" font-size="12">
+  <defs><marker id="a6" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#e74c3c"/></marker></defs>
+  <g transform="translate(40,20)">
+    <text x="0" y="0" fill="#8b94a3">完整序列 S=8192（切前）</text>
+    <rect x="0" y="10" width="1000" height="30" fill="#1a1416" stroke="#e74c3c"/>
+    <text x="500" y="30" text-anchor="middle" fill="#9be0a3">[1, 8192, ...]</text>
+  </g>
+  <g transform="translate(40,80)">
+    <text x="0" y="0" fill="#e74c3c">CP 切 4 段（headtail 负载均衡）</text>
+    <rect x="0"   y="10" width="244" height="30" fill="#2a1614" stroke="#e74c3c"/><text x="122" y="30" text-anchor="middle" fill="#9be0a3">cp0: [1,2048]</text>
+    <rect x="252" y="10" width="244" height="30" fill="#241416" stroke="#e74c3c"/><text x="374" y="30" text-anchor="middle" fill="#9be0a3">cp1: [1,2048]</text>
+    <rect x="504" y="10" width="244" height="30" fill="#2a1614" stroke="#e74c3c"/><text x="626" y="30" text-anchor="middle" fill="#9be0a3">cp2: [1,2048]</text>
+    <rect x="756" y="10" width="244" height="30" fill="#241416" stroke="#e74c3c"/><text x="878" y="30" text-anchor="middle" fill="#9be0a3">cp3: [1,2048]</text>
+  </g>
+  <!-- 4 rank boxes -->
+  <g transform="translate(40,150)">
+    <text x="0" y="0" fill="#fff">attention 内部：Q 保持本地段，K/V all-gather 成完整序列</text>
+    <g transform="translate(0,14)">
+      <rect width="244" height="120" rx="8" fill="#0e1219" stroke="#e74c3c"/>
+      <text x="122" y="20" text-anchor="middle" fill="#e74c3c" font-weight="700">cp rank0</text>
+      <text x="12" y="42" fill="#9be0a3">Q(本地): [1,2048,16,128]</text>
+      <text x="12" y="62" fill="#9be0a3">K,V(all-gather): [1,8192,4,128]</text>
+      <text x="12" y="84" fill="#8b94a3" font-size="10">-> out [1,2048,16,128]</text>
+      <text x="12" y="100" fill="#8b94a3" font-size="10">只算第 1 段 query</text>
+    </g>
+    <g transform="translate(252,14)">
+      <rect width="244" height="120" rx="8" fill="#0e1219" stroke="#e74c3c"/>
+      <text x="122" y="20" text-anchor="middle" fill="#e74c3c" font-weight="700">cp rank1</text>
+      <text x="12" y="42" fill="#9be0a3">Q(本地): [1,2048,16,128]</text>
+      <text x="12" y="62" fill="#9be0a3">K,V(all-gather): [1,8192,4,128]</text>
+      <text x="12" y="84" fill="#8b94a3" font-size="10">-> out [1,2048,16,128]</text>
+      <text x="12" y="100" fill="#8b94a3" font-size="10">只算第 2 段 query</text>
+    </g>
+    <g transform="translate(504,14)">
+      <rect width="244" height="120" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-dasharray="4,3"/>
+      <text x="122" y="20" text-anchor="middle" fill="#e74c3c" font-weight="700">cp rank2</text>
+      <text x="12" y="42" fill="#9be0a3">同上结构</text>
+      <text x="12" y="62" fill="#8b94a3" font-size="10">第 3 段 query</text>
+    </g>
+    <g transform="translate(756,14)">
+      <rect width="244" height="120" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-dasharray="4,3"/>
+      <text x="122" y="20" text-anchor="middle" fill="#e74c3c" font-weight="700">cp rank3</text>
+      <text x="12" y="42" fill="#9be0a3">同上结构</text>
+      <text x="12" y="62" fill="#8b94a3" font-size="10">第 4 段 query</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 6-1：CP=4 切序列 + attention 内 all-gather K/V（Q 保持本地段）</p>
+
+<!-- ============ 7: PP schedule ============ -->
+<h2><span class="num">7</span>放大看：Pipeline 1F1B 调度（PP=3，4 PP微批）</h2>
+<p>PP=3 阶段、每个梯度累积微批内 4 个 PP微批的 1F1B。暖色=前向 F，冷色=反向 B。绿箭头=activation 下传，橙箭头=梯度上传。</p>
+<svg viewBox="0 0 1160 300" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="a7g" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#9be0a3"/></marker>
+    <marker id="a7o" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#f0ad4e"/></marker>
+  </defs>
+  <g transform="translate(110,30)">
+    <text x="-90" y="50" text-anchor="end" fill="#1abc9c" font-weight="700">stage0</text>
+    <text x="-90" y="120" text-anchor="end" fill="#1abc9c" font-weight="700">stage1</text>
+    <text x="-90" y="190" text-anchor="end" fill="#1abc9c" font-weight="700">stage2</text>
+    <!-- time arrow -->
+    <text x="0" y="250" fill="#8b94a3">时间 -></text>
+    <line x1="0" y1="240" x2="1000" y2="240" stroke="#272d39"/>
+    <!-- stage0: F0 F1 F2 B0 F3 B1 B2 B3 (8 cells, 70px each) -->
+    <g font-size="11" text-anchor="middle">
+      <rect x="0"   y="30" width="64" height="40" fill="#1abc9c" opacity=".85"/><text x="32" y="55" fill="#0d0f14" font-weight="700">F0</text>
+      <rect x="66"  y="30" width="64" height="40" fill="#1abc9c" opacity=".85"/><text x="98" y="55" fill="#0d0f14" font-weight="700">F1</text>
+      <rect x="132" y="30" width="64" height="40" fill="#1abc9c" opacity=".85"/><text x="164" y="55" fill="#0d0f14" font-weight="700">F2</text>
+      <rect x="198" y="30" width="64" height="40" fill="#0e6b58"/><text x="230" y="55" fill="#fff" font-weight="700">B0</text>
+      <rect x="264" y="30" width="64" height="40" fill="#1abc9c" opacity=".6"/><text x="296" y="55" fill="#0d0f14" font-weight="700">F3</text>
+      <rect x="330" y="30" width="64" height="40" fill="#0e6b58"/><text x="362" y="55" fill="#fff" font-weight="700">B1</text>
+      <rect x="396" y="30" width="64" height="40" fill="#0e6b58"/><text x="428" y="55" fill="#fff" font-weight="700">B2</text>
+      <rect x="462" y="30" width="64" height="40" fill="#0e6b58"/><text x="494" y="55" fill="#fff" font-weight="700">B3</text>
+    </g>
+    <!-- stage1 offset by 1 -->
+    <g font-size="11" text-anchor="middle" transform="translate(66,70)">
+      <rect x="0"   y="30" width="64" height="40" fill="#1abc9c" opacity=".85"/><text x="32" y="55" fill="#0d0f14" font-weight="700">F0</text>
+      <rect x="66"  y="30" width="64" height="40" fill="#1abc9c" opacity=".85"/><text x="98" y="55" fill="#0d0f14" font-weight="700">F1</text>
+      <rect x="132" y="30" width="64" height="40" fill="#0e6b58"/><text x="164" y="55" fill="#fff" font-weight="700">B0</text>
+      <rect x="198" y="30" width="64" height="40" fill="#1abc9c" opacity=".6"/><text x="230" y="55" fill="#0d0f14" font-weight="700">F2</text>
+      <rect x="264" y="30" width="64" height="40" fill="#0e6b58"/><text x="296" y="55" fill="#fff" font-weight="700">B1</text>
+      <rect x="330" y="30" width="64" height="40" fill="#1abc9c" opacity=".6"/><text x="362" y="55" fill="#0d0f14" font-weight="700">F3</text>
+      <rect x="396" y="30" width="64" height="40" fill="#0e6b58"/><text x="428" y="55" fill="#fff" font-weight="700">B2</text>
+      <rect x="462" y="30" width="64" height="40" fill="#0e6b58"/><text x="494" y="55" fill="#fff" font-weight="700">B3</text>
+    </g>
+    <!-- stage2 offset by 2 -->
+    <g font-size="11" text-anchor="middle" transform="translate(132,140)">
+      <rect x="0"   y="30" width="64" height="40" fill="#1abc9c" opacity=".85"/><text x="32" y="55" fill="#0d0f14" font-weight="700">F0</text>
+      <rect x="66"  y="30" width="64" height="40" fill="#0e6b58"/><text x="98" y="55" fill="#fff" font-weight="700">B0</text>
+      <rect x="132" y="30" width="64" height="40" fill="#1abc9c" opacity=".6"/><text x="164" y="55" fill="#0d0f14" font-weight="700">F1</text>
+      <rect x="198" y="30" width="64" height="40" fill="#0e6b58"/><text x="230" y="55" fill="#fff" font-weight="700">B1</text>
+      <rect x="264" y="30" width="64" height="40" fill="#1abc9c" opacity=".6"/><text x="296" y="55" fill="#0d0f14" font-weight="700">F2</text>
+      <rect x="330" y="30" width="64" height="40" fill="#0e6b58"/><text x="362" y="55" fill="#fff" font-weight="700">B2</text>
+      <rect x="396" y="30" width="64" height="40" fill="#1abc9c" opacity=".6"/><text x="428" y="55" fill="#0d0f14" font-weight="700">F3</text>
+      <rect x="462" y="30" width="64" height="40" fill="#0e6b58"/><text x="494" y="55" fill="#fff" font-weight="700">B3</text>
+    </g>
+    <!-- activation arrow F0 s0->s1 -->
+    <line x1="32" y1="70" x2="98" y2="100" stroke="#9be0a3" stroke-width="1.5" marker-end="url(#a7g)"/>
+    <!-- grad arrow B0 s1->s0 -->
+    <line x1="198" y1="100" x2="230" y2="70" stroke="#f0ad4e" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#a7o)"/>
+    <text x="540" y="50" fill="#9be0a3" font-size="11">绿=activation 下传(F)</text>
+    <text x="540" y="68" fill="#f0ad4e" font-size="11">橙=梯度上传(B)</text>
+    <text x="540" y="90" fill="#1abc9c" font-size="11">青=前向F</text>
+    <text x="540" y="108" fill="#0e6b58" font-size="11">深青=反向B</text>
+  </g>
+</svg>
+<p class="figcap">图 7-1：PP=3 阶段 × 4 PP微批的 1F1B 调度示意</p>
+<div class="note">PP=3，32 层 -> 阶段划分约 11/11/10（首末各 -1 层）。末阶段 pp2 持 lm_head + ChunkedLossWrapper。每个梯度累积微批内 4 个 PP微批（local_batch=4 / PP微批size=1），梯度累积微批=2 -> 单优化步共 8 = 2×4。</div>
+
+<!-- ============ 8: FSDP ============ -->
+<h2><span class="num">8</span>放大看：FSDP 参数生命周期（dp_shard=8）</h2>
+<p>FSDP 不改激活 shape，只改参数/梯度/optim 存储。每 rank 只持 1/8 参数；forward 前 all-gather，后 reshard。</p>
+<svg viewBox="0 0 1160 260" font-family="monospace" font-size="12">
+  <defs><marker id="a8" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#e67e22"/></marker></defs>
+  <g transform="translate(30,40)">
+    <rect width="150" height="80" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="75" y="26" text-anchor="middle" fill="#e67e22" font-weight="700">分片参数</text>
+    <text x="75" y="48" text-anchor="middle" fill="#9be0a3">每 rank 1/8</text>
+    <text x="75" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">常驻显存低</text>
+    <line x1="155" y1="40" x2="205" y2="40" stroke="#e67e22" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#a8)"/>
+    <text x="180" y="30" text-anchor="middle" fill="#e67e22" font-size="11">all-gather</text>
+    <rect x="210" width="150" height="80" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="285" y="26" text-anchor="middle" fill="#e67e22" font-weight="700">完整参数</text>
+    <text x="285" y="48" text-anchor="middle" fill="#9be0a3">forward 用</text>
+    <text x="285" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">短暂全量</text>
+    <line x1="365" y1="40" x2="415" y2="40" stroke="#e67e22" stroke-width="2" marker-end="url(#a8)"/>
+    <text x="390" y="30" text-anchor="middle" fill="#e67e22" font-size="11">reshard</text>
+    <rect x="420" width="150" height="80" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="495" y="26" text-anchor="middle" fill="#e67e22" font-weight="700">重新分片</text>
+    <text x="495" y="48" text-anchor="middle" fill="#9be0a3">省显存</text>
+    <line x1="575" y1="40" x2="625" y2="40" stroke="#e67e22" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#a8)"/>
+    <text x="600" y="30" text-anchor="middle" fill="#e67e22" font-size="11">backward</text>
+    <rect x="630" width="150" height="80" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="705" y="26" text-anchor="middle" fill="#e67e22" font-weight="700">梯度 partial</text>
+    <text x="705" y="48" text-anchor="middle" fill="#9be0a3">reduce-scatter</text>
+    <text x="705" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">-> 分片 grad</text>
+    <line x1="785" y1="40" x2="835" y2="40" stroke="#e67e22" stroke-width="2" marker-end="url(#a8)"/>
+    <rect x="840" width="150" height="80" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="915" y="26" text-anchor="middle" fill="#e67e22" font-weight="700">AdamW</text>
+    <text x="915" y="48" text-anchor="middle" fill="#9be0a3">分片上原地更新</text>
+    <text x="915" y="66" text-anchor="middle" fill="#8b94a3" font-size="10">只更新 1/8 参数</text>
+  </g>
+  <g transform="translate(30,160)">
+    <rect width="1090" height="80" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="16" y="24" fill="#fff" font-size="13">FSDP 要点（dp_shard=8）</text>
+    <g font-size="12" fill="#c8d0dc">
+      <text x="16" y="48">激活 shape 不受影响（图 4-1 全部 shape 在有无 FSDP 时一致）</text>
+      <text x="16" y="68">参数/梯度/optim state 全部按 8 分片；<code>fsdp</code> mesh = dp_s·cp = 8·4 = <tspan fill="#9be0a3" font-weight="700">32</tspan> rank 做通信</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 8-1：FSDP(8) 参数 all-gather -> reshard -> backward -> reduce-scatter -> optimizer</p>
+
+<!-- ============ 9: backward+optim ============ -->
+<h2><span class="num">9</span>反向与优化：一次完整 train_step</h2>
+<p><code>trainer.py::train_step</code>（行 757）后半段：8 个(梯度累积微批2×PP微批4)前向反向后，token all-reduce、梯度裁剪、optimizer、lr、checkpoint。</p>
+<svg viewBox="0 0 1160 320" font-family="monospace" font-size="12">
+  <defs><marker id="a9" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+  <g transform="translate(20,30)">
+    <rect width="130" height="70" rx="8" fill="#0e1219" stroke="#f0ad4e" stroke-width="2"/>
+    <text x="65" y="26" text-anchor="middle" fill="#f0ad4e" font-weight="700">8=累积2×PP4</text>
+    <text x="65" y="46" text-anchor="middle" fill="#9be0a3">forward+backward</text>
+    <text x="65" y="62" text-anchor="middle" fill="#8b94a3" font-size="10">累积2×PP4</text>
+    <line x1="135" y1="65" x2="175" y2="65" stroke="#8b94a3" stroke-width="2" marker-end="url(#a9)"/>
+    <rect x="180" width="150" height="70" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="255" y="26" text-anchor="middle" fill="#2ecc71" font-weight="700">valid_tokens</text>
+    <text x="255" y="46" text-anchor="middle" fill="#9be0a3">dist_sum</text>
+    <text x="255" y="62" text-anchor="middle" fill="#8b94a3" font-size="10">over loss_mesh(32)</text>
+    <line x1="335" y1="65" x2="375" y2="65" stroke="#8b94a3" stroke-width="2" marker-end="url(#a9)"/>
+    <rect x="380" width="150" height="70" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="455" y="26" text-anchor="middle" fill="#2ecc71" font-weight="700">clip_grad_norm</text>
+    <text x="455" y="46" text-anchor="middle" fill="#9be0a3">foreach + all-reduce</text>
+    <text x="455" y="62" text-anchor="middle" fill="#8b94a3" font-size="10">pp_mesh / EP 分组</text>
+    <line x1="535" y1="65" x2="575" y2="65" stroke="#8b94a3" stroke-width="2" marker-end="url(#a9)"/>
+    <rect x="580" width="150" height="70" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="655" y="26" text-anchor="middle" fill="#e67e22" font-weight="700">optimizer.step</text>
+    <text x="655" y="46" text-anchor="middle" fill="#9be0a3">AdamW 分片更新</text>
+    <text x="655" y="62" text-anchor="middle" fill="#8b94a3" font-size="10">FSDP 1/8 shard</text>
+    <line x1="735" y1="65" x2="775" y2="65" stroke="#8b94a3" stroke-width="2" marker-end="url(#a9)"/>
+    <rect x="780" width="130" height="70" rx="8" fill="#0e1219" stroke="#8b94a3"/>
+    <text x="845" y="26" text-anchor="middle" fill="#c8d0dc" font-weight="700">lr_scheduler</text>
+    <text x="845" y="46" text-anchor="middle" fill="#9be0a3">warmup+linear</text>
+    <line x1="915" y1="65" x2="955" y2="65" stroke="#8b94a3" stroke-width="2" marker-end="url(#a9)"/>
+    <rect x="960" width="170" height="70" rx="8" fill="#0e1219" stroke="#8b94a3"/>
+    <text x="1045" y="26" text-anchor="middle" fill="#c8d0dc" font-weight="700">checkpoint.save</text>
+    <text x="1045" y="46" text-anchor="middle" fill="#9be0a3">DCP + sd_adapter</text>
+    <text x="1045" y="62" text-anchor="middle" fill="#8b94a3" font-size="10">异步 staging</text>
+  </g>
+  <g transform="translate(20,150)">
+    <rect width="1120" height="150" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="16" y="24" fill="#fff" font-size="13">关键细节</text>
+    <g font-size="12" fill="#c8d0dc">
+      <text x="16" y="48"><tspan fill="#f0ad4e">梯度累积：</tspan>8 个(梯度累积微批2×PP微批4) loss.backward() 梯度直接加到 .grad，最后一次性裁剪+更新</text>
+      <text x="16" y="70"><tspan fill="#2ecc71">global_valid_tokens：</tspan>每 rank 数 (labels!=IGNORE_INDEX).sum()，在 loss_mesh(=dp_r·dp_s·cp=32) 上 all-reduce</text>
+      <text x="16" y="92"><tspan fill="#2ecc71">clip_grad_norm_：</tspan>foreach 算总范数，pp_mesh 上 all-reduce；EP 开启时按专家分组</text>
+      <text x="16" y="114"><tspan fill="#e67e22">optimizer：</tspan>在 FSDP 分片参数上原地 AdamW，每 rank 只更新 1/8 参数</text>
+      <text x="16" y="136"><tspan fill="#8b94a3">checkpoint：</tspan>DCP 异步 staging；Llama3StateDictAdapter 转换到 HF 布局（wqkv 拆回 wq/wk/wv）</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 9-1：train_step 后半段（8 个(累积2×PP4)梯度累加 -> token all-reduce -> clip -> optimizer -> lr -> checkpoint）</p>
+
+<!-- ============ 10: summary ============ -->
+<h2><span class="num">10</span>一图总结：一次优化步的全景</h2>
+<svg viewBox="0 0 1160 380" font-family="monospace" font-size="12">
+  <defs><marker id="as" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+  <g transform="translate(20,20)">
+    <rect width="200" height="60" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="100" y="26" text-anchor="middle" fill="#2ecc71" font-weight="700">数据</text>
+    <text x="100" y="46" text-anchor="middle" fill="#9be0a3">global 64 seq × 8192</text>
+    <line x1="100" y1="65" x2="100" y2="95" stroke="#2ecc71" stroke-width="2" marker-end="url(#as)"/>
+    <rect y="100" width="200" height="60" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="100" y="126" text-anchor="middle" fill="#2ecc71" font-weight="700">DP 切 batch</text>
+    <text x="100" y="146" text-anchor="middle" fill="#9be0a3">batch_degree=8</text>
+    <line x1="100" y1="165" x2="100" y2="195" stroke="#e74c3c" stroke-width="2" marker-end="url(#as)"/>
+    <rect y="200" width="200" height="60" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="100" y="226" text-anchor="middle" fill="#e74c3c" font-weight="700">CP 切序列</text>
+    <text x="100" y="246" text-anchor="middle" fill="#9be0a3">8192->2048</text>
+    <line x1="100" y1="265" x2="100" y2="295" stroke="#1abc9c" stroke-width="2" marker-end="url(#as)"/>
+    <rect y="300" width="200" height="56" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+    <text x="100" y="320" text-anchor="middle" fill="#1abc9c" font-weight="700">拆PP微批</text>
+    <text x="100" y="340" text-anchor="middle" fill="#9be0a3">4 PP微批 × 2 梯度累积微批 = 8</text>
+  </g>
+  <g transform="translate(280,20)">
+    <rect width="240" height="336" rx="10" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="120" y="26" text-anchor="middle" fill="#3498db" font-weight="700" font-size="14">单 rank 单 PP微批前向</text>
+    <g font-size="11.5" fill="#9be0a3">
+      <text x="16" y="54">tokens [1,2048]</text>
+      <text x="16" y="76">embed [1,1024,4096]  (TP+SP)</text>
+      <text x="16" y="98">norm [1,1024,4096]  (SP)</text>
+      <text x="16" y="120">wqkv [1,2048,3072]  (TP 列)</text>
+      <text x="16" y="142">attn [1,2048,16,128] (CP)</text>
+      <text x="16" y="164">wo [1,1024,4096]  (TP 行+SP)</text>
+      <text x="16" y="186">ffn [1,1024,4096]  (TP+SP)</text>
+      <text x="16" y="208">×~11 层 / 阶段  (PP=3)</text>
+      <text x="16" y="230">root norm [1,2048,4096]</text>
+      <text x="16" y="252">lm_head [1,2048,64128] (TP)</text>
+      <text x="16" y="274">loss 标量</text>
+      <text x="16" y="304" fill="#f0ad4e">-> backward (对偶通信)</text>
+    </g>
+  </g>
+  <g transform="translate(580,20)">
+    <line x1="-60" y1="170" x2="-10" y2="170" stroke="#8b94a3" stroke-width="2" marker-end="url(#as)"/>
+    <rect width="200" height="336" rx="10" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="100" y="26" text-anchor="middle" fill="#e67e22" font-weight="700" font-size="14">梯度与优化</text>
+    <g font-size="11.5" fill="#9be0a3">
+      <text x="16" y="54">8(累积2×PP4)梯度累加</text>
+      <text x="16" y="76">valid_tokens all-reduce</text>
+      <text x="16" y="98">(loss_mesh=32, DP+CP)</text>
+      <text x="16" y="120">clip_grad_norm (PP+EP)</text>
+      <text x="16" y="142">AdamW 在 FSDP 1/8 分片</text>
+      <text x="16" y="164">lr_scheduler.step</text>
+      <text x="16" y="186">checkpoint.save (DCP)</text>
+      <text x="16" y="208">validate (可选)</text>
+      <text x="16" y="240" fill="#8b94a3">每步全局 token：</text>
+      <text x="16" y="260" fill="#9be0a3" font-weight="700">524288</text>
+      <text x="16" y="282" fill="#8b94a3">每 rank 算 token：</text>
+      <text x="16" y="302" fill="#9be0a3" font-weight="700">16384</text>
+    </g>
+  </g>
+  <g transform="translate(820,30)">
+    <text x="0" y="0" fill="#fff" font-size="14">颜色 = 并行（互不相同）</text>
+    <g font-size="12" fill="#c8d0dc">
+      <rect x="0" y="12" width="14" height="14" fill="#2ecc71"/><text x="22" y="24">DP (度=8)</text>
+      <rect x="0" y="34" width="14" height="14" fill="#e67e22"/><text x="22" y="46">FSDP (度=8)</text>
+      <rect x="0" y="56" width="14" height="14" fill="#3498db"/><text x="22" y="68">TP (度=2)</text>
+      <rect x="0" y="78" width="14" height="14" fill="#f1c40f"/><text x="22" y="90">SP (随TP)</text>
+      <rect x="0" y="100" width="14" height="14" fill="#e74c3c"/><text x="22" y="112">CP (度=4)</text>
+      <rect x="0" y="122" width="14" height="14" fill="#1abc9c"/><text x="22" y="134">PP (度=3)</text>
+      <rect x="0" y="144" width="14" height="14" fill="#9b59b6"/><text x="22" y="156">EP (度=1)</text>
+    </g>
+    <g font-size="12" fill="#8b94a3">
+      <text x="0" y="188">实线箭头 = 计算/数据流</text>
+      <text x="0" y="206">虚线箭头 = 通信</text>
+    </g>
+    <g font-size="12" fill="#9be0a3">
+      <text x="0" y="238" font-weight="700">一句话：</text>
+      <text x="0" y="258">batch 给 DP(8)，序列给</text>
+      <text x="0" y="276">CP(4)+SP，特征给 TP(2)，</text>
+      <text x="0" y="294">层给 PP(3)，参数给 FSDP(8)。</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 10-1：一次优化步全景（数据 -> 并行前向 -> 反向 -> 优化）</p>
+
+<div class="card">
+<h3>文字小结</h3>
+<ul>
+<li><b>度数全互异</b>：TP=2 / CP=4 / PP=3 / dp_shard=8 / dp_replicate=1，颜色也全错开（蓝/红/青/橙/绿/黄/紫），图上不会混。</li>
+<li><b>batch_degree = dp_r·dp_s = 8</b>，只用于数据加载与梯度累积，不含 CP。</li>
+<li><b>序列被两重切</b>：CP=4 切 8192->2048（attention 内 K/V all-gather 回完整 8192），SP/TP=2 再切 2048->1024。norm/FFN 输入本地 S = 8192/(cp·tp) = 1024。</li>
+<li><b>TP=2 切特征维</b>：QKV/FFN 列并行切输出，wo/w2 行并行切输入并 reduce-scatter 回 SP；embedding/lm_head 切 vocab。</li>
+<li><b>PP=3 切深度</b>：32 层分 3 阶段（~11/11/10）；末阶段持 lm_head + ChunkedLoss。</li>
+<li><b>FSDP=8 切参数</b>：每 rank 持 1/8 参数，不改激活 shape。</li>
+<li><b>一次优化步</b>：global 64 -> 8个(梯度累积微批2×PP微批4) -> 每PP微批 [1,8192]->[1,2048]->embed[1,1024,4096]->…->lm_head[1,2048,64128]->标量 loss->反向->8个(累积2×PP4)梯度累加->clip->AdamW(FSDP 1/8)->lr->checkpoint。</li>
+</ul>
+</div>
+
+<p class="sub">全文图示均为内嵌 SVG（可缩放、无外部依赖）。基于 torchtitan main 分支：trainer.py、distributed/parallel_dims.py、distributed/context_parallel.py、models/common/{decoder,decoder_sharding,attention,feed_forward}.py、models/llama3/{model,sharding,parallelize,config_registry,__init__}.py、config/configs.py。</p>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>04 · 并行技术</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main>
+  <h1>04 · 并行技术</h1>
+  <p class="page-meta">层次：<span class="layer-tag layer-mid">关键技术</span> 目标：理解设备网格、FSDP/HSDP、TP/SP、PP、CP、EP、激活重算、compile 与三种 SPMD 后端。</p>
+
+  <div class="toc">
+    <b>本页目录</b>
+    <a href="#mesh">1. ParallelDims 与设备网格 Mesh</a>
+    <a href="#fsdp">2. 数据并行：FSDP / HSDP</a>
+    <a href="#tp-sp">3. 张量并行 + 序列并行 (TP/SP)</a>
+    <a href="#pp">4. 流水线并行 (PP)</a>
+    <a href="#cp">5. 上下文并行 (CP)</a>
+    <a href="#ep">6. 专家并行 (EP) 与 MoE</a>
+    <a href="#ac">7. 激活重算 (AC)</a>
+    <a href="#compile">8. torch.compile</a>
+    <a href="#spmd-backends">9. 三种 SPMD 后端</a>
+    <a href="#combinations">10. 组合与约束</a>
+  </div>
+
+  <h2 id="mesh">1. ParallelDims 与设备网格 Mesh</h2>
+  <p>所有并行都建立在 <code>ParallelDims</code>（<code>distributed/parallel_dims.py</code>）之上。它由 <code>ParallelismConfig</code> + <code>world_size</code> 构造，描述六个并行维度的乘积必须等于 world_size：</p>
+  <pre><code><span class="cmt"># parallel_dims.py</span>
+dp_replicate · dp_shard · cp · tp · pp · ep == world_size
+<span class="cmt"># 其中 dp_shard=-1 表示「用剩余 rank 自动填满」</span></code></pre>
+  <p><code>build_mesh()</code> 从一张 1D 的 <code>world</code> 网格出发，<b>展开（unflatten）</b>出带名字的子网格。命名轴（<code>MeshAxisName</code>）是理解一切的钥匙：</p>
+  <table>
+    <tr><th>轴名</th><th>含义</th><th>由谁用</th></tr>
+    <tr><td><code>pp</code></td><td>流水线并行</td><td>PP 切分</td></tr>
+    <tr><td><code>dp_replicate</code></td><td>复制式 DP（DDP/HSDP 的复制轴）</td><td>DDP / HSDP</td></tr>
+    <tr><td><code>dp_shard</code> / <code>fsdp</code></td><td>分片式 DP（FSDP 轴；legacy 把 dp_shard·cp 折成 <code>fsdp</code>）</td><td>FSDP</td></tr>
+    <tr><td><code>cp</code></td><td>上下文并行（沿序列维）</td><td>CP</td></tr>
+    <tr><td><code>tp</code></td><td>张量并行</td><td>TP / SP</td></tr>
+    <tr><td><code>ep</code> / <code>efsdp</code></td><td>专家并行 / MoE 区的 FSDP</td><td>EP / MoE</td></tr>
+    <tr><td><code>batch</code></td><td>dp_replicate·dp_shard 的数据加载维</td><td>dataloader 分片</td></tr>
+    <tr><td><code>loss</code></td><td>dp_replicate·dp_shard·cp 的 loss 聚合维</td><td>loss all-reduce</td></tr>
+  </table>
+  <p>代码里拿到子网格的方式是 <code>parallel_dims.get_mesh("tp")</code> / <code>get_optional_mesh(...)</code>（禁用时返回 <code>None</code>）。</p>
+  <div class="callout info">
+    <div class="title">axis 与 dim 的命名铁律</div>
+    <code>axis</code> 永远指 <code>DeviceMesh</code> 的轴（如 <code>tp</code>）；<code>dim</code> 指张量维或网格形状。代码、注释、文档严格区分，避免歧义。上游 PyTorch API（如 <code>mesh_dim_names</code>）保留原拼写，但在 torchtitan 自有代码里统一用 <code>axis</code>。
+  </div>
+
+  <h2 id="fsdp">2. 数据并行：FSDP / HSDP</h2>
+  <p>由 <code>apply_fsdp_to_decoder</code>（<code>distributed/fsdp.py</code>）落地，核心是 PyTorch FSDP2 的 <code>fully_shard</code>。所有稠密与 MoE decoder 共用此函数。</p>
+  <ul>
+    <li><b>FSDP</b>：仅 <code>dp_shard &gt; 1</code> → 用 <code>fsdp</code> 网格。</li>
+    <li><b>HSDP</b>：<code>dp_replicate &gt; 1</code> 且 <code>dp_shard &gt; 1</code> → 网格带 <code>dp_replicate</code> 轴，权重在 replicate 轴内复制、在 shard 轴内分片。</li>
+    <li><b>权重绑定</b>：若 <code>enable_weight_tying</code>，把 <code>tok_embeddings / norm / lm_head</code> 合成一个 FSDP 单元，避免重复 all-gather。</li>
+    <li><b>MixedPrecisionPolicy</b>：参数用 <code>mixed_precision_param</code>（默认 bf16），归约用 <code>mixed_precision_reduce</code>（默认 fp32）。</li>
+    <li><b>reshard_after_forward</b>：<code>"default"</code> 在 PP 下默认不 reshard（避免每 microbatch 重复 all-gather）；<code>"always"</code>/<code>"never"</code> 显式控制。</li>
+  </ul>
+  <pre><code><span class="cmt"># fsdp.py （稠密块）</span>
+fully_shard(model.tok_embeddings, **fsdp_config, reshard_after_forward=...)
+<span class="kw">for</span> layer_id, block <span class="kw">in</span> model.layers.items():
+    fully_shard(block, **fsdp_config, reshard_after_forward=...)
+fully_shard(model, **fsdp_config)
+<span class="fn">disable_fsdp_gradient_division</span>(model)   <span class="cmt"># 关掉自动梯度除法，改由 global token 数归一化</span></code></pre>
+  <div class="callout warn">
+    <div class="title">EP 下的显式预取</div>
+    当 <code>ep &gt; 1</code>，MoE 的 D2H 同步会干扰 FSDP 隐式预取，因此 <code>apply_fsdp_to_decoder</code> 显式设置 forward/backward 的 <code>set_modules_to_*_prefetch</code>，把相邻 transformer block 串成预取链。
+  </div>
+
+  <h2 id="tp-sp">3. 张量并行 + 序列并行 (TP/SP)</h2>
+  <p>TP 沿隐藏维（colwise/rowwise）切分线性层；SP 是 TP 的伴生优化：沿<b>序列维</b>切分激活，用 ring/all-gather 在 attention/FFN 边界重聚，从而把 LayerNorm/RMSNorm 也分到各 rank 上计算（否则 norm 输入需 Replicate，TP rank 间要通信）。</p>
+  <ul>
+    <li><code>enable_sequence_parallel=True</code> 为默认；切分声明写在 <code>ShardingConfig</code> 里（见 05 §声明式切分）。</li>
+    <li>attention 的 <code>wo</code> 与 FFN 的 <code>w2</code> 做 reduce-scatter 到 <code>Shard(1)</code>（SP）；其余激活 Replicate 或 <code>Shard(1)</code>。</li>
+    <li>异步 TP（<code>enable_async_tensor_parallel</code>）要求 model 被 compile，设 <code>torch._inductor.config._micro_pipeline_tp=True</code>，让 TP 通信与计算微流水线重叠。</li>
+  </ul>
+  <div class="callout info">
+    <div class="title">seq_len 整除约束</div>
+    开启 SP 时 <code>seq_len</code> 必须被 <code>tp</code> 整除；开启 CP 时（load balancer 默认开启）必须被 <code>2·cp</code> 整除。<code>Trainer.__init__</code> 会显式校验。
+  </div>
+
+  <h2 id="pp">4. 流水线并行 (PP)</h2>
+  <p>由 <code>pipeline_llm</code>（<code>distributed/pipeline_parallel.py</code>）落地，基于 <code>torch.distributed.pipelining</code>：</p>
+  <div class="dia col" style="gap:4px">
+    <div class="flow-step"><span class="num">1</span><span class="step-title">算元数据</span>　_get_pipeline_metadata：虚拟 stage 数、每层权重（首/末级各减 1 层，因为 embedding/output 更重）</div>
+    <div class="flow-step"><span class="num">2</span><span class="step-title">拆模块</span>　_generate_llm_fqn_per_model_part / module_fqns_per_model_part 决定每个 stage 含哪些 FQN；_split_module 深拷贝并裁剪出 per-stage chunk</div>
+    <div class="flow-step"><span class="num">3</span><span class="step-title">建 PipelineStage</span>　每个 PP rank 按 _get_pp_rank_to_stage_indices_mapping 取自己的 stage 集合</div>
+    <div class="flow-step"><span class="num">4</span><span class="step-title">逐 stage 应用 SPMD</span>　对每个 model_part 调 parallelize_fn（FSDP/TP/AC/compile）</div>
+    <div class="flow-step"><span class="num">5</span><span class="step-title">建 schedule</span>　_build_pipeline_schedule：1F1B / Interleaved1F1B / ZeroBubble 等；microbatch = local_batch / pipeline_parallel_microbatch_size</div>
+  </div>
+  <div class="callout warn">
+    <div class="title">PP 的约束</div>
+    <ul>
+      <li>虚拟 stage 数必须能被 <code>pp</code> 整除。</li>
+      <li>单 stage 调度（如 1F1B）要求每 rank 恰好 1 stage；looped 调度（如 Interleaved1F1B）要求每 rank ≥ 2 stage。</li>
+      <li>PP 与 VarlenAttention 不兼容（须用 FlexAttention 后端）。</li>
+      <li>权重共享（weight tying）与 PP 不兼容。</li>
+    </ul>
+  </div>
+
+  <h2 id="cp">5. 上下文并行 (CP)</h2>
+  <p>CP 沿<b>序列维</b>把长序列切到多个 rank，attention 内部用 ring/load-balanced all-gather 收集 K/V，使每个 rank 只需算自己那一段序列的完整 attention（基于 FlashAttention 的 varlen/CP 实现）。</p>
+  <ul>
+    <li><code>apply_cp_to_forward</code> 在 <code>Module.parallelize()</code> <b>之前</b>包裹 attention 的 forward（FlexAttention 用 <code>flex_cp_allgather</code>，SDPA 用 DTensor <code>Shard(1)</code>）。</li>
+    <li><code>prepare_context_parallel_input</code>（在 <code>post_dataloading_process</code> 内调用）沿序列维切分 inputs/labels/positions/masks。</li>
+    <li>负载均衡：<code>headtail</code>（SDPA）/ <code>ptrr</code>（FlexAttention）/ <code>None</code>。</li>
+  </ul>
+  <div class="callout info">
+    <div class="title">CP 与 FSDP 的关系</div>
+    即使「全局 batch=1 没有 DP」，只要用了 CP 就仍应用 FSDP（FSDP 轴 = dp_shard·cp），以复用其权重 all-gather 与梯度 reduce-scatter。这保证 CP 激活的权重分片语义正确。
+  </div>
+
+  <h2 id="ep">6. 专家并行 (EP) 与 MoE</h2>
+  <p>MoE 层里，专家被切到 <code>ep</code> 个 rank（与 dense 区共享同一批物理设备，约束 <code>dp_shard·cp·tp == efsdp·ep</code>）。</p>
+  <ul>
+    <li><code>efsdp = dp_shard·cp·tp / ep</code>：MoE 区的 FSDP 分片度。</li>
+    <li><code>apply_fsdp_to_decoder</code> 对 MoE block 用 <code>shard_placement_fn</code>：专家走 <code>edp_mesh</code>，非专家参数走 <code>dp_mesh</code>；专家数 &lt; FSDP 度时用 <code>Shard(1)</code> 避免 padding。</li>
+    <li>MoE 负载均衡（aux-loss-free）通过优化器 step 前的 hook 更新 expert bias（见 06 §优化器）。</li>
+  </ul>
+
+  <h2 id="ac">7. 激活重算 (AC)</h2>
+  <p>由 <code>distributed/activation_checkpoint.py</code> 提供三种策略（通过 <code>activation_checkpoint</code> 配置字段选择）：</p>
+  <table>
+    <tr><th>策略</th><th>行为</th></tr>
+    <tr><td><code>SelectiveAC</code>（默认）</td><td>按 op 选择性保存：保存昂贵的 compute/comm op（SDPA、linear、all-reduce、MoE dispatch…），其余重算；每两个 mm 强制重算一个以平衡显存/算力</td></tr>
+    <tr><td><code>FullAC</code></td><td>整个 transformer block 在反向时重算</td></tr>
+    <tr><td><code>MemoryBudgetAC</code></td><td>让编译器 partitioner 按内存预算在 compute/显存间权衡（<b>必须编译 model</b>）</td></tr>
+  </table>
+  <div class="callout warn">
+    <div class="title">AC 与数值一致性</div>
+    AC 是「非计算类改动」，按 CLAUDE.md 要求，开启/更换 AC 策略必须让 <code>--debug.seed=42 --debug.deterministic</code> 下的 loss 与改动前逐位一致（或用 C4 验证收敛）。
+  </div>
+
+  <h2 id="compile">8. torch.compile</h2>
+  <p><code>CompileConfig</code> 控制是否编译、编译哪些组件（<code>model</code> / <code>loss</code>）。<code>apply_compile</code> 在 AC 包裹之后、FSDP 之前对 <code>model</code> 编译；loss 的编译在 <code>BaseLoss._maybe_compile</code> 里。AC 必须在 compile 之前（这样编译能看见 wrapped 后的图）。</p>
+
+  <h2 id="spmd-backends">9. 三种 SPMD 后端</h2>
+  <p><code>parallelism.spmd_backend</code> 决定张量如何被切分和类型检查，影响 <code>Module.parallelize()</code> 与 mesh 的折叠方式：</p>
+  <table>
+    <tr><th>后端</th><th>特点</th></tr>
+    <tr><td><code>default</code></td><td>传统 torchtitan 路径；<code>fsdp</code> 把 dp_shard·cp 折成单一轴；in-band 只保留 <code>tp/ep</code></td></tr>
+    <tr><td><code>full_dtensor</code></td><td>全 DTensor 路径；FSDP 用 <code>dp_mesh_dims</code> 显式声明 dp_shard+cp 折叠；SPMD 校验更严格</td></tr>
+    <tr><td><code>spmd_types</code></td><td>基于 <code>spmd_types</code> 的类型系统；forward/backward 全程做 SPMD 类型检查（<code>debug.spmd_typechecking</code>）；<code>dp</code> 把 dp_replicate·dp_shard 折成单一逻辑轴</td></tr>
+  </table>
+  <div class="callout info">
+    <div class="title">同一份 ShardingConfig，三种后端</div>
+    声明式切分（SpmdLayout）的好处就在这里：模型代码只写一次 placement 声明，<code>Module.parallelize()</code> 在运行时根据 <code>spmd_backend</code> 选择 DTensor / spmd_types 的落地实现。这也是为什么 CLAUDE.md 鼓励「声明式而非命令式」并行。
+  </div>
+
+  <h2 id="combinations">10. 组合与约束</h2>
+  <pre><code><span class="cmt"># 常见组合示例</span>
+<span class="cmt"># 8B 单节点：FSDP 分片</span>
+--parallelism.data_parallel_shard_degree=8
+<span class="cmt"># 70B：TP8 + FSDP</span>
+--parallelism.tensor_parallel_degree=8
+<span class="cmt"># 405B：TP8 + 异步 TP + float8</span>
+--parallelism.tensor_parallel_degree=8 --parallelism.enable_async_tensor_parallel
+<span class="cmt"># 5D 并行：PP × (DP_rep × DP_shard × CP × TP) × EP</span>
+--parallelism.pipeline_parallel_degree=4 --parallelism.data_parallel_replicate_degree=2 \
+--parallelism.tensor_parallel_degree=4 --parallelism.context_parallel_degree=2 \
+--parallelism.expert_parallel_degree=8</code></pre>
+  <div class="callout key">
+    <div class="title">改并行代码时的铁律（来自 distributed.md 规则）</div>
+    1) 永远显式校验 mesh 轴与 placement，绝不假设 1D mesh；2) 文档化每个 <code>to_local</code>/<code>local_map</code> 的 <code>grad_placements</code>；3) 考虑所有并行组合，bug 报告要带并行配置；4) 模型无关代码放 <code>distributed/</code>；5) 改动收敛行为要强理由 + 充分测试。
+  </div>
+
+  <div class="callout tip">
+    <div class="title">下一步</div>
+    并行讲的是「怎么分」，模型讲的是「分什么、在哪分」—— 进入 <a href="05_model_system.html">05 模型系统</a>，看声明式切分 <code>ShardingConfig</code> 与 <code>Module.parallelize()</code> 的真实代码。
+  </div>
+</main>
+<script src="common.js"></script>
+</body>
+</html>

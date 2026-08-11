@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>07 · 关键代码走读</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main>
+  <h1>07 · 关键代码走读</h1>
+  <p class="page-meta">层次：<span class="layer-tag layer-fine">关键代码 · 细</span> 目标：逐段注释最关键的真实代码片段，把前几页的概念钉死在源码上。</p>
+
+  <div class="toc">
+    <b>本页目录</b>
+    <a href="#init">1. Trainer.__init__（组装顺序）</a>
+    <a href="#parallelize-llama">2. parallelize_llama（并行编排）</a>
+    <a href="#fsdp">3. apply_fsdp_to_decoder（FSDP 落地）</a>
+    <a href="#pp">4. pipeline_llm（PP 拆分与调度）</a>
+    <a href="#fwd">5. forward_backward_step（前向反向）</a>
+    <a href="#chunked">6. ChunkedLossWrapper 关键段</a>
+  </div>
+
+  <h2 id="init">1. Trainer.__init__（组装顺序）</h2>
+  <p>下面是 <code>trainer.py</code> 中把「配置变成可训练对象」的核心段落，按真实顺序排列：</p>
+  <pre><code><span class="cmt"># ① 设备与分布式</span>
+device_module, device_type = utils.device_module, utils.device_type
+self.device = torch.device(<span class="str">f"{device_type}:{int(os.environ['LOCAL_RANK'])}"</span>)
+device_module.<span class="fn">set_device</span>(self.device)
+self.parallel_dims = self.<span class="fn">init_distributed</span>()          <span class="cmt"># process group + ParallelDims</span>
+
+<span class="cmt"># ② seq_len 整除校验（SP/CP 约束）</span>
+seq_len_divisor = (parallel_dims.tp <span class="kw">if</span> enable_sp <span class="kw">else</span> <span class="num">1</span>) * (<span class="num">2</span>*cp <span class="kw">if</span> cp&gt;<span class="num">1</span> <span class="kw">else</span> <span class="num">1</span>)
+<span class="kw">assert</span> config.training.seq_len % seq_len_divisor == <span class="num">0</span>
+
+dist_utils.<span class="fn">set_spmd_backend</span>(config.parallelism.spmd_backend)
+config.<span class="fn">maybe_log</span>()
+dist_utils.<span class="fn">set_determinism</span>(parallel_dims, self.device, config.debug, distinct_seed_mesh_dims=[<span class="str">"pp"</span>])
+
+<span class="cmt"># ③ 把训练配置灌进模型 config，并生成 sharding_config</span>
+model_config = model_spec.model
+model_config.<span class="fn">update_from_config</span>(config=config)
+<span class="kw">if</span> config.override.imports:
+    <span class="fn">apply_overrides</span>(config.override, config)          <span class="cmt"># 在一切构建前</span>
+
+<span class="cmt"># ④ 在 meta 设备上构建模型（不占显存）</span>
+<span class="kw">with</span> torch.device(<span class="str">"meta"</span>), utils.<span class="fn">set_default_dtype</span>(...):
+    model = model_config.<span class="fn">build</span>()
+model.<span class="fn">verify_module_protocol</span>()
+
+<span class="cmt"># ⑤ 并行化 + 权重初始化</span>
+init_device = device_type  <span class="cmt"># gpu / cpu / cpu-offload</span>
+<span class="kw">with</span> sl.<span class="fn">log_trace_span</span>(<span class="str">"model_parallelism_init"</span>):
+    <span class="kw">if</span> parallel_dims.pp_enabled:
+        (self.pp_schedule, self.model_parts, ...) = model_spec.pipelining_fn(model, ...)
+        <span class="kw">for</span> m <span class="kw">in</span> self.model_parts:
+            m.<span class="fn">to_empty</span>(device=init_device)
+            cast(BaseModel, m).<span class="fn">init_weights</span>(buffer_device=buffer_device)
+    <span class="kw">else</span>:
+        model = model_spec.parallelize_fn(model, ...)       <span class="cmt"># FSDP/TP/AC/compile</span>
+        model.<span class="fn">to_empty</span>(device=init_device)
+        cast(BaseModel, model).<span class="fn">init_weights</span>(buffer_device=buffer_device)
+        self.model_parts = [model]
+
+<span class="cmt"># ⑥ 给 ChunkedLossWrapper 挂 lm_head</span>
+<span class="kw">if</span> <span class="kw">isinstance</span>(self.loss_fn, <span class="cls">ChunkedLossWrapper</span>):
+    lm_head = (self.model_parts[-<span class="num">1</span>].lm_head <span class="kw">if</span> pp <span class="kw">else</span> self.model_parts[<span class="num">0</span>].lm_head)
+    self.loss_fn.<span class="fn">set_lm_head</span>(lm_head)
+    self.model_parts[-<span class="num">1</span>]._skip_lm_head = <span class="kw">True</span>
+
+<span class="cmt"># ⑦ 优化器/学习率（必须在并行之后）</span>
+self.optimizers = config.optimizer.<span class="fn">build</span>(model_parts=self.model_parts)
+self.lr_schedulers = config.lr_scheduler.<span class="fn">build</span>(optimizers=self.optimizers, training_steps=...)
+
+<span class="cmt"># ⑧ 先初始化 trainer 状态，才能 load 检查点</span>
+self.step = <span class="num">0</span>; self.ntokens_seen = <span class="num">0</span>
+
+<span class="cmt"># ⑨ 其余组件</span>
+self.tokenizer    = config.tokenizer.<span class="fn">build</span>(tokenizer_path=config.hf_assets_path)
+self.dataloader   = config.dataloader.<span class="fn">build</span>(dp_world_size=batch_degree, dp_rank=batch_rank, ...)
+self.checkpointer = config.checkpoint.<span class="fn">build</span>(dataloader=..., model_parts=..., optimizers=..., ...)</code></pre>
+
+  <h2 id="parallelize-llama">2. parallelize_llama（并行编排）</h2>
+  <p><code>models/llama3/parallelize.py</code> 是「把各种 PT-D 并行与训练技巧应用到模型」的总指挥。注意顺序：CP/TP 包裹 → async TP → 激活重算 → compile → FSDP。</p>
+  <pre><code><span class="kw">def</span> <span class="fn">parallelize_llama</span>(model, *, parallel_dims, training, parallelism,
+                      compile_config, ac_config, dump_folder):
+    <span class="kw">if</span> spmd_backend <span class="kw">in</span> (<span class="str">"full_dtensor"</span>, <span class="str">"spmd_types"</span>):
+        <span class="fn">validate_config</span>(parallel_dims, model)
+        model.<span class="fn">parallelize</span>(parallel_dims)                  <span class="cmt"># 声明式切分落地</span>
+    <span class="kw">else</span>:
+        <span class="kw">if</span> parallel_dims.cp_enabled:
+            <span class="fn">apply_cp_to_forward</span>([b.attention.inner_attention <span class="kw">for</span> b <span class="kw">in</span> model.layers.values()],
+                                  parallel_dims.<span class="fn">get_mesh</span>(<span class="str">"cp"</span>))
+        <span class="kw">if</span> parallel_dims.tp_enabled:
+            model.<span class="fn">parallelize</span>(parallel_dims)              <span class="cmt"># TP/SP 声明落地</span>
+
+    <span class="kw">if</span> parallel_dims.tp_enabled:
+        <span class="fn">maybe_enable_async_tp</span>(parallelism, compile_config, parallel_dims.<span class="fn">get_mesh</span>(<span class="str">"tp"</span>))
+
+    <span class="kw">if</span> ac_config <span class="kw">is</span> <span class="kw">not</span> <span class="kw">None</span>:
+        ac_config.<span class="fn">build</span>(dump_folder=dump_folder).<span class="fn">apply</span>(model)   <span class="cmt"># 激活重算（在 compile 前）</span>
+
+    model_compile_enabled = compile_config.enable <span class="kw">and</span> <span class="str">"model"</span> <span class="kw">in</span> compile_config.components
+    <span class="kw">if</span> model_compile_enabled:
+        <span class="fn">apply_compile</span>(model, compile_config)            <span class="cmt"># compile（在 FSDP 前）</span>
+
+    <span class="cmt"># FSDP/HSDP：始终调用；degree=1 时仅是 no-op 的 all-gather，但装好 MixedPrecisionPolicy</span>
+    dp_mesh, dp_mesh_dims = <span class="fn">resolve_fsdp_mesh</span>(parallel_dims)
+    <span class="fn">apply_fsdp_to_decoder</span>(model, dp_mesh,
+        param_dtype=TORCH_DTYPE_MAP[training.mixed_precision_param],
+        reduce_dtype=TORCH_DTYPE_MAP[training.mixed_precision_reduce],
+        pp_enabled=parallel_dims.pp_enabled, cpu_offload=training.enable_cpu_offload,
+        reshard_after_forward_policy=parallelism.fsdp_reshard_after_forward,
+        dp_mesh_dims=dp_mesh_dims, enable_symm_mem=parallelism.enable_fsdp_symm_mem)
+    <span class="kw">return</span> model</code></pre>
+  <div class="callout warn">
+    <div class="title">顺序为什么是这个顺序</div>
+    AC 包裹要在 compile 之前（让编译器看见 wrapped 图）；compile 要在 FSDP 之前（FSDP 的 composable 钩子应与编译后的图配合）；FSDP 始终最后，因为它要装 MixedPrecisionPolicy 并接管参数分片。CP/TP 的 <code>parallelize()</code> 在 AC/compile 之前。
+  </div>
+
+  <h2 id="fsdp">3. apply_fsdp_to_decoder（FSDP 落地）</h2>
+  <p>选取稠密/MoE 共用的 FSDP 应用函数。这里截取最关键的分片逻辑：</p>
+  <pre><code><span class="kw">def</span> <span class="fn">apply_fsdp_to_decoder</span>(model, dp_mesh, param_dtype, reduce_dtype, pp_enabled, ...):
+    mp_policy = <span class="cls">MixedPrecisionPolicy</span>(param_dtype=param_dtype, reduce_dtype=reduce_dtype,
+                                  cast_forward_inputs=<span class="kw">False</span>)
+    fsdp_config = {<span class="str">"mesh"</span>: dp_mesh, <span class="str">"mp_policy"</span>: mp_policy}
+    <span class="kw">if</span> dp_mesh_dims <span class="kw">is</span> <span class="kw">not</span> <span class="kw">None</span>: fsdp_config[<span class="str">"dp_mesh_dims"</span>] = dp_mesh_dims
+    <span class="kw">if</span> cpu_offload: fsdp_config[<span class="str">"offload_policy"</span>] = <span class="cls">CPUOffloadPolicy</span>()
+
+    reshard = <span class="fn">get_fsdp_reshard_after_forward_policy</span>(reshard_after_forward_policy, pp_enabled)
+
+    <span class="cmt"># 权重共享：把 tok_emb/norm/lm_head 合成一个 FSDP 单元</span>
+    <span class="kw">if</span> model.enable_weight_tying:
+        <span class="fn">fully_shard</span>([m <span class="kw">for</span> m <span class="kw">in</span> (model.tok_embeddings, model.norm, model.lm_head) <span class="kw">if</span> m],
+                     **fsdp_config, reshard_after_forward=(reshard==<span class="str">"always"</span>))
+    <span class="kw">else</span>:
+        <span class="fn">fully_shard</span>(model.tok_embeddings, **fsdp_config, reshard_after_forward=reshard)
+        <span class="fn">fully_shard</span>([model.norm, model.lm_head], **fsdp_config,
+                     reshard_after_forward=(reshard==<span class="str">"always"</span>))   <span class="cmt"># 末层不 reshard 以省 prefetch</span>
+
+    <span class="cmt"># 逐 transformer block 分片（MoE 用 shard_placement_fn 区分专家/非专家）</span>
+    <span class="kw">for</span> layer_id, block <span class="kw">in</span> model.layers.items():
+        <span class="kw">if</span> getattr(block, <span class="str">"moe_enabled"</span>, <span class="kw">False</span>):
+            <span class="cmt"># ep>1: 专家走 edp_mesh，其余走 dp_mesh；ep=1 且专家数<FSDP度: Shard(1)</span>
+            ...
+        <span class="kw">else</span>:
+            <span class="fn">fully_shard</span>(block, **fsdp_config, reshard_after_forward=reshard)
+
+    <span class="fn">fully_shard</span>(model, **fsdp_config)
+    <span class="fn">disable_fsdp_gradient_division</span>(model)   <span class="cmt"># 关自动除法，改由 global token 数归一化</span>
+    <span class="kw">if</span> <span class="str">"dp_replicate"</span> <span class="kw">in</span> (dp_mesh.mesh_dim_names <span class="kw">or</span> ()): logger.info(<span class="str">"Applied HSDP"</span>)
+    <span class="kw">else</span>: logger.info(<span class="str">"Applied FSDP"</span>)</code></pre>
+  <div class="callout key">
+    <div class="title">EP 下为何要显式预取</div>
+    当 <code>ep_degree &gt; 1</code>，MoE 的 D2H 同步会干扰 FSDP 隐式预取。函数末尾因此显式 <code>set_modules_to_forward_prefetch</code> / <code>set_modules_to_backward_prefetch</code>，把相邻 block 串成预取链（tok_emb → block0 → … → norm/lm_head，反向反之）。
+  </div>
+
+  <h2 id="pp">4. pipeline_llm（PP 拆分与调度）</h2>
+  <pre><code><span class="kw">def</span> <span class="fn">pipeline_llm</span>(model, *, parallel_dims, training, parallelism, compile_config,
+                  ac_config, dump_folder, device, model_config, parallelize_fn, loss_fn):
+    pp_mesh = parallel_dims.<span class="fn">get_mesh</span>(<span class="str">"pp"</span>)
+    (num_virtual_stages, num_layers, in_w, out_w) = <span class="fn">_get_pipeline_metadata</span>(...)
+    module_names_per_stage = parallelism.module_fqns_per_model_part <span class="kw">or</span> \
+        <span class="fn">_generate_llm_fqn_per_model_part</span>(num_virtual_stages, num_layers, in_w, out_w)
+
+    get_mesh_cb = <span class="fn">_build_get_mesh_callback</span>(parallel_dims)   <span class="cmt"># PP 跨 stage 重建 DTensor</span>
+    stages, model_parts = <span class="fn">_pipeline_module_split</span>(model, pp_mesh, schedule, device,
+                                              module_names_per_stage, get_mesh=get_mesh_cb)
+
+    <span class="cmt"># 每个 model_part 单独应用 SPMD/compile/optimizer</span>
+    <span class="kw">for</span> i, m <span class="kw">in</span> <span class="kw">enumerate</span>(model_parts):
+        m = parallelize_fn(m, ...)
+        model_parts[i] = m
+        stages[i].submod = m
+
+    pp_schedule = <span class="fn">_build_pipeline_schedule</span>(parallelism=parallelism,
+        local_batch_size=training.local_batch_size, stages=stages, loss_fn=loss_fn)
+
+    has_first_stage = <span class="kw">any</span>(s.is_first <span class="kw">for</span> s <span class="kw">in</span> stages)
+    has_last_stage  = <span class="kw">any</span>(s.is_last  <span class="kw">for</span> s <span class="kw">in</span> stages)
+    <span class="kw">return</span> pp_schedule, model_parts, has_first_stage, has_last_stage</code></pre>
+  <p>关键细节：PP 跨 stage 传递的是普通张量（ProcessGroup 不可序列化），所以每个 stage 用 <code>get_mesh_cb</code> 回调重新拿到本地 DeviceMesh，把收到的张量重新包成正确 placement 的 DTensor。</p>
+
+  <h2 id="fwd">5. forward_backward_step（前向反向）</h2>
+  <pre><code><span class="kw">def</span> <span class="fn">forward_backward_step</span>(self, *, input_dict, labels, global_valid_tokens):
+    inputs, labels, extra_kwargs = self.<span class="fn">post_dataloading_process</span>(input_dict, labels)
+
+    <span class="kw">if</span> parallel_dims.pp_enabled:
+        <span class="kw">with</span> self.train_context():
+            targets, losses = (labels, []) <span class="kw">if</span> self.pp_has_last_stage <span class="kw">else</span> (None, None)
+            <span class="kw">if</span> self.pp_has_first_stage:
+                self.pp_schedule.<span class="fn">step</span>(inputs, **extra_kwargs, target=targets,
+                                      losses=losses, loss_kwargs={<span class="str">"global_valid_tokens"</span>: ...})
+            <span class="kw">if</span> self.pp_has_last_stage:
+                loss = torch.<span class="fn">sum</span>(torch.<span class="fn">stack</span>(losses)).to(self.device)
+            <span class="kw">else</span>:
+                loss = torch.tensor([-<span class="num">1.0</span>], device=self.device)
+    <span class="kw">else</span>:
+        <span class="kw">with</span> self.train_context():
+            pred = model_parts[<span class="num">0</span>](inputs, **extra_kwargs)
+            loss, _ = self.loss_fn(pred, labels, global_valid_tokens)
+            <span class="kw">with</span> spmd.<span class="fn">no_typecheck</span>():      <span class="cmt"># 反向不需类型传播</span>
+                loss.<span class="fn">backward</span>()
+    <span class="kw">return</span> loss</code></pre>
+  <div class="callout info">
+    <div class="title">PP 下非末级 rank 的 loss 是占位</div>
+    只有末级 stage 持有 labels 与 targets，能算出真实 loss；其他 rank 返回 <code>-1.0</code> 占位，仅在末级做有意义的聚合。这也是为什么 <code>train_step</code> 里 loss 聚合要区分 DP/CP 是否开启。
+  </div>
+
+  <h2 id="chunked">6. ChunkedLossWrapper 关键段</h2>
+  <pre><code><span class="cmt"># 切 N 段 → 逐 chunk lm_head + CE + backward → 汇回 Decoder</span>
+h_chunks = [c.<span class="fn">detach</span>().<span class="fn">requires_grad_</span>(requires_grad) <span class="kw">for</span> c <span class="kw">in</span> <span class="fn">_chunk</span>(hidden_states)]
+grad_accumulator = <span class="cls">GradAccumulator</span>(hidden_states, num_chunks=num_chunks, dtype=torch.float32)
+
+<span class="kw">if</span> fsdp_enabled:                       <span class="cmt"># 让权重在整个 chunk 循环保持 unsharded</span>
+    lm_head.<span class="fn">set_reshard_after_forward</span>(<span class="kw">False</span>)
+    lm_head.<span class="fn">set_reshard_after_backward</span>(<span class="kw">False</span>)
+    lm_head.<span class="fn">set_requires_gradient_sync</span>(<span class="kw">False</span>, recurse=<span class="kw">False</span>)
+
+<span class="kw">for</span> i, (h_chunk, label_chunk) <span class="kw">in</span> <span class="kw">enumerate</span>(<span class="fn">zip</span>(h_chunks, label_chunks)):
+    <span class="kw">if</span> fsdp_enabled <span class="kw">and</span> i == last_idx:
+        lm_head.<span class="fn">set_requires_gradient_sync</span>(<span class="kw">True</span>, recurse=<span class="kw">False</span>)  <span class="cmt"># 最后一 chunk 才触发 reduce-scatter</span>
+    logits = lm_head(h_chunk)
+    chunk_loss, _ = self.loss_fn(logits, label_chunk, global_valid_tokens, **chunk_inputs)
+    total_loss = total_loss + chunk_loss.<span class="fn">detach</span>()
+    <span class="kw">if</span> requires_grad:
+        chunk_loss.<span class="fn">backward</span>()
+        grad_accumulator.<span class="fn">add</span>(h_chunk.grad); h_chunk.grad = <span class="kw">None</span>
+
+accumulated_grad = grad_accumulator.<span class="fn">result</span>().to(hidden_states.dtype)
+loss = self.<span class="fn">_gradient_backprop</span>(hidden_states, accumulated_grad, total_loss, lm_head, fsdp_enabled)
+<span class="cmt"># _gradient_backprop 用 _DecoderOutputGradientBackProp.apply 把 accumulated_grad</span>
+<span class="cmt"># 作为 hidden_states 的梯度，autograd 单次遍历传回 decoder</span></code></pre>
+
+  <div class="callout key">
+    <div class="title">读到这里，你已经走通全栈</div>
+    从 01 的架构鸟瞰，到 02 的训练流程，到 03–04 的关键技术（配置/并行），到 05–06 的模型与组件，再到本页的真实代码 —— 你已经能把「一次训练」从入口 <code>train.py</code> 一路追到 <code>loss.backward()</code> 与 <code>fully_shard</code>。下一步建议：打开 <code>torchtitan/trainer.py</code> 与 <code>torchtitan/models/llama3/parallelize.py</code>，按本套文档的脉络逐行对照阅读。
+  </div>
+</main>
+<script src="common.js"></script>
+</body>
+</html>

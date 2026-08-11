@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>torchtitan 学习文档 · 总览</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  .cat{display:flex;flex-direction:column;gap:6px;margin:12px 0}
+  .cat-row{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline}
+  .cat-title{font-weight:700;font-size:14px;min-width:110px;color:#eef2f8}
+  .cat a{color:#9be0a3;text-decoration:none;font-size:13px;padding:2px 6px;border-radius:4px;background:#11151c;white-space:nowrap}
+  .cat a:hover{background:#1c212c;color:#fff}
+  .cat .desc{font-size:11px;color:#8b94a3;margin-left:4px}
+  .tag{display:inline-block;padding:0 5px;border-radius:8px;font-size:10px;font-weight:700;color:#0d0f14}
+  .tag-new{background:#f1c40f}
+  .tag-old{background:#8b94a3;color:#0d0f14}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:4px;margin-right:4px}
+  .dot-arch{background:#3498db}
+  .dot-para{background:#e67e22}
+  .dot-flow{background:#1abc9c}
+  .dot-conf{background:#9b59b6}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<main>
+  <h1>torchtitan 学习文档 · 文档总览</h1>
+  <p class="subtitle">共 21 页,按主题分为 4 大类。每页保持独立,<code>index.html</code> 作为唯一入口。所有页面之间用相互链接关联,方便跳转。</p>
+
+  <div class="callout key">
+    <div class="title">文档演化说明</div>
+    本目录最初包含 01-07 编号系列(架构→训练→配置→并行→模型→组件→代码走读),后续新增了 GPU 视图、训练流程全景、并行策略原理/代码地图/后端对比等深度专题。<b>所有页面在此统一归入 4 大类</b>。
+  </div>
+
+  <h2>一、文档分类索引</h2>
+
+  <div class="cat">
+    <div class="cat-row">
+      <span class="cat-title"><span class="dot dot-arch"></span>架构层</span>
+      <a href="01_architecture.html">01 整体架构</a><span class="desc">分层设计、目录地图、核心抽象</span>
+      <a href="architecture.html">架构(旧版)</a>
+      <a href="architecture_slide.html">架构幻灯片</a>
+      <a href="code_structure.html">代码结构</a>
+    </div>
+    <div class="cat-row">
+      <span class="cat-title"></span>
+      <a href="02_training_flow.html">02 训练流程</a><span class="desc">训练时序、__init__ 顺序、train_step 细化</span>
+      <a href="07_code_walkthrough.html">07 关键代码走读</a><span class="desc">代码片段注释</span>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-row">
+      <span class="cat-title"><span class="dot dot-para"></span>并行技术</span>
+      <a href="04_parallelism.html">04 并行技术(原版)</a><span class="desc">ParallelDims、FSDP、TP、PP、CP、EP</span>
+      <a href="parallelism_code_map.html">代码地图</a><span class="desc">各策略代码位置:文件:行号</span>
+      <a href="parallelism_principles.html">实现原理</a><span class="desc">数学/通信/Shape 例子</span>
+      <a href="spmd_backends.html">SPMD 后端对比</a><span class="desc">default/full_dtensor/spmd_types</span>
+    </div>
+    <div class="cat-row">
+      <span class="cat-title"></span>
+      <a href="parallelism_sharding_detail.html">切分细节</a><span class="desc">各策略切分前后 shape 详表</span>
+      <a href="parallelism_training_flow.html">并行训练流程</a>
+      <a href="mesh_example.html">网格示例</a><span class="desc">DeviceMesh 拓扑与编号</span>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-row">
+      <span class="cat-title"><span class="dot dot-flow"></span>训练流程</span>
+      <a href="gpu_view_training_flow.html">GPU 视图训练流程</a><span class="desc">每块 GPU 级视角:切分与通信</span>
+      <a href="training_flow_overview.html">训练流程全景</a><span class="desc">初始化 vs 每步 train_step 全景</span>
+      <a href="training_flow_end_to_end.html">端到端训练流程</a>
+      <a href="deepseek_v3_671b_training_example.html">DeepSeek V3 671B 训练示例<span class="tag tag-new">新</span></a><span class="desc">用户开发什么/调哪些 API/ModelSpec 生命周期</span>
+    </div>
+  </div>
+
+  <div class="cat">
+    <div class="cat-row">
+      <span class="cat-title"><span class="dot dot-conf"></span>配置与组件</span>
+      <a href="03_config_system.html">03 配置系统</a><span class="desc">ConfigManager、tyro、Configurable.build</span>
+      <a href="05_model_system.html">05 模型系统</a><span class="desc">Decoder、ShardingConfig、parallelize</span>
+      <a href="06_components.html">06 训练组件</a><span class="desc">Dataloader、Optimizer、Loss、Checkpoint</span>
+    </div>
+  </div>
+
+  <h2>二、推荐学习路径</h2>
+
+  <div class="toc">
+    <b>路径 A:从零开始(推荐)</b>
+    <span>01_architecture → 02_training_flow → 04_parallelism → 05_model_system → 06_components → 07_code_walkthrough</span>
+    <span class="desc">跟随原版 01-07 编号系列,从架构到代码逐步深入,建立完整心智模型。</span>
+  </div>
+  <div class="toc">
+    <b>路径 B:先理解并行(模型训练核心)</b>
+    <span>parallelism_principles → parallelism_code_map → spmd_backends → gpu_view_training_flow → training_flow_overview</span>
+    <span class="desc">从并行策略的原理开始,再看代码在哪、后端区别,最后看 GPU 级训练流程全景。</span>
+  </div>
+  <div class="toc">
+    <b>路径 C:直接查代码位置(快速定位)</b>
+    <span>parallelism_code_map → gpu_view_training_flow → training_flow_end_to_end</span>
+    <span class="desc">需要快速找到某个策略的代码时,从代码地图入手,再到具体流程图验证。</span>
+  </div>
+
+  <h2>三、文件总表(21 页)</h2>
+  <table>
+    <tr><th>文件名</th><th>分类</th><th>核心内容</th><th>与谁联动</th></tr>
+    <tr><td>01_architecture.html</td><td>架构</td><td>分层设计、Configurable/Module/ModelSpec/ParallelDims 关系</td><td>→02→04→05</td></tr>
+    <tr><td>02_training_flow.html</td><td>架构</td><td>训练时序、__init__ 顺序、train_step 细化</td><td>→07</td></tr>
+    <tr><td>03_config_system.html</td><td>配置</td><td>ConfigManager、tyro、Configurable.build、override</td><td>→05</td></tr>
+    <tr><td>04_parallelism.html</td><td>并行</td><td>ParallelDims、FSDP/HSDP、TP/SP、PP、CP、EP</td><td>→并行系列</td></tr>
+    <tr><td>05_model_system.html</td><td>配置</td><td>Decoder、ShardingConfig、parallelize、config_registry</td><td>←03 →06</td></tr>
+    <tr><td>06_components.html</td><td>配置</td><td>Dataloader、Optimizer、Loss、Checkpoint、Metrics</td><td>←05 →07</td></tr>
+    <tr><td>07_code_walkthrough.html</td><td>架构</td><td>带注释的真实代码片段</td><td>←02←06</td></tr>
+    <tr><td>architecture.html</td><td>架构</td><td>架构(旧版)</td><td>与 01 重叠</td></tr>
+    <tr><td>architecture_slide.html</td><td>架构</td><td>架构幻灯片</td><td></td></tr>
+    <tr><td>code_structure.html</td><td>架构</td><td>代码结构</td><td></td></tr>
+    <tr><td>mesh_example.html</td><td>并行</td><td>DeviceMesh 拓扑与编号</td><td>→04_parallelism</td></tr>
+    <tr><td><b>gpu_view_training_flow.html</b></td><td>训练</td><td>GPU 视角:各 GPU 的切分与集合通信</td><td>←并行原理 →训练流程</td></tr>
+    <tr><td><b>training_flow_overview.html</b></td><td>训练</td><td>训练流程全景:初始化切分→train_step</td><td>←gpu_view →e2e</td></tr>
+    <tr><td><b>training_flow_end_to_end.html</b></td><td>训练</td><td>端到端训练流程</td><td></td></tr>
+    <tr><td><b>parallelism_code_map.html</b></td><td>并行</td><td>各策略代码位置:文件:行号</td><td>←原理 →后端</td></tr>
+    <tr><td><b>parallelism_principles.html</b></td><td>并行</td><td>各策略实现原理:数学/通信/Shape</td><td>←代码地图 →后端</td></tr>
+    <tr><td><b>parallelism_sharding_detail.html</b></td><td>并行</td><td>切分前后 shape 详表</td><td>←原理</td></tr>
+    <tr><td><b>parallelism_training_flow.html</b></td><td>并行</td><td>并行训练流程</td><td></td></tr>
+    <tr><td><b>spmd_backends.html</b></td><td>并行</td><td>default/full_dtensor/spmd_types 对比</td><td>←原理 →代码地图</td></tr>
+    <tr><td><b>deepseek_v3_671b_training_example.html</b></td><td>训练</td><td>671B 训练示例:用户开发边界、调用的 API、ModelSpec 生命周期时序</td><td>←05_model_system</td></tr>
+    
+  </table>
+  <p class="sub" style="margin-top:8px">加粗文件 = 本轮对话新增或深度修改。联动方向:→ 表示"建议先读",← 表示"被依赖"。</p>
+
+  <h2>四、内容覆盖盘点</h2>
+  <table>
+    <tr><th>主题</th><th>覆盖情况</th><th>对应页面</th></tr>
+    <tr><td>训练流程(宏观)</td><td>已覆盖</td><td>02_training_flow、training_flow_overview</td></tr>
+    <tr><td>训练流程(GPU 级微观)</td><td>已覆盖</td><td>gpu_view_training_flow</td></tr>
+    <tr><td>并行策略原理</td><td>已覆盖</td><td>parallelism_principles</td></tr>
+    <tr><td>并行策略代码位置</td><td>已覆盖</td><td>parallelism_code_map</td></tr>
+    <tr><td>SPMD 后端</td><td>已覆盖</td><td>spmd_backends</td></tr>
+    <tr><td>配置系统</td><td>已覆盖</td><td>03_config_system</td></tr>
+    <tr><td>模型系统</td><td>已覆盖</td><td>05_model_system</td></tr>
+    <tr><td>组件(Data/Loss/Optimizer/Checkpoint)</td><td>已覆盖</td><td>06_components</td></tr>
+    <tr><td>架构抽象</td><td>已覆盖</td><td>01_architecture</td></tr>
+    <tr><td>代码走读</td><td>已覆盖</td><td>07_code_walkthrough</td></tr>
+    <tr><td>DeviceMesh 拓扑</td><td>已覆盖</td><td>mesh_example</td></tr>
+    <tr><td>检查点(Checkpoint)深度</td><td>部分覆盖(06)</td><td>可补充到 06_components</td></tr>
+    <tr><td>数据流水线(Data Pipeline)深度</td><td>部分覆盖(06)</td><td>可补充到 06_components</td></tr>
+    <tr><td>实验模块(experiments/rl/forge)</td><td>未覆盖</td><td>可补充到现有页面或更新 01_architecture</td></tr>
+    <tr><td>torch.compile 深度</td><td>部分覆盖</td><td>可补充到 04_parallelism</td></tr>
+    <tr><td>激活检查点(Activation Checkpointing)</td><td>部分覆盖</td><td>可补充到 04_parallelism</td></tr>
+    <tr><td>验证(Validator)</td><td>部分覆盖(06)</td><td>可补充到 06_components</td></tr>
+    <tr><td>DeepSeek V3 671B 训练实操 / 用户开发边界</td><td>已覆盖</td><td>deepseek_v3_671b_training_example</td></tr>
+  </table>
+  <p class="sub" style="margin-top:8px">"未覆盖"主题可以在现有页面中新增章节,不新建文件。后续所有内容修改在现有页面上进行(671B 训练示例为独立新主题,破例单列一页)。</p>
+
+  <div class="callout info">
+    <div class="title">文档约定</div>
+    <ul style="margin:4px 0">
+      <li>所有页面共用同一份 <code>style.css</code> 和 <code>common.js</code>。</li>
+      <li>页面间通过 <code>&lt;a href="..."&gt;</code> 相互链接,不依赖导航栏。</li>
+      <li>原则上不再新增 HTML 文件,补充内容追加到现有页面;<code>deepseek_v3_671b_training_example.html</code> 为独立新主题(671B 训练实操)破例单列。</li>
+      <li>代码引用使用 <code>文件:行号</code> 格式,如 <code>trainer.py:739</code>。</li>
+    </ul>
+  </div>
+
+</main>
+<script src="common.js"></script>
+</body>
+</html>

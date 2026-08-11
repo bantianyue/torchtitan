@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>02 · 训练流程</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main>
+  <h1>02 · 训练流程：总流程 → 细化</h1>
+  <p class="page-meta">层次：<span class="layer-tag layer-coarse">流程 · 总</span> → <span class="layer-tag layer-mid">流程 · 细</span> 目标：先用真正的流程图看清「一次训练」的走向，再逐段下钻到每个细化流程。</p>
+
+  <div class="toc">
+    <b>本页目录</b>
+    <a href="#big-sequence">1. 完整时序（流程图）</a>
+    <a href="#init-ordering">2. 细化 A：Trainer.__init__ 初始化顺序</a>
+    <a href="#train-loop">3. 细化 B：train() 主循环</a>
+    <a href="#train-step">4. 细化 C：train_step（梯度累积）</a>
+    <a href="#fwd-bwd">5. 细化 D：forward_backward_step</a>
+    <a href="#post-dl">6. 细化 E：post_dataloading_process</a>
+    <a href="#checkpoint-metrics">7. 细化 F：检查点与指标</a>
+  </div>
+
+  <p class="flow-cap">图例：矩形=步骤，菱形=判断，蓝线=并行分叉/汇合，灰线=顺序，左向回边=循环。</p>
+
+  <h2 id="big-sequence">1. 完整时序（流程图）</h2>
+  <div data-flow="bigseq"></div>
+  <p class="flow-cap">图 1 · 一次训练从入口到结束的完整主干。</p>
+  <div class="callout info">
+    <div class="title">总流程 → 细化流程的对应</div>
+    下面把第 2 步（构造 Trainer）和第 5 步（train_step）各自展开成「细化流程」流程图。这是全代码库最关键的两段，建议对照 <code>trainer.py</code> 逐行读。
+  </div>
+
+  <h2 id="init-ordering">2. 细化 A：Trainer.__init__ 初始化顺序</h2>
+  <div data-flow="init"></div>
+  <p class="flow-cap">图 2 · 构造 Trainer 的真实顺序。注意 <b>PP 与 非PP 在「并行化」处分叉</b>（蓝线），但都汇聚到「权重初始化」。</p>
+  <div class="callout warn">
+    <div class="title">顺序为何重要</div>
+    并行化必须在 <code>init_weights</code> 之前、在 <code>optimizer.build</code> 之前；<code>apply_overrides</code> 必须在所有组件构建前；<code>step/ntokens_seen</code> 必须在 <code>checkpointer.load</code> 之前（它们本身就是要被检查点恢复的状态）。CLAUDE.md 要求「改 setup 前先读 Trainer.__init__ 顺序」。
+  </div>
+  <h3>模型如何在 meta 设备上被建造与初始化</h3>
+  <pre><code><span class="cmt"># trainer.py __init__ （节选，已简化）</span>
+<span class="kw">with</span> torch.device(<span class="str">"meta"</span>), utils.<span class="fn">set_default_dtype</span>(...):
+    model = model_config.<span class="fn">build</span>()          <span class="cmt"># 不占显存，只建结构</span>
+model.<span class="fn">verify_module_protocol</span>()
+
+<span class="kw">with</span> sl.<span class="fn">log_trace_span</span>(<span class="str">"model_parallelism_init"</span>):
+    <span class="kw">if</span> parallel_dims.pp_enabled:
+        pp_schedule, model_parts, ... = model_spec.pipelining_fn(model, ...)
+    <span class="kw">else</span>:
+        model = model_spec.parallelize_fn(model, ...)  <span class="cmt"># FSDP/TP/AC/compile</span>
+    model.<span class="fn">to_empty</span>(device=init_device)      <span class="cmt"># 真正分配显存</span>
+    <span class="kw">with</span> torch.no_grad():
+        cast(BaseModel, model).<span class="fn">init_weights</span>(buffer_device=buffer_device)</code></pre>
+
+  <h2 id="train-loop">3. 细化 B：train() 主循环</h2>
+  <div data-flow="trainloop"></div>
+  <p class="flow-cap">图 3 · 主循环：左向回边表示 step++ 后回到 while 判断（灰色循环）。数据耗尽时跳出。</p>
+  <pre><code><span class="kw">def</span> <span class="fn">train</span>(self):
+    self.checkpointer.<span class="fn">load</span>(step=config.checkpoint.load_step)
+    loaded_step = self.step
+    <span class="kw">with</span> config.profiler.<span class="fn">build</span>(...) <span class="kw">as</span> profiler:
+        data_iterator = self.<span class="fn">batch_generator</span>(self.dataloader)
+        <span class="kw">while</span> self.<span class="fn">should_continue_training</span>():       <span class="cmt"># step < training.steps</span>
+            self.step += 1
+            self.gc_handler.<span class="fn">run</span>(self.step)
+            <span class="kw">try</span>:
+                self.<span class="fn">train_step</span>(data_iterator)
+            <span class="kw">except</span> DataloaderExhaustedError:
+                <span class="kw">break</span>
+            self.checkpointer.<span class="fn">save</span>(self.step, last_step=(self.step == steps))
+            <span class="kw">if</span> validator.<span class="fn">should_validate</span>(self.step):
+                self.validator.<span class="fn">validate</span>(self.model_parts, self.step)
+            profiler.<span class="fn">step</span>()
+            <span class="kw">if</span> self.step - loaded_step == 1:       <span class="cmt"># 首步后收紧通信超时</span>
+                dist_utils.<span class="fn">set_pg_timeouts</span>(...)</code></pre>
+  <div class="callout info">
+    <div class="title">为什么只在首步后收紧超时？</div>
+    前若干步包含 lazy init 与编译开销，超时设宽（<code>comm.init_timeout_seconds</code>）；第一个真实 step 完成后，调用 <code>set_pg_timeouts(train_timeout_seconds)</code> 把通信超时收紧到更严格的值，避免卡死时等待过久。
+  </div>
+  <div class="callout info">
+    <div class="title">batch_generator：数据留在 CPU</div>
+    它是无限迭代器，从 dataloader 取 batch 后<b>不立即上 GPU</b>，yield 回调用方。梯度累积期间逐 microbatch 上 GPU，利于显存管理；途中数据耗尽会抛 <code>DataloaderExhaustedError</code>，整步取消。
+  </div>
+
+  <h2 id="train-step">4. 细化 C：train_step（梯度累积）</h2>
+  <div data-flow="trainstep"></div>
+  <p class="flow-cap">图 4 · 一个 train_step = 一次全局梯度更新，内部累积 <code>gradient_accumulation_steps</code> 个 microbatch。</p>
+  <div class="callout key">
+    <div class="title">global_valid_tokens 为什么关键</div>
+    FSDP 的自动梯度除法被 <code>disable_fsdp_gradient_division</code> 关闭（见 06 组件），改为用全局有效 token 数手动归一化。因此 loss 先 <code>sum</code> 再 <code>/ global_valid_tokens</code>，跨 rank 的总和才是正确均值。
+  </div>
+
+  <h2 id="fwd-bwd">5. 细化 D：forward_backward_step</h2>
+  <div data-flow="fwd"></div>
+  <p class="flow-cap">图 5 · 非 PP 路径直白（单模型 part 跑前向+loss+反向）；PP 路径把前向/反向交给 <code>pp_schedule.step()</code>，末级 rank 才持有真实 loss。</p>
+  <pre><code><span class="kw">def</span> <span class="fn">forward_backward_step</span>(self, *, input_dict, labels, global_valid_tokens):
+    inputs, labels, extra_kwargs = self.<span class="fn">post_dataloading_process</span>(input_dict, labels)
+    <span class="kw">if</span> parallel_dims.pp_enabled:
+        <span class="kw">with</span> self.train_context():
+            targets, losses = (labels, []) <span class="kw">if</span> self.pp_has_last_stage <span class="kw">else</span> (None, None)
+            <span class="kw">if</span> self.pp_has_first_stage:
+                self.pp_schedule.<span class="fn">step</span>(inputs, **extra_kwargs, target=targets,
+                                      losses=losses, loss_kwargs=...)
+            <span class="kw">if</span> self.pp_has_last_stage:
+                loss = torch.<span class="fn">sum</span>(torch.<span class="fn">stack</span>(losses)).to(self.device)
+            <span class="kw">else</span>:
+                loss = torch.tensor([-<span class="num">1.0</span>], device=self.device)
+    <span class="kw">else</span>:
+        <span class="kw">with</span> self.train_context():
+            pred = model_parts[<span class="num">0</span>](inputs, **extra_kwargs)
+            loss, _ = self.loss_fn(pred, labels, global_valid_tokens)
+            loss.<span class="fn">backward</span>()
+    <span class="kw">return</span> loss</code></pre>
+  <div class="callout info">
+    <div class="title">PP 下非末级 rank 的 loss 是占位</div>
+    只有末级 stage 持有 labels 与 targets，能算出真实 loss；其他 rank 返回 <code>-1.0</code> 占位，仅在末级做有意义的聚合。这也是为什么 <code>train_step</code> 里 loss 聚合要区分 DP/CP 是否开启。
+  </div>
+
+  <h2 id="post-dl">6. 细化 E：post_dataloading_process</h2>
+  <div data-flow="postdl"></div>
+  <p class="flow-cap">图 6 · 在「数据加载之后、模型前向之前」做后处理，把原始 dict 转成模型需要的形式。</p>
+  <ul>
+    <li><b>拆 input/labels：</b> <code>inputs = input_dict["input"]</code>；其余键作为模型前向 kwargs。</li>
+    <li><b>构建 attention masks：</b> 若使用 Flex/Varlen attention 且提供了 positions，调用 <code>model.get_attention_masks(positions)</code>。</li>
+    <li><b>Context Parallel 切分：</b> cp 开启时 <code>prepare_context_parallel_input</code> 沿序列维切分 inputs/labels/positions。</li>
+    <li><b>SPMD 输入类型化：</b> full_dtensor：<code>parallelize_inputs</code>；spmd_types：<code>annotate_input_spmd_types</code>。</li>
+    <li><b>累计 ntokens_seen：</b> CL 切分后按真实处理的 token 数累计（而非切分前序列长度）。</li>
+  </ul>
+
+  <h2 id="checkpoint-metrics">7. 细化 F：检查点与指标</h2>
+  <div data-flow="ckpt"></div>
+  <p class="flow-cap">图 7 · 每个 train_step 末尾的检查点与指标收尾。</p>
+  <ul>
+    <li><b>检查点：</b> <code>checkpointer.save(step)</code> 判断是否满足保存条件（首步、interval、末步）；异步模式在 <code>optim.step()</code> 后先 <code>maybe_wait_for_staging()</code> 等后台搬运完成。详见 <a href="06_components.html#checkpoint">06 §检查点</a>。</li>
+    <li><b>指标：</b> 仅当 <code>metrics_processor.should_log(step)</code> 为真才聚合与打印；跨 DP/CP 用 <code>loss_mesh</code> 做 all-reduce 求全局均值/最大值。详见 <a href="06_components.html#metrics">06 §指标</a>。</li>
+    <li><b>验证：</b> 若 <code>validator.enable</code> 且 <code>validator.should_validate(step)</code>，在保存后调用 <code>validator.validate(model_parts, step)</code>。</li>
+  </ul>
+
+  <div class="callout tip">
+    <div class="title">下一步</div>
+    流程已经走通，但「并行是怎么落地的、配置是怎么被解析的」还没展开。先读 <a href="03_config_system.html">03 配置系统</a>（关键技术），再读 <a href="04_parallelism.html">04 并行技术</a>。
+  </div>
+</main>
+
+<script src="common.js"></script>
+<script src="flow.js"></script>
+<script>
+Flow.reg("bigseq", {
+  blocks: [
+    { id: "p1", text: "main() 解析配置\nConfigManager.parse_args()", cls: "accent" },
+    { id: "p2", text: "构造 Trainer\ninit_distributed → 建网格", cls: "purple" },
+    { id: "p3", text: "checkpointer.load()\n恢复 step/optim/lr/data", cls: "amber" },
+    { id: "p4", text: "train() 循环\nwhile step < steps", cls: "green" },
+    { id: "p5", text: "train_step\n(梯度累积 N 个 microbatch)", cls: "green" },
+    { id: "p6", text: "收尾: save / validate /\nprofiler.step()", cls: "amber" },
+    { id: "p7", text: "结束: close + destroy PG", cls: "" },
+  ],
+});
+
+Flow.reg("init", {
+  blocks: [
+    { id: "a", text: "init_distributed()\n→ ParallelDims", cls: "accent" },
+    { id: "b", text: "seq_len 整除校验\n(tp·2·cp)", cls: "" },
+    { id: "c", text: "set_spmd_backend +\ndeterminism + maybe_log", cls: "" },
+    { id: "d", text: "update_from_config\n灌配置 + 生成 sharding", cls: "purple" },
+    { id: "e", text: "apply_overrides\n(所有组件构建前)", cls: "purple" },
+    { id: "f", text: "build model on meta\n→ verify_module_protocol", cls: "purple" },
+    { id: "g", text: "PP 开启?", shape: "diamond", cls: "" },
+    {
+      branch: true,
+      tracks: [
+        [
+          { id: "g1", text: "pipelining_fn\n(拆 stage + 建调度)", cls: "purple" },
+          { id: "g2", text: "各 stage to_empty\n+ init_weights", cls: "green" },
+        ],
+        [
+          { id: "h1", text: "parallelize_fn\n(FSDP/TP/AC/compile)", cls: "purple" },
+          { id: "h2", text: "to_empty\n+ init_weights", cls: "green" },
+        ],
+      ],
+    },
+    { id: "i", text: "ChunkedLossWrapper\n挂 lm_head (_skip)", cls: "amber" },
+    { id: "j", text: "build optimizer / lr\n(并行之后)", cls: "" },
+    { id: "k", text: "init step=0,\nntokens_seen=0", cls: "" },
+    { id: "l", text: "build tokenizer /\ndataloader / checkpointer", cls: "" },
+  ],
+});
+
+Flow.reg("trainloop", {
+  blocks: [
+    { id: "t0", text: "checkpointer.load(step)", cls: "amber" },
+    { id: "t1", text: "while step < steps?", shape: "diamond", cls: "" },
+    { id: "t2", text: "step++ ; gc ; profiler.step()", cls: "green" },
+    { id: "t3", text: "train_step(data_iterator)", cls: "green" },
+    { id: "t4", text: "数据耗尽?", shape: "diamond", cls: "" },
+    { id: "t5", text: "checkpointer.save(step)", cls: "amber" },
+    { id: "t6", text: "validator?\n→ validate()", cls: "amber" },
+    { id: "t7", text: "break (结束)", cls: "" },
+  ],
+  extraEdges: [
+    { from: "t4", to: "t7", kind: "seq" },
+    { from: "t6", to: "t1", kind: "loop", label: "loop" },
+  ],
+});
+
+Flow.reg("trainstep", {
+  blocks: [
+    { id: "s1", text: "zero_grad()\n记录当前 lr 指标", cls: "" },
+    { id: "s2", text: "收集 N 个 microbatch\n(仍在 CPU)", cls: "" },
+    { id: "s3", text: "全局 token 数\nall-reduce", cls: "accent" },
+    { id: "s4", text: "逐 microbatch\n上前向/反向 (GPU)", cls: "green" },
+    { id: "s5", text: "clip_grad_norm_\n跨所有 model_parts", cls: "" },
+    { id: "s6", text: "optimizer.step()\n+ lr.step()", cls: "" },
+    { id: "s7", text: "聚合 loss 指标\n(DP/CP all-reduce)", cls: "amber" },
+  ],
+});
+
+Flow.reg("fwd", {
+  blocks: [
+    { id: "in", text: "输入经\npost_dataloading_process", cls: "accent" },
+    { id: "d", text: "PP 开启?", shape: "diamond", cls: "" },
+    {
+      branch: true,
+      tracks: [
+        [
+          { id: "p1", text: "pp_schedule.step()\n(前向/反向在调度内)", cls: "purple" },
+          { id: "p2", text: "末级: 累加各\nmicrobatch loss", cls: "purple" },
+        ],
+        [
+          { id: "q1", text: "pred = model(inputs)", cls: "green" },
+          { id: "q2", text: "loss = loss_fn(...)", cls: "green" },
+          { id: "q3", text: "loss.backward()", cls: "green" },
+        ],
+      ],
+    },
+    { id: "r", text: "返回 loss\n(非末级 rank 为占位)", cls: "amber" },
+  ],
+});
+
+Flow.reg("postdl", {
+  blocks: [
+    { id: "d1", text: "拆 input / labels\n其余键作前向 kwargs", cls: "" },
+    { id: "d2", text: "构建 attention masks\n(Flex/Varlen + positions)", cls: "" },
+    { id: "d3", text: "Context Parallel 切分\n(若启用)", cls: "accent" },
+    { id: "d4", text: "SPMD 输入类型化\n(full_dtensor / spmd_types)", cls: "purple" },
+    { id: "d5", text: "累计 ntokens_seen\n(CL 切分后真实 token", cls: "" },
+  ],
+});
+
+Flow.reg("ckpt", {
+  blocks: [
+    { id: "c1", text: "train_step 末尾\ncheckpointer.save(step)", cls: "amber" },
+    { id: "c2", text: "满足保存条件?\n(首步/interval/末步)", shape: "diamond", cls: "" },
+    { id: "c3", text: "异步: maybe_wait_\nfor_staging()", cls: "amber" },
+    { id: "c4", text: "validator.enable\n且 should_validate?", shape: "diamond", cls: "" },
+    { id: "c5", text: "validator.validate(\nmodel_parts, step)", cls: "amber" },
+    { id: "c6", text: "profiler.step()\n+ 首步后收紧超时", cls: "" },
+  ],
+  extraEdges: [{ from: "c4", to: "c6", kind: "seq" }],
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeviceMesh 到底是啥 - 一个例子讲透</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root {
+    --bg: #f5f6fa;
+    --surface: #ffffff;
+    --border: #e2e8f0;
+    --fg: #1f2937;
+    --fg-soft: #475569;
+    --fg-faint: #94a3b8;
+    --accent: #2563eb;
+    --accent-soft: #dbeafe;
+    --green: #16a34a;
+    --amber: #d97706;
+    --red: #dc2626;
+    --purple: #7c3aed;
+    --mono: "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+            "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); line-height: 1.7; font-size: 16px;
+  }
+  .page { max-width: 980px; margin: 0 auto; padding: 40px 44px 120px; }
+
+  header h1 { font-size: 30px; margin: 0 0 6px; line-height: 1.25; }
+  header .sub { color: var(--fg-soft); font-size: 15px; margin: 0 0 6px; }
+  header .cfg {
+    display: inline-block; font-family: var(--mono); font-size: 13.5px;
+    background: var(--accent-soft); color: #1d4ed8; padding: 6px 12px;
+    border-radius: 6px; margin-top: 10px;
+  }
+  h2 {
+    font-size: 22px; margin: 40px 0 12px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--border);
+  }
+  h2 .n {
+    display: inline-block; width: 26px; height: 26px; line-height: 26px;
+    text-align: center; background: var(--accent); color: #fff;
+    border-radius: 50%; font-size: 14px; margin-right: 8px; vertical-align: 1px;
+  }
+  p { margin: 12px 0; }
+  code {
+    font-family: var(--mono); font-size: 13.5px; background: #eef2f7;
+    padding: 1.5px 5px; border-radius: 4px; color: #b91c1c;
+  }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 16px 18px; border-radius: 10px;
+    overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.6;
+    margin: 16px 0; border: 1px solid #1e293b;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  .cmt { color: #64748b; }
+  .kw  { color: #f472b6; }
+  .fn  { color: #7dd3fc; }
+  .str { color: #86efac; }
+  .num { color: #fdba74; }
+  strong { color: #0f172a; }
+
+  /* ---- 网格图 ---- */
+  .figrow { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; margin: 18px 0; }
+  .fig { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .fig .cap { font-size: 12.5px; color: var(--fg-soft); text-align: center; max-width: 240px; }
+  .fig .cap b { color: var(--fg); }
+  .grid { display: inline-grid; gap: 5px; }
+  .cell {
+    width: 46px; height: 46px; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 18px; border-radius: 7px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  }
+  .cell.sm { width: 40px; height: 40px; font-size: 16px; }
+  .cell.neutral { background: #94a3b8; }
+  .cA { background: #ef4444; }
+  .cB { background: #3b82f6; }
+  .cC { background: #22c55e; }
+  .cD { background: #f59e0b; }
+  .legend { font-size: 12.5px; color: var(--fg-soft); line-height: 1.6; }
+  .legend .sw {
+    display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+    vertical-align: -1px; margin: 0 2px 0 8px;
+  }
+  .axisnote { font-size: 12px; color: var(--fg-faint); font-family: var(--mono); }
+
+  .banner {
+    background: linear-gradient(90deg, #eff6ff, #faf5ff);
+    border: 1px solid #dbeafe; border-left: 4px solid var(--accent);
+    border-radius: 10px; padding: 12px 16px; margin: 18px 0; font-size: 14.5px;
+  }
+  .banner b { color: var(--accent); }
+
+  .callout { border-radius: 10px; padding: 14px 18px; margin: 18px 0; border-left: 4px solid; }
+  .callout .title { font-weight: 700; margin-bottom: 4px; }
+  .callout.info { background: #eff6ff; border-color: var(--accent); }
+  .callout.info .title { color: var(--accent); }
+  .callout.warn { background: #fffbeb; border-color: var(--amber); }
+  .callout.warn .title { color: var(--amber); }
+  .callout.tip  { background: #f0fdf4; border-color: var(--green); }
+  .callout.tip .title { color: var(--green); }
+
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f1f5f9; color: #0f172a; font-weight: 600; }
+  tr:nth-child(even) td { background: #fcfcfd; }
+  td code { font-size: 12.5px; }
+  .fake { color: var(--fg-faint); }
+  .ok { color: var(--green); font-weight: 600; }
+  .footer { margin-top: 40px; font-size: 12.5px; color: var(--fg-faint); border-top: 1px solid var(--border); padding-top: 14px; }
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="page">
+
+<header>
+  <h1>DeviceMesh 到底是啥</h1>
+  <p class="sub">用一个 8 卡的例子，把 <code>ParallelDims.build_mesh()</code> 建出来的每张子网格画给你看。</p>
+  <div class="cfg">dp_replicate=2, dp_shard=2, cp=1, tp=2, pp=1, ep=1, world_size=8</div>
+</header>
+
+<p>先记住一件事：<strong>mesh 不是新硬件，就是把 world_size 个 rank 按不同方式分组</strong>。
+<code>build_mesh()</code> 先建一张 1D 的 <code>world</code> 网格，再 <strong>unflatten（展开）</strong>成带名字的多维子网格。
+同一个 rank，在不同子网格里属于不同的组 -> 于是它同时参与 TP 通信、FSDP 通信、loss all-reduce…… 各走各的进程组。</p>
+
+<div class="banner">
+  下面每张图都是<b>同一批 8 个 rank (0..7)</b>，只是按不同轴重新分组着色。这正是 unflatten 的本质：换一种"形状"看同一组设备。
+</div>
+
+<!-- ============ 1. world ============ -->
+<h2><span class="n">1</span>起点：1D world 网格</h2>
+<div class="figrow">
+  <div class="fig">
+    <div class="grid" style="grid-template-columns: repeat(8, auto);">
+      <div class="cell neutral">0</div><div class="cell neutral">1</div>
+      <div class="cell neutral">2</div><div class="cell neutral">3</div>
+      <div class="cell neutral">4</div><div class="cell neutral">5</div>
+      <div class="cell neutral">6</div><div class="cell neutral">7</div>
+    </div>
+    <div class="cap"><b>world (8,)</b> - 一维，8 个 rank 排成一行。</div>
+  </div>
+</div>
+<p>代码：<code>init_device_mesh(device_type, (world_size,), mesh_dim_names=("world",))</code>。
+这是唯一一张"物理"网格，后面所有子网格都由它 unflatten 而来，<strong>不增加任何设备</strong>。</p>
+
+<!-- ============ 2. dataloading ============ -->
+<h2><span class="n">2</span>unflatten 出 dataloading 网格 (pp, batch, cp, tp)</h2>
+<p>把 <code>(8,)</code> 展成 <code>(pp=1, batch=4, cp=1, tp=2)</code>，其中 <code>batch = dp_replicate * dp_shard = 2*2 = 4</code>。
+按 <strong>行 = batch、列 = tp</strong> 摆成 4x2 的网格，同一个网格有两种看法：</p>
+
+<div class="figrow">
+  <div class="fig">
+    <div class="axisnote">行=batch(0..3)  列=tp(0,1)</div>
+    <div class="grid" style="grid-template-columns: repeat(2, auto);">
+      <div class="cell cA">0</div><div class="cell cA">1</div>
+      <div class="cell cB">2</div><div class="cell cB">3</div>
+      <div class="cell cC">4</div><div class="cell cC">5</div>
+      <div class="cell cD">6</div><div class="cell cD">7</div>
+    </div>
+    <div class="cap"><b>tp 轴 - 按行着色</b><br>每一行 = 一个 tp 组，共 4 组：{0,1} {2,3} {4,5} {6,7}。同组 rank 共算一个模型。</div>
+  </div>
+  <div class="fig">
+    <div class="axisnote">行=batch(0..3)  列=tp(0,1)</div>
+    <div class="grid" style="grid-template-columns: repeat(2, auto);">
+      <div class="cell cA">0</div><div class="cell cB">1</div>
+      <div class="cell cA">2</div><div class="cell cB">3</div>
+      <div class="cell cA">4</div><div class="cell cB">5</div>
+      <div class="cell cA">6</div><div class="cell cB">7</div>
+    </div>
+    <div class="cap"><b>batch 轴 - 按列着色</b><br>每一列 = 一个 batch/DP 组，共 2 组：{0,2,4,6} {1,3,5,7}。同组 rank 各读不同数据。</div>
+  </div>
+</div>
+<div class="legend">
+  <span class="sw cA"></span>组A &nbsp; <span class="sw cB"></span>组B &nbsp; <span class="sw cC"></span>组C &nbsp; <span class="sw cD"></span>组D
+  &nbsp;&nbsp;|&nbsp;&nbsp; <code>get_mesh("tp")</code> 取行子网格，<code>get_mesh("batch")</code> 取列子网格。
+</div>
+<p>对 <strong>rank 0</strong> 来说：<code>get_mesh("tp")</code> 返回 <code>{0,1}</code>（它所在的行），
+<code>get_mesh("batch")</code> 返回 <code>{0,2,4,6}</code>（它所在的列）。同一个 rank 0，在不同轴里属于不同组。</p>
+
+<!-- ============ 3. dense ============ -->
+<h2><span class="n">3</span>同一批卡，再看 dense (FSDP) 网格 (pp, dp_replicate, fsdp, tp)</h2>
+<p>换一种展开：<code>(8,)</code> -> <code>(pp=1, dp_replicate=2, fsdp=2, tp=2)</code>，其中 <code>fsdp = dp_shard * cp = 2*1 = 2</code>。
+按 <strong>行 = dp_replicate、列 = fsdp * tp</strong> 摆成 2x4 的网格。下面的 rank 编号和上面完全一样，只是换了摆法：</p>
+
+<div class="figrow">
+  <div class="fig">
+    <div class="axisnote">行=dp_replicate(0,1)  列=fsdp(0,1) x tp(0,1)</div>
+    <div class="grid" style="grid-template-columns: repeat(4, auto);">
+      <div class="cell cA">0</div><div class="cell cB">1</div><div class="cell cA">2</div><div class="cell cB">3</div>
+      <div class="cell cC">4</div><div class="cell cD">5</div><div class="cell cC">6</div><div class="cell cD">7</div>
+    </div>
+    <div class="cap"><b>fsdp 轴</b><br>同色 = 一个 fsdp 组，FSDP 把一个参数分片到这些 rank：<br>{0,2} {1,3} {4,6} {5,7}</div>
+  </div>
+  <div class="fig">
+    <div class="axisnote">行=dp_replicate(0,1)  列=fsdp(0,1) x tp(0,1)</div>
+    <div class="grid" style="grid-template-columns: repeat(4, auto);">
+      <div class="cell cA">0</div><div class="cell cB">1</div><div class="cell cC">2</div><div class="cell cD">3</div>
+      <div class="cell cA">4</div><div class="cell cB">5</div><div class="cell cC">6</div><div class="cell cD">7</div>
+    </div>
+    <div class="cap"><b>dp_replicate 轴</b><br>同色 = 互为副本（HSDP 复制轴）：<br>{0,4} {1,5} {2,6} {3,7}</div>
+  </div>
+</div>
+<p>注意 <strong>tp 组在这里还是 {0,1}{2,3}{4,5}{6,7}</strong>（每行内相邻两格），跟第 2 节完全一致 - 因为 tp 永远是最内层轴。
+对 <strong>rank 0</strong>：<code>get_mesh("fsdp")</code> -> <code>{0,2}</code>，<code>get_mesh("dp_replicate")</code> -> <code>{0,4}</code>。</p>
+
+<!-- ============ 4. loss ============ -->
+<h2><span class="n">4</span>loss 网格 = batch x cp</h2>
+<p><code>loss_mesh = dataloading_mesh["batch","cp"]._flatten("loss")</code>，即把 batch 和 cp 两个轴合并。
+本例 <code>cp=1</code>，所以 <strong>loss 组 = batch 组</strong>。对 rank 0 就是 <code>{0,2,4,6}</code> - 这 4 个 rank 各算了一部分 loss，要做 <strong>all-reduce</strong> 求和。</p>
+<div class="callout info">
+  <div class="title">为什么 loss 组 = DP + CP</div>
+  batch（数据并行）和 cp（序列并行）都把"数据"切开了，每个 rank 只看到一部分样本/序列，loss 只是局部值，必须跨这些 rank 归约。
+  TP/PP 不切数据，所以不在 loss 组里。若 <code>cp=2</code>，loss 组会扩成 <code>batch * cp</code> 个 rank。
+</div>
+
+<!-- ============ 5. table ============ -->
+<h2><span class="n">5</span>全部 9 个轴一览（本例）</h2>
+<p>下表是本配置下 <code>build_mesh()</code> 产出的全部命名轴。<strong>size=1 的轴用 fake backend</strong>，不建真 NCCL 进程组。</p>
+<table>
+  <tr><th>轴名</th><th>本例 size</th><th>rank 0 所在组</th><th>状态</th><th>谁用 / 干啥</th></tr>
+  <tr><td><code>pp</code></td><td>1</td><td class="fake">{0}</td><td class="fake">fake</td><td>流水线并行切 stage</td></tr>
+  <tr><td><code>batch</code></td><td>4</td><td>{0,2,4,6}</td><td class="ok">enabled</td><td>dataloader 分数据（= DP 组）</td></tr>
+  <tr><td><code>cp</code></td><td>1</td><td class="fake">{0}</td><td class="fake">fake</td><td>上下文并行（沿序列维）</td></tr>
+  <tr><td><code>tp</code></td><td>2</td><td>{0,1}</td><td class="ok">enabled</td><td>张量并行 / 序列并行</td></tr>
+  <tr><td><code>loss</code></td><td>4</td><td>{0,2,4,6}</td><td class="ok">enabled</td><td>loss all-reduce</td></tr>
+  <tr><td><code>dp_replicate</code></td><td>2</td><td>{0,4}</td><td class="ok">enabled</td><td>DDP / HSDP 复制轴</td></tr>
+  <tr><td><code>fsdp</code></td><td>2</td><td>{0,2}</td><td class="ok">enabled</td><td>FSDP 分片轴（= dp_shard * cp）</td></tr>
+  <tr><td><code>ep</code></td><td>1</td><td class="fake">{0}</td><td class="fake">fake</td><td>专家并行</td></tr>
+  <tr><td><code>efsdp</code></td><td>4</td><td>{0,1,2,3}</td><td class="fake">fake (ep=1)</td><td>MoE 区的 FSDP；ep=1 时虽 size=4 但走 fake</td></tr>
+</table>
+<p class="axisnote">注：efsdp 的 size = dp_shard * cp * tp / ep = 2*1*2/1 = 4，但 <code>_mesh_exist("efsdp")</code> 在 <code>ep=1</code> 时返回 False，所以仍用 fake backend - 它确实被建出来了，只是不通信。</p>
+
+<!-- ============ 6. code ============ -->
+<h2><span class="n">6</span>代码怎么取子网格</h2>
+<pre><code><span class="cmt"># parallel_dims.py - 本例：8 卡</span>
+parallel_dims = ParallelDims(
+    dp_replicate=2, dp_shard=2, cp=1, tp=2, pp=1, ep=1, world_size=8
+)
+parallel_dims.build_mesh()   <span class="cmt"># 惰性：首次 get_mesh 时才真正建</span>
+
+<span class="cmt"># 以下均以 rank 0 的视角，返回它所在的那张子网格：</span>
+parallel_dims.get_mesh(<span class="str">"tp"</span>)            <span class="cmt"># -> DeviceMesh({0,1})        张量并行通信</span>
+parallel_dims.get_mesh(<span class="str">"batch"</span>)         <span class="cmt"># -> DeviceMesh({0,2,4,6})    dataloader 分片</span>
+parallel_dims.get_optional_mesh(<span class="str">"loss"</span>)  <span class="cmt"># -> DeviceMesh({0,2,4,6})    loss all-reduce</span>
+parallel_dims.get_mesh(<span class="str">"fsdp"</span>)          <span class="cmt"># -> DeviceMesh({0,2})        FSDP all-gather/reduce-scatter</span>
+parallel_dims.get_optional_mesh(<span class="str">"cp"</span>)    <span class="cmt"># -> None   (cp=1，禁用，不建进程组)</span>
+parallel_dims.get_optional_mesh(<span class="str">"pp"</span>)    <span class="cmt"># -> None   (pp=1，禁用)</span>
+parallel_dims.get_optional_mesh(<span class="str">"ep"</span>)    <span class="cmt"># -> None   (ep=1，禁用)</span></code></pre>
+<p><code>get_mesh</code> 取不到就抛 <code>ValueError</code>；<code>get_optional_mesh</code> 取不到返回 <code>None</code>。
+所以业务代码写成 <code>if (mesh := parallel_dims.get_optional_mesh("cp")) is not None:</code> 就能优雅处理"该并行没开"的情况。</p>
+
+<div class="callout warn">
+  <div class="title">fake backend - 为什么单机能模拟 32 卡</div>
+  <code>build_mesh()</code> 对 size=1（或 efsdp 在 ep=1 时）的轴用 <code>"fake"</code> backend 覆盖
+  （<code>unflatten_mesh</code> 的 <code>backend_override</code>），<strong>不创建真实 NCCL 进程组</strong>。
+  这就是 <code>NGPU=32 COMM_MODE=fake_backend ./run_train.sh</code> 的原理：mesh 照建，通信全走 fake，
+  用来在没 GPU / 没 NCCL 的环境里校验配置和网格构建。<br>
+  注意 <code>fsdp</code> 是例外 - 即使 size=1 也保留真 backend，好让 <code>fully_shard()</code> 能装 <code>MixedPrecisionPolicy</code>。
+</div>
+
+<div class="callout tip">
+  <div class="title">把 cp / pp / ep 也开起来会怎样</div>
+  它们只是给 world 网格多 unflatten 出几个轴，乘积仍须 = world_size：<br>
+  - <code>cp=2</code>：dataloadering 变 4 维 <code>(pp,batch,cp,tp)</code>，loss 组扩成 <code>batch*cp</code>；<br>
+  - <code>pp=2</code>：多出 <code>pp</code> 轴，模型按 stage 切到不同 rank 组；<br>
+  - <code>ep&gt;1</code>：激活 sparse 网格 <code>(pp,dp_replicate,efsdp,ep)</code>，<code>efsdp</code> 改走真 backend，MoE 专家分片开始通信。<br>
+  换配置只是换展开形状，<strong>rank 还是那批 rank</strong>。
+</div>
+
+<div class="footer">
+  对照源码：<code>torchtitan/distributed/parallel_dims.py</code> 的 <code>build_mesh()</code> / <code>get_mesh()</code> / <code>_mesh_exist()</code>。
+  &nbsp;|&nbsp; 例子取自该文件 <code>get_all_one_dimensional_meshes</code> 的 docstring。
+</div>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

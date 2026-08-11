@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>torchtitan/ 目录结构 · 一页速览</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    --bg:#eef1f6; --card:#ffffff; --txt:#1e293b; --dim:#64748b; --line:#cbd5e1;
+    --c1:#15803d; --c2:#c2410c; --c3:#1d4ed8; --cfg:#7c3aed; --proto:#0f766e;
+    --base:#475569; --exp:#9333ea;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--txt);font-size:13px;line-height:1.5}
+  .page{max-width:1280px;margin-left:280px;margin-right:auto;padding:18px 24px 26px}
+  h1{font-size:22px;margin-bottom:2px;color:#0f172a}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:14px}
+  .grid{display:grid;grid-template-columns:1.05fr 1fr;gap:16px;align-items:start}
+
+  /* tree */
+  .tree{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;
+    font-family:"SF Mono","JetBrains Mono",Consolas,monospace;font-size:11.5px;line-height:1.55;
+    white-space:pre;overflow-x:auto}
+  .tree .c1{color:var(--c1);font-weight:700}
+  .tree .c2{color:var(--c2);font-weight:700}
+  .tree .c3{color:var(--c3);font-weight:700}
+  .tree .cfg{color:var(--cfg);font-weight:700}
+  .tree .proto{color:var(--proto);font-weight:700}
+  .tree .base{color:var(--base)}
+  .tree .exp{color:var(--exp);font-weight:700}
+  .tree .note{color:var(--dim)}
+  .tree .br{color:#94a3b8}
+
+  /* blocks table */
+  .blocks{display:flex;flex-direction:column;gap:8px}
+  .blk{display:grid;grid-template-columns:88px 1fr;gap:10px;align-items:start;
+    background:var(--card);border:1px solid var(--line);border-radius:9px;padding:9px 12px;
+    border-left:4px solid var(--line)}
+  .blk .tag{font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px;color:#fff;
+    text-align:center;align-self:start;white-space:nowrap}
+  .blk .body b{color:#0f172a}
+  .blk .body .dirs{color:var(--c3);font-family:monospace;font-size:11px}
+  .blk .body .role{color:var(--dim);font-size:11px;margin-top:1px}
+  .t-entry{background:var(--c3)} .t-cfg{background:var(--cfg)} .t-proto{background:var(--proto)}
+  .t-c1{background:var(--c1)} .t-c2{background:var(--c2)} .t-c3{background:var(--c3)}
+  .t-base{background:var(--base)} .t-exp{background:var(--exp)}
+
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 0;font-size:11px;color:var(--dim)}
+  .legend span b{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
+  .foot{margin-top:16px;background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:12px 16px;border-left:4px solid #0f172a}
+  .foot b{color:#0f172a}
+  .foot .mono{font-family:monospace;font-size:11.5px;color:var(--c3)}
+  .comps{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;font-size:11px}
+  .comp{border:1px solid var(--line);border-radius:7px;padding:7px 9px;background:#f8fafc}
+  .comp .n{font-weight:700;border-radius:4px;padding:1px 6px;color:#fff;display:inline-block;margin-bottom:3px}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="page">
+
+<h1>torchtitan/ 目录结构 · 一页速览</h1>
+<p class="sub">torch 2.12 · 三组件分离(模型定义 / 并行编排 / 训练循环)+ 实验区 + 基础设施 · 颜色对应组件归属</p>
+
+<div class="grid">
+
+<!-- ============ LEFT: tree ============ -->
+<div class="tree"><span class="br">torchtitan/</span>
+├── <span class="c3">train.py</span>            <span class="note">← 入口:解析配置、建并跑 Trainer</span>
+├── <span class="c3">trainer.py</span>          <span class="note">← Trainer:训练循环主控</span>
+├── __init__.py
+│
+├── <span class="cfg">config/</span>            <span class="note">【配置系统】配置树 + tyro CLI 覆盖</span>
+│   ├── manager.py      <span class="note">← ConfigManager:--module/--config + &lt;sec&gt;.&lt;key&gt;=&lt;val&gt;</span>
+│   ├── configs.py      <span class="note">← ParallelismConfig / TrainingConfig 等</span>
+│   ├── configurable.py <span class="note">← Configurable:build() 递归实例化</span>
+│   ├── function.py     <span class="note">← ModelConfigConverter(如 Float8 转换)</span>
+│   └── override.py     <span class="note">← @override 工厂机制</span>
+│
+├── <span class="proto">protocols/</span>        <span class="note">【抽象协议】接口契约</span>
+│   ├── module.py       <span class="note">← Module(nn.Module+Configurable)+ parallelize 递归</span>
+│   ├── model_spec.py   <span class="note">← ModelSpec:模型+并行函数打包</span>
+│   ├── model.py        <span class="note">← BaseModel</span>
+│   ├── sharding.py     <span class="note">← ShardingConfig(声明式切分)</span>
+│   └── state_dict_adapter.py
+│
+├── <span class="c1">models/</span>             <span class="note">【模型定义】与并行无关,注重可读</span>
+│   ├── common/         <span class="note">← 共享:attention/moe/feed_forward/rope/decoder</span>
+│   ├── llama3/  deepseek_v3/  qwen3/  qwen3_5/
+│   ├── gpt_oss/  flux/  <span class="note">(model+sharding+parallelize+config_registry)</span>
+│   └── utils.py        <span class="note">← 参数量/FLOPs 统计</span>
+│
+├── <span class="c2">distributed/</span>        <span class="note">【并行编排】施加并行的辅助函数</span>
+│   ├── fsdp.py         <span class="note">← apply_fsdp_to_decoder(FSDP2+专家分流)</span>
+│   ├── tensor_parallel.py <span class="note">← async TP / NoParallel</span>
+│   ├── pipeline_parallel.py <span class="note">← pipeline_llm(PP 切 stage+schedule)</span>
+│   ├── context_parallel.py <span class="note">← apply_cp_to_forward / cp_shard</span>
+│   ├── parallel_dims.py <span class="note">← ParallelDims + mesh(efsdp 推导)</span>
+│   ├── activation_checkpoint.py / compile.py
+│   ├── full_dtensor.py / spmd_types.py <span class="note">← SPMD 后端</span>
+│   └── deepep/  minimal_async_ep/  <span class="note">← EP 通信后端</span>
+│
+├── <span class="c3">components/</span>         <span class="note">【训练组件】通用训练部件</span>
+│   ├── dataloader.py  optimizer.py  lr_scheduler.py  loss.py
+│   ├── checkpoint.py  metrics.py  tokenizer.py  validate.py
+│   ├── lora.py  checkpoint_utils.py
+│   └── quantization/  <span class="note">← Float8 等</span>
+│
+├── <span class="exp">experiments/</span>       <span class="note">【实验区】独立实验,单向依赖 core</span>
+│   ├── graph_trainer/  <span class="note">← 编译图训练(SimpleFSDP+graph pass)</span>
+│   ├── torchft/        <span class="note">← 容错(fault tolerance)</span>
+│   ├── transformers_modeling_backend/ <span class="note">← HF 模型训练</span>
+│   ├── rl/            <span class="note">← 强化学习(GRPO+vLLM rollout)</span>
+│   └── forge/         <span class="note">← 轻量训练引擎(后训练拼装)</span>
+│
+├── <span class="base">overrides/</span>        <span class="note">【@override 模块】运行时替换 Configurable</span>
+├── <span class="base">hf_datasets/</span>      <span class="note">【数据集】HF 数据加载适配</span>
+├── <span class="base">observability/</span>    <span class="note">【可观测】structured_logger / tracing</span>
+├── <span class="base">ops/</span>               <span class="note">【自定义算子】</span>
+└── <span class="base">tools/</span>             <span class="note">【工具】logging / utils</span></div>
+
+<!-- ============ RIGHT: blocks ============ -->
+<div>
+  <div class="blocks">
+    <div class="blk" style="border-left-color:var(--c3)">
+      <span class="tag t-entry">入口</span>
+      <div class="body"><b>train.py · trainer.py</b>
+        <div class="role">解析配置、驱动训练循环。Trainer 拿到 config 后按字段各取所需。</div></div>
+    </div>
+    <div class="blk" style="border-left-color:var(--cfg)">
+      <span class="tag t-cfg">配置 config/</span>
+      <div class="body"><b>配置树 + tyro CLI 覆盖</b>(非 TOML)
+        <div class="role"><span class="dirs">manager / configs / configurable / override</span> · config_registry 函数返回 Trainer.Config,tyro 覆盖 &lt;sec&gt;.&lt;key&gt;=&lt;val&gt;</div></div>
+    </div>
+    <div class="blk" style="border-left-color:var(--proto)">
+      <span class="tag t-proto">协议 protocols/</span>
+      <div class="body"><b>抽象接口契约</b>
+        <div class="role"><span class="dirs">module / model_spec / sharding</span> · Module=nn.Module+Configurable;ModelSpec 打包模型+并行函数;ShardingConfig 声明切分</div></div>
+    </div>
+    <div class="blk" style="border-left-color:var(--c1)">
+      <span class="tag t-c1">①模型 models/</span>
+      <div class="body"><b>模型定义,与并行无关、注重可读</b>
+        <div class="role"><span class="dirs">common/ + llama3/deepseek_v3/qwen3/gpt_oss/flux</span> · 每模型:model.py(结构)+sharding.py+parallelize.py+config_registry.py</div></div>
+    </div>
+    <div class="blk" style="border-left-color:var(--c2)">
+      <span class="tag t-c2">②并行 distributed/</span>
+      <div class="body"><b>施加并行的编排函数</b>
+        <div class="role"><span class="dirs">fsdp / tensor_parallel / pipeline_parallel / context_parallel / parallel_dims</span> · CP 包装→parallelize→async TP→AC→compile→FSDP</div></div>
+    </div>
+    <div class="blk" style="border-left-color:var(--c3)">
+      <span class="tag t-c3">③组件 components/</span>
+      <div class="body"><b>通用训练循环部件</b>
+        <div class="role"><span class="dirs">dataloader / optimizer / lr_scheduler / loss / checkpoint / metrics / tokenizer</span> · Configurable,可被 override 替换</div></div>
+    </div>
+    <div class="blk" style="border-left-color:var(--exp)">
+      <span class="tag t-exp">实验 experiments/</span>
+      <div class="body"><b>独立实验区,标准宽松,单向依赖 core</b>
+        <div class="role"><span class="dirs">graph_trainer · torchft · transformers_modeling_backend · rl · forge</span> · 复用 core 模型定义,只换训练范式</div></div>
+    </div>
+    <div class="blk" style="border-left-color:var(--base)">
+      <span class="tag t-base">基础设施</span>
+      <div class="body"><b>overrides/ hf_datasets/ observability/ ops/ tools/</b>
+        <div class="role">@override 模块 · HF 数据集 · structured logger · 自定义算子 · logging/utils</div></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><b style="background:var(--c1)"></b>①模型定义</span>
+    <span><b style="background:var(--c2)"></b>②并行编排</span>
+    <span><b style="background:var(--c3)"></b>③训练循环</span>
+    <span><b style="background:var(--cfg)"></b>配置</span>
+    <span><b style="background:var(--proto)"></b>协议</span>
+    <span><b style="background:var(--exp)"></b>实验</span>
+    <span><b style="background:var(--base)"></b>基础设施</span>
+  </div>
+</div>
+
+</div><!-- /grid -->
+
+<!-- 三组件经 config_registry 组装 -->
+<div class="foot">
+  <b>三组件经 <span class="mono">config_registry</span> 分离又组装:</b>
+  模型定义(config)·并行编排(函数引用)·训练循环配置(通用字段)分别挂到 <span class="mono">Trainer.Config / ModelSpec</span> 的不同字段,代码物理分离、逻辑正交,只在 config_registry 拼成可运行的 Trainer.Config。
+  <div class="comps">
+    <div class="comp"><span class="n" style="background:var(--c1)">①</span> <b>模型定义</b> models/ — 纯结构,零并行依赖,不知 NCCL 存在</div>
+    <div class="comp"><span class="n" style="background:var(--c2)">②</span> <b>并行编排</b> distributed/ + parallelism 字段 — 函数,依赖模型但不改模型</div>
+    <div class="comp"><span class="n" style="background:var(--c3)">③</span> <b>训练循环</b> trainer.py + components/ — 通用,经 config 字段配置</div>
+  </div>
+</div>
+
+<div class="sub" style="margin-top:14px;text-align:center">一句话:<b>train.py 入口 → trainer.py 跑循环</b>;models 定义模型(①)、distributed 施加并行(②)、components 提供训练部件(③),三者经 config_registry 组装、protocols 抽象解耦;experiments 在旁做实验不污染 core。</div>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

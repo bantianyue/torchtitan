@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>并行策略代码地图(DeepSeek-V3)· TP/SP/CP/PP/DP/FSDP/EP 各在哪儿</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    --tp:#3498db; --sp:#f1c40f; --cp:#e74c3c; --pp:#1abc9c;
+    --dp:#2ecc71; --fsdp:#e67e22; --ep:#9b59b6;
+    --bg:#0d0f14; --card:#161a22; --txt:#d7dde6; --dim:#8b94a3; --line:#272d39; --acc:#9be0a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1200px;margin:0 auto;padding:26px 20px 90px}
+  h1{font-size:26px;margin:.2em 0 .1em;color:#fff}
+  h2{font-size:21px;margin:1.6em 0 .4em;padding-bottom:7px;border-bottom:2px solid var(--line);
+    color:#fff;display:flex;align-items:center;gap:10px}
+  .num{color:#0d0f14;width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;
+    justify-content:center;font-size:15px;font-weight:800}
+  h3{font-size:16.5px;margin:1.1em 0 .35em;color:#cdd4df}
+  p{margin:.5em 0}
+  code{background:#0a0c11;border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+    font-family:"JetBrains Mono",Consolas,Menlo,monospace;font-size:13px;color:var(--acc)}
+  .sub{color:var(--dim);font-size:12.5px}
+  svg{display:block;margin:6px auto;max-width:100%;height:auto}
+  .figcap{text-align:center;color:var(--dim);font-size:12px;margin:2px 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:.9em 0}
+  table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:12.5px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{background:#1c212c;color:#eef2f8;font-weight:600}
+  tr:nth-child(even) td{background:#11151c}
+  .loc{font-family:"JetBrains Mono",Consolas,monospace;font-size:11.5px;color:var(--acc);white-space:nowrap}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;font-weight:700;color:#0d0f14}
+  .t-tp{background:var(--tp)} .t-sp{background:var(--sp)} .t-cp{background:var(--cp)}
+  .t-pp{background:var(--pp)} .t-dp{background:var(--dp)} .t-fsdp{background:var(--fsdp)} .t-ep{background:var(--ep);color:#fff}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="wrap">
+
+<h1>并行策略代码地图(DeepSeek-V3)· TP/SP/CP/PP/DP/FSDP/EP 各在哪儿</h1>
+<p class="sub">每个并行策略:做了什么、声明在哪、施加在哪、运行时通信在哪、配置开关在哪——全部带 <code>文件:行号</code>(torchtitan main 分支;调度器实现部分在 PyTorch 库)。示例:DeepSeek-V3 671B 示意配置,96 GPU · PP3 / TP2 / CP2 / EP4 / DP8。</p>
+
+<div class="card">
+<b>DeepSeek-V3 671B 模型结构(代码出处 <span class="loc">models/deepseek_v3/__init__.py:462-523</span>):</b>
+<p style="margin-top:6px">dim=7168 · 61 层(前 3 层 dense FFN,后 58 层 MoE)· vocab=129280 · MLA 注意力(128 heads × 192 head_dim,q_lora_rank=1536,kv_lora_rank=512)· MoE:256 路由专家 + 1 共享专家 · router top_k=8 · 专家内层 dim=7168 → moe_hidden_dim=2048 · dense FFN 中间维 18432。官方配置(<span class="loc">config_registry.py:196-204</span>):local_batch_size=4 · seq_len=4096 · Interleaved1F1B · expert_parallel_degree=2。</p>
+<p class="sub">本页示意配置(为讲清所有策略):global_batch=64 · local_batch_size=4 · seq_len=4096 · pp微批=1 · PP3/TP2/CP2/EP4/DP8 → 梯度累积 2,PP微批 4;GPU 总数 = 3×8×2×2 = 96。EP 从"未启用"变为"启用",这是与 Llama3 版最大的不同。</p>
+</div>
+
+<!-- ============ 0 总体流程 ============ -->
+<h2><span class="num" style="background:linear-gradient(135deg,#2ecc71,#3498db);color:#fff">0</span>总体训练流程:代码时间线</h2>
+<p>入口 <code>torchtitan/train.py</code> 构造 <code>Trainer</code>(初始化:一次),然后 <code>trainer.train()</code> 循环执行 <code>train_step</code>(每步重复)。DeepSeek-V3 走 <code>parallelize_deepseekv3</code> 而非 llama3 的 parallelize。</p>
+
+<svg viewBox="0 0 1160 560" font-family="monospace" font-size="10.5">
+  <!-- init column -->
+  <g transform="translate(30,20)">
+    <text x="0" y="14" fill="#2ecc71" font-weight="700" font-size="13">初始化(1 次) · Trainer.__init__</text>
+    <rect x="0" y="24" width="540" height="40" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="40" fill="#c8d0dc">① init_distributed → ParallelDims</text><text x="12" y="56" fill="#9be0a3" class="loc">trainer.py:572-581</text>
+    <path d="M 270 64 L 270 74" stroke="#272d39" stroke-width="2"/>
+    <rect x="0" y="74" width="540" height="40" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="90" fill="#c8d0dc">② build_mesh:生成全部并行轴(图 2,含 ep/efsdp)</text><text x="12" y="106" fill="#9be0a3" class="loc">parallel_dims.py:203-384</text>
+    <path d="M 270 114 L 270 124" stroke="#272d39" stroke-width="2"/>
+    <rect x="0" y="124" width="540" height="40" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="140" fill="#c8d0dc">③ 模型 meta device 构建(671B 结构)</text><text x="12" y="156" fill="#9be0a3" class="loc">trainer.py:297-301;deepseek_v3/__init__.py:462-523</text>
+    <path d="M 270 164 L 270 174" stroke="#272d39" stroke-width="2"/>
+    <rect x="0" y="174" width="540" height="52" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="190" fill="#c8d0dc">④ parallelize:TP/SP 声明施加 + PP 层切分</text>
+    <text x="12" y="206" fill="#9be0a3" class="loc">trainer.py:371-389 → models/deepseek_v3/parallelize.py:27-93</text>
+    <path d="M 270 226 L 270 236" stroke="#272d39" stroke-width="2"/>
+    <rect x="0" y="236" width="540" height="52" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="252" fill="#c8d0dc">⑤ apply_fsdp_to_decoder:稠密参数 + 专家(EP 双 mesh)</text>
+    <text x="12" y="268" fill="#9be0a3" class="loc">deepseek_v3/parallelize.py:67-93 → fsdp.py:81-336(EP 分支 194-272)</text>
+    <path d="M 270 288 L 270 298" stroke="#272d39" stroke-width="2"/>
+    <rect x="0" y="298" width="540" height="40" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="314" fill="#c8d0dc">⑥ dataloader:DP 数据切分</text><text x="12" y="330" fill="#9be0a3" class="loc">trainer.py:498-509 → hf_datasets/text_datasets.py:95,278</text>
+  </g>
+
+  <!-- train loop -->
+  <g transform="translate(610,20)">
+    <text x="0" y="14" fill="#3498db" font-weight="700" font-size="13">训练循环 · train() · 每步重复</text>
+    <rect x="0" y="24" width="520" height="40" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="40" fill="#c8d0dc">while should_continue_training()</text>
+    <text x="12" y="56" fill="#9be0a3" class="loc">trainer.py:886-894;退出条件 930-931(steps 次)</text>
+    <path d="M 260 64 L 260 74" stroke="#272d39" stroke-width="2"/>
+    <rect x="0" y="74" width="520" height="88" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="90" fill="#c8d0dc">train_step(每优化步 ×1)</text><text x="12" y="106" fill="#9be0a3" class="loc">trainer.py:757-865</text>
+    <text x="24" y="124" fill="#8b94a3">zero_grad :760 │ 预取 2 轮+valid_tokens :769-786 │ 循环 2 轮 :790-801 │ clip+step :804-814</text>
+    <text x="24" y="142" fill="#8b94a3">loss 归约 log :827-850(loss_mesh)</text>
+    <path d="M 260 162 L 260 172" stroke="#272d39" stroke-width="2"/>
+    <rect x="0" y="172" width="520" height="88" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="188" fill="#c8d0dc">forward_backward_step(每梯度累积轮 ×2)</text><text x="12" y="204" fill="#9be0a3" class="loc">trainer.py:696-755</text>
+    <text x="24" y="222" fill="#8b94a3">post_dataloading_process(CP 切) :707,668-676</text>
+    <text x="24" y="240" fill="#8b94a3">pp_schedule.step(4 微批) :717-724 │ loss 求和 :739</text>
+    <path d="M 260 260 L 260 270" stroke="#272d39" stroke-width="2"/>
+    <rect x="0" y="270" width="520" height="64" rx="7" fill="#0e1219" stroke="#272d39"/>
+    <text x="12" y="286" fill="#c8d0dc">batch_generator(数据供给,CPU)</text><text x="12" y="302" fill="#9be0a3" class="loc">trainer.py:583-610</text>
+    <text x="24" y="320" fill="#8b94a3">每迭代 yield 一个 [4,4096](CPU),由 train_step 移 GPU</text>
+  </g>
+</svg>
+<p class="figcap">图 0-1:总体流程代码时间线。左=初始化(并行全部在此定型),右=每步重复的 train_step。与 Llama3 版差异:④⑤ 换成 deepseek_v3 的 parallelize(带 EP)。</p>
+
+<!-- ============ 1 初始化施加链 ============ -->
+<h2><span class="num" style="background:#2ecc71;color:#0d0f14">1</span>初始化:并行是怎么被"施加"到模型上的</h2>
+
+<svg viewBox="0 0 1160 330" font-family="monospace" font-size="10.5">
+  <g transform="translate(30,20)">
+    <rect x="0" y="30" width="230" height="80" rx="8" fill="#0e1219" stroke="#8b94a3"/>
+    <text x="115" y="52" text-anchor="middle" fill="#fff" font-weight="700">meta 模型</text>
+    <text x="115" y="70" text-anchor="middle" fill="#8b94a3" font-size="9.5">DeepSeekV3Model</text>
+    <text x="115" y="86" text-anchor="middle" fill="#8b94a3" font-size="9.5">671B 全量权重</text>
+    <path d="M 232 70 L 268 70" stroke="#3498db" stroke-width="2.5" marker-end="url(#c1)"/>
+
+    <g transform="translate(272,10)">
+      <rect x="0" y="0" width="260" height="130" rx="8" fill="#101f2c" stroke="#3498db"/>
+      <text x="130" y="32" text-anchor="middle" fill="#3498db" font-weight="700">Module.parallelize(TP/SP)</text>
+      <text x="130" y="50" text-anchor="middle" fill="#8b94a3" font-size="9.5">按 sharding_config 施加</text>
+      <text x="12" y="70" fill="#c8d0dc" font-size="9.5">· 权重 placement</text><text x="118" y="70" fill="#9be0a3" font-size="9">module.py:339-390</text>
+      <text x="12" y="88" fill="#c8d0dc" font-size="9.5">· 前向重写(local_map)</text><text x="12" y="102" fill="#9be0a3" font-size="9">module.py:418-513</text>
+      <text x="12" y="116" fill="#c8d0dc" font-size="9">· 声明:deepseek_v3/sharding.py</text>
+    </g>
+    <path d="M 534 70 L 570 70" stroke="#1abc9c" stroke-width="2.5" marker-end="url(#c1)"/>
+
+    <g transform="translate(574,10)">
+      <rect x="0" y="0" width="250" height="130" rx="8" fill="#0e1a17" stroke="#1abc9c"/>
+      <text x="125" y="32" text-anchor="middle" fill="#1abc9c" font-weight="700">PP 层切分</text>
+      <text x="125" y="50" text-anchor="middle" fill="#8b94a3" font-size="9.5">pipeline_llm</text>
+      <text x="12" y="70" fill="#c8d0dc" font-size="9.5">· 层分配(61→3 段)</text><text x="12" y="84" fill="#9be0a3" font-size="9">pipeline_parallel.py:315-425</text>
+      <text x="12" y="102" fill="#c8d0dc" font-size="9.5">· split 模型+建 stage</text><text x="12" y="116" fill="#9be0a3" font-size="9">:428-487, :530-598</text>
+    </g>
+    <path d="M 826 70 L 862 70" stroke="#e67e22" stroke-width="2.5" marker-end="url(#c1)"/>
+
+    <g transform="translate(866,10)">
+      <rect x="0" y="0" width="264" height="130" rx="8" fill="#2a1d10" stroke="#e67e22"/>
+      <text x="132" y="32" text-anchor="middle" fill="#e67e22" font-weight="700">FSDP + EP 分片</text>
+      <text x="132" y="50" text-anchor="middle" fill="#8b94a3" font-size="9.5">apply_fsdp_to_decoder</text>
+      <text x="12" y="70" fill="#c8d0dc" font-size="9.5">· 稠密参数:fully_shard 1/16</text><text x="12" y="84" fill="#9be0a3" font-size="9">fsdp.py:165-178,180-278,280</text>
+      <text x="12" y="102" fill="#c8d0dc" font-size="9.5">· 专家:edp_mesh 分片 1/8</text><text x="12" y="116" fill="#9be0a3" font-size="9">fsdp.py:194-272;deepseek_v3/parallelize.py:67-93</text>
+    </g>
+
+    <rect x="0" y="165" width="1130" height="135" rx="8" fill="#0a0c11" stroke="#272d39"/>
+    <text x="14" y="187" fill="#fff" font-weight="700" font-size="12">数据侧:DP 切分(与模型并行正交)+ EP 专家分布</text>
+    <g font-size="10.5">
+      <text x="14" y="209" fill="#c8d0dc">· dataloader 构建:传 batch_degree/batch_rank/seq_len/local_batch_size</text><text x="700" y="209" fill="#9be0a3" font-size="9.5">trainer.py:498-509</text>
+      <text x="14" y="229" fill="#c8d0dc">· 数据集按 DP 切 8 份:split_dataset_by_node</text><text x="700" y="229" fill="#9be0a3" font-size="9.5">text_datasets.py:95</text>
+      <text x="14" y="249" fill="#c8d0dc">· batch_size = local_batch_size → 每迭代 [4,4096]</text><text x="700" y="249" fill="#9be0a3" font-size="9.5">text_datasets.py:278</text>
+      <text x="14" y="269" fill="#c8d0dc">· 专家按 EP=4 切:256 专家 → 每 rank 64 个(router top_k=8 路由)</text><text x="700" y="269" fill="#9be0a3" font-size="9.5">moe.py:40-53,173;configs.py:242</text>
+      <text x="14" y="289" fill="#c8d0dc">· 梯度归约由 FSDP/EFSDP 的 reduce-scatter 承担(禁用自动除法)</text><text x="700" y="289" fill="#9be0a3" font-size="9.5">fsdp.py:27-41</text>
+    </g>
+  </g>
+  <defs><marker id="c1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+</svg>
+<p class="figcap">图 1-1:初始化施加链(DeepSeek-V3 版)。与 Llama3 版差异:FSDP 框变为"FSDP + EP 双 mesh"——稠密参数走 fsdp 轴,MoE 专家走 edp_mesh(efsdp×ep)。</p>
+
+<!-- ============ 2 mesh ============ -->
+<h2><span class="num" style="background:#9b59b6;color:#fff">2</span>一切的根基:DeviceMesh 轴(build_mesh)</h2>
+<p>所有并行策略都是"在某条 mesh 轴上通信"。DeepSeek-V3 的 EP=4 让 sparse_mesh(efsdp/ep)真正生效(<code>parallel_dims.py:197-200</code>:ep&gt;1 时 efsdp 轴保活):</p>
+
+<svg viewBox="0 0 1160 350" font-family="monospace" font-size="10.5">
+  <g transform="translate(30,20)">
+    <rect x="0" y="0" width="1130" height="44" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="18" fill="#c8d0dc">dataloading_mesh = unflatten(world, ("pp","batch","cp","tp"), (3,8,2,2)) —— 数据/序列/层相关轴</text>
+    <text x="14" y="36" fill="#9be0a3" font-size="9.5">parallel_dims.py:279-283;batch = dp_replicate×dp_shard = 8(:272)</text>
+    <rect x="0" y="52" width="1130" height="44" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="70" fill="#c8d0dc">loss_mesh = batch×cp flatten —— loss/valid_tokens 归约</text>
+    <text x="14" y="88" fill="#9be0a3" font-size="9.5">parallel_dims.py:284;使用 trainer.py:827-850</text>
+    <rect x="0" y="104" width="1130" height="44" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="122" fill="#c8d0dc">dense_mesh = ("pp","dp_replicate","fsdp","tp") —— 稠密参数 FSDP 轴;fsdp = dp_shard×cp = 8×2 = 16</text>
+    <text x="14" y="140" fill="#9be0a3" font-size="9.5">parallel_dims.py:324-329;fsdp 定义 :273</text>
+    <rect x="0" y="156" width="1130" height="44" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="174" fill="#c8d0dc">sparse_mesh = ("pp","dp_replicate","efsdp","ep") —— MoE 专家轴(本配置 ep=4 生效!)</text>
+    <text x="14" y="192" fill="#9be0a3" font-size="9.5">parallel_dims.py:331-335;efsdp = fsdp×tp//ep = 16×2/4 = 8(:274);保活条件 ep&gt;1(:197-200)</text>
+    <rect x="0" y="208" width="1130" height="116" rx="8" fill="#0a0c11" stroke="#272d39"/>
+    <text x="14" y="228" fill="#fff" font-weight="700" font-size="11.5">本配置各轴度数</text>
+    <g font-size="10.5">
+      <text x="14" y="248" fill="#3498db" font-weight="700">tp=2</text><text x="70" y="248" fill="#c8d0dc">权重切半(含 dense FFN)</text>
+      <text x="250" y="248" fill="#f1c40f" font-weight="700">sp(复用 tp 对)</text><text x="355" y="248" fill="#c8d0dc">激活序列切分</text>
+      <text x="510" y="248" fill="#e74c3c" font-weight="700">cp=2</text><text x="566" y="248" fill="#c8d0dc">序列 4096→2048</text>
+      <text x="690" y="248" fill="#1abc9c" font-weight="700">pp=3</text><text x="746" y="248" fill="#c8d0dc">61 层分 3 段</text>
+      <text x="840" y="248" fill="#2ecc71" font-weight="700">batch=8</text><text x="910" y="248" fill="#c8d0dc">数据切 8 份</text>
+      <text x="14" y="268" fill="#e67e22" font-weight="700">fsdp=16</text><text x="84" y="268" fill="#c8d0dc">稠密参数分片组(dp_shard8×cp2)</text>
+      <text x="340" y="268" fill="#9b59b6" font-weight="700">ep=4</text><text x="396" y="268" fill="#c8d0dc">专家切 4 份(256→64/rank)</text>
+      <text x="560" y="268" fill="#9b59b6" font-weight="700">efsdp=8</text><text x="630" y="268" fill="#c8d0dc">专家 FSDP 分片组</text>
+      <text x="14" y="288" fill="#8b94a3" font-size="9.5">seq_len 约束:须被 tp×(cp×2) 整除(SP+CP 负载均衡要求)</text><text x="530" y="288" fill="#9be0a3" font-size="9">parallel_dims.py:694-701;校验 trainer.py:242-250</text>
+      <text x="14" y="308" fill="#8b94a3" font-size="9.5">专家分片 efsdp×ep = 8×4 = 32:全部"数据并行"秩共享同一批专家的 1/32 分片(EP 组内再 FSDP)</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 2-1:mesh 轴与各自度数(DeepSeek-V3 版)。与 Llama3 版差异:ep=4、efsdp=8 生效,fsdp 组=16(因 cp=2)。</p>
+
+<!-- ============ 3 各策略 ============ -->
+<h2><span class="num" style="background:#3498db;color:#fff">3</span>各并行策略详解:代码在哪、做了什么</h2>
+
+<h3><span class="tag t-tp">TP</span> 张量并行:切权重(MLA 投影 / dense FFN / vocab)</h3>
+<div class="card">
+<p><b>做了什么:</b>MLA 的 q 投影(128 heads × 192 head_dim)按 head 切、dense FFN 列/行切半、embed/lm_head 按 vocab 切;每层 4 次 TP 通信(SP 下)。</p>
+<table>
+<tr><th>环节</th><th>代码位置</th><th>说明</th></tr>
+<tr><td>配置开关</td><td class="loc">configs.py:130</td><td>tensor_parallel_degree(示意 2;官方 671B 未显式设,默认 1)</td></tr>
+<tr><td>切分声明</td><td class="loc">models/common/decoder_sharding.py:65-94</td><td>colwise(权重 S(0))/rowwise(权重 S(1)+输出 RS)通用规则</td></tr>
+<tr><td>attention(MLA)声明</td><td class="loc">decoder_sharding.py:155-229;deepseek_v3/sharding.py</td><td>q 投影列切(heads)、o 投影行切;MLA 的 kv 压缩投影同规则</td></tr>
+<tr><td>dense FFN 声明</td><td class="loc">decoder_sharding.py:232-250</td><td>set_dense_ffn_sharding:w1/w3 列 [18432,7168]、w2 行</td></tr>
+<tr><td>MoE 专家声明</td><td class="loc">models/common/moe.py:40-53;fsdp.py:194-272</td><td>专家权重 [256,7168,2048] 沿专家维 Shard(0) 切(EP/EFSDP 分工,见 EP 节)</td></tr>
+<tr><td>embed/lm_head 声明</td><td class="loc">decoder_sharding.py:253-283</td><td>权重 S(0) 切 vocab:[129280,7168]→[64640,7168]</td></tr>
+<tr><td>施加</td><td class="loc">deepseek_v3/parallelize.py:45-54;protocols/module.py:248-268</td><td>model.parallelize(parallel_dims) 递归施加</td></tr>
+<tr><td>权重 placement</td><td class="loc">protocols/module.py:339-390</td><td>按 state_shardings 把参数设为 DTensor Shard</td></tr>
+<tr><td>运行时通信</td><td class="loc">protocols/module.py:418-513</td><td>local_map 包装前向:进出线性层的 redistribute(all-gather/reduce-scatter)</td></tr>
+<tr><td>异步 TP(可选)</td><td class="loc">distributed/tensor_parallel.py:36-105;configs.py:133</td><td>AsyncTensorParallelLinear async_op=True;enable_async_tensor_parallel 默认关</td></tr>
+<tr><td>mesh 轴</td><td class="loc">parallel_dims.py:355</td><td>tp 轴(2 块)</td></tr>
+</table>
+</div>
+
+<h3><span class="tag t-sp">SP</span> 序列并行:切激活(层间 1/4 序列)</h3>
+<div class="card">
+<p><b>做了什么:</b>激活在 TP 对内按序列切分——norm/FFN 间以 <code>[1,1024,7168]</code> 形态存在,进线性层前 all-gather 拼回 <code>[1,2048,7168]</code>,出行并行后 reduce-scatter 切回。与 CP 不同:SP 在 TP 对内切(2 块),CP 在 cp 组切(2 块,同 TP 对是正交维度)。</p>
+<table>
+<tr><th>环节</th><th>代码位置</th><th>说明</th></tr>
+<tr><td>开关</td><td class="loc">configs.py:136</td><td>enable_sequence_parallel 默认 True</td></tr>
+<tr><td>激活 placement 声明</td><td class="loc">decoder_sharding.py:53-63</td><td>dense_sequence_parallel_placement:激活 Shard(1)</td></tr>
+<tr><td>norm 声明</td><td class="loc">decoder_sharding.py:96-112</td><td>norm_config:norm 权重不切,输入/输出 SP 切分</td></tr>
+<tr><td>行并行输出 RS</td><td class="loc">decoder_sharding.py:76-94</td><td>rowwise_config(output_sp=True):输出 reduce-scatter 到 S(1)</td></tr>
+<tr><td>施加</td><td class="loc">deepseek_v3/sharding.py</td><td>set_deepseekv3_sharding_config 按 enable_sp 填各层声明</td></tr>
+<tr><td>运行时通信</td><td class="loc">protocols/module.py:418-513</td><td>与 TP 共用 local_map 的 redistribute(SP 复用 TP 对通信)</td></tr>
+<tr><td>序列长度约束</td><td class="loc">parallel_dims.py:694-701;trainer.py:242-250</td><td>seq_len 须被 tp 整除(SP)且被 2×cp 整除(CP 负载均衡);4096 满足</td></tr>
+</table>
+</div>
+
+<h3><span class="tag t-cp">CP</span> 上下文并行:切数据序列(每 cp rank 1/2)</h3>
+<div class="card">
+<p><b>做了什么:</b>每微批数据序列切 1/2(<code>[4,4096]→[4,2048]</code>),attention 内 Q 只算本地段、K/V all-gather 成全量(<code>[1,4096,...]</code>)。</p>
+<table>
+<tr><th>环节</th><th>代码位置</th><th>说明</th></tr>
+<tr><td>配置开关</td><td class="loc">configs.py:208,211</td><td>context_parallel_degree=2;load_balancer 默认 "headtail"</td></tr>
+<tr><td>数据切分(调用点)</td><td class="loc">trainer.py:668-676</td><td>post_dataloading_process 内 prepare_context_parallel_input(每微批)</td></tr>
+<tr><td>数据切分(实现)</td><td class="loc">distributed/context_parallel.py:114-158,161-271</td><td>cp_shard → _context_parallel_shard(沿 seq 维,load_balancer 决定段划分)</td></tr>
+<tr><td>attention 包装</td><td class="loc">context_parallel.py:35-109</td><td>apply_cp_to_forward:FlexAttention 走 flex_cp_allgather(:57-78,671B 用 attn_backend="flex");SDPA 走 dispatcher(:80-101)</td></tr>
+<tr><td>包装调用</td><td class="loc">deepseek_v3/parallelize.py:47-52</td><td>CP 包装在 parallelize 之前,确保被 local_map 包住</td></tr>
+<tr><td>mesh 轴</td><td class="loc">parallel_dims.py:353</td><td>cp 轴(2 块)</td></tr>
+<tr><td>loss 归约参与</td><td class="loc">parallel_dims.py:284;trainer.py:827-850</td><td>loss_mesh 含 cp:loss/valid_tokens 跨 cp 归约</td></tr>
+</table>
+</div>
+
+<h3><span class="tag t-pp">PP</span> 流水线并行:切层(3 段)+ 微批调度</h3>
+<div class="card">
+<p><b>做了什么:</b>61 层分 3 段(stage0:embed+0-19、stage1:20-40、stage2:41-60+norm+lm_head;有效层 61+1+1=63 恰好均分 21/21/21),微批沿 batch 维切 4 份,1F1B 调度,阶段间 p2p 传 hidden/grad。官方 671B 配置用 Interleaved1F1B(每 rank 2 个虚拟 stage)。</p>
+<table>
+<tr><th>环节</th><th>代码位置</th><th>说明</th></tr>
+<tr><td>配置开关</td><td class="loc">configs.py:148,184,200</td><td>pipeline_parallel_degree=3;schedule="1F1B"(官方 671B 用 Interleaved1F1B,config_registry.py:202);microbatch_size=1</td></tr>
+<tr><td>stage 权重</td><td class="loc">configs.py:165,171</td><td>first/last_stage_less_layers=1(首尾 stage 少 1 层)</td></tr>
+<tr><td>层分配</td><td class="loc">pipeline_parallel.py:315-425</td><td>_generate_llm_fqn_per_model_part(按有效层数均分+余数)</td></tr>
+<tr><td>模型切分</td><td class="loc">pipeline_parallel.py:428-487</td><td>_split_module:deepcopy 后删除不属于本 stage 的模块(MoE 层整块搬移)</td></tr>
+<tr><td>stage 构建</td><td class="loc">pipeline_parallel.py:530-598</td><td>_pipeline_module_split:PipelineStage(用 pp_mesh 的组)</td></tr>
+<tr><td>schedule 构建</td><td class="loc">pipeline_parallel.py:216-312</td><td>n_microbatches = local_batch//microbatch(:252-260);loss_fn 包装为标量(:276-278)</td></tr>
+<tr><td>DTensor 跨阶段重建</td><td class="loc">pipeline_parallel.py:40-62</td><td>get_mesh 回调:收包后按 placement 重建 DTensor</td></tr>
+<tr><td>调度执行(1F1B)</td><td class="loc">torch/distributed/pipelining/schedules.py:952-1115</td><td>Schedule1F1B:warmup → 1B1F → cooldown</td></tr>
+<tr><td>step 入口/切微批</td><td class="loc">schedules.py:709-759,559-576</td><td>step():_split_inputs 沿 dim0 切 4 份</td></tr>
+<tr><td>调用点</td><td class="loc">trainer.py:371-389(构建),717-724(执行)</td><td>pp_schedule.step(inputs, losses=...)</td></tr>
+<tr><td>mesh 轴</td><td class="loc">parallel_dims.py:350</td><td>pp 轴(3 块)</td></tr>
+</table>
+</div>
+
+<h3><span class="tag t-dp">DP</span> 数据并行:切数据(8 份)+ 梯度归约</h3>
+<div class="card">
+<p><b>做了什么:</b>数据集按 batch 轴切 8 份,各 rank 读自己的 1/8;梯度经 FSDP/EFSDP 组 reduce-scatter 归约;loss/valid_tokens 在 loss_mesh(batch×cp)归约。与 Llama3 版完全相同。</p>
+<table>
+<tr><th>环节</th><th>代码位置</th><th>说明</th></tr>
+<tr><td>配置开关</td><td class="loc">configs.py:86,97</td><td>data_parallel_replicate_degree=1;shard_degree=-1(自动)</td></tr>
+<tr><td>batch 轴定义</td><td class="loc">parallel_dims.py:272;trainer.py:259-263</td><td>batch = dp_replicate×dp_shard = 8;batch_degree/batch_rank</td></tr>
+<tr><td>数据切分</td><td class="loc">trainer.py:498-509;text_datasets.py:95</td><td>dataloader 传 dp_world_size=batch_degree;split_dataset_by_node 切 8 份</td></tr>
+<tr><td>batch 打包</td><td class="loc">text_datasets.py:278</td><td>batch_size = local_batch_size → [4,4096]/迭代</td></tr>
+<tr><td>valid_tokens 归约</td><td class="loc">trainer.py:780-786</td><td>local_valid_tokens 在 batch mesh all-reduce → global_valid_tokens</td></tr>
+<tr><td>梯度归约</td><td class="loc">fsdp.py:27-41</td><td>禁用 FSDP 自动梯度除法;稠密梯度经 fsdp 组、专家梯度经 efsdp 组 reduce-scatter</td></tr>
+<tr><td>loss 归约</td><td class="loc">trainer.py:827-850;parallel_dims.py:284</td><td>loss_mesh(batch×cp)上 dist_sum/dist_max</td></tr>
+<tr><td>全局 batch 换算</td><td class="loc">trainer.py:349-367</td><td>grad_accum = global/(local×batch_degree) = 64/(4×8) = 2</td></tr>
+</table>
+</div>
+
+<h3><span class="tag t-fsdp">FSDP</span> 全分片数据并行:切稠密参数/梯度/优化器状态(1/16)</h3>
+<div class="card">
+<p><b>做了什么:</b>稠密参数(embed/attention/dense FFN/norm/lm_head)按 fsdp 轴(dp_shard×cp=16)分片;前向开头 all-gather 拼全,反向后 reduce-scatter 回 1/16。MoE 专家不走此轴(走 EFSDP,见 EP 节)。</p>
+<table>
+<tr><th>环节</th><th>代码位置</th><th>说明</th></tr>
+<tr><td>配置开关</td><td class="loc">configs.py:109</td><td>fsdp_reshard_after_forward="default"(PP 下 → 不逐层 reshard)</td></tr>
+<tr><td>分片轴</td><td class="loc">parallel_dims.py:273;deepseek_v3/parallelize.py:71-78</td><td>fsdp = dp_shard×cp = 16;mesh 选 get_mesh("fsdp")</td></tr>
+<tr><td>包装入口</td><td class="loc">fsdp.py:81-336;deepseek_v3/parallelize.py:84-93</td><td>apply_fsdp_to_decoder(ep_degree=4、edp_mesh 一并传入)</td></tr>
+<tr><td>逐模块包装</td><td class="loc">fsdp.py:165-178,180-278,280</td><td>embed / norm+lm_head / 每层 / 整体;MoE 层走 EP 分支(:187-272)</td></tr>
+<tr><td>reshard 策略解析</td><td class="loc">fsdp.py:54-78</td><td>"default" → not pp_enabled(PP 下 False,stage 首尾各一次)</td></tr>
+<tr><td>梯度除法禁用</td><td class="loc">fsdp.py:27-41</td><td>set_gradient_divide_factor(1.0),缩放由 loss÷gvt 负责</td></tr>
+<tr><td>HSDP 判定</td><td class="loc">fsdp.py:289-292</td><td>dp_replicate 轴存在时打印 HSDP</td></tr>
+</table>
+</div>
+
+<h3><span class="tag t-ep">EP</span> 专家并行:切 MoE 专家(256 → 每 rank 64)★ 本配置启用</h3>
+<div class="card">
+<p><b>做了什么:</b>256 个路由专家按 ep 轴切 4 份,每 rank 持 64 个;router(top_k=8)把 token 路由到对应专家所在 rank,跨 rank 的 token 经 all-to-all 送达;专家区域用独立 FSDP mesh(efsdp=8)再分片。共享专家(1 个)不走 EP。</p>
+<table>
+<tr><th>环节</th><th>代码位置</th><th>说明</th></tr>
+<tr><td>配置开关</td><td class="loc">configs.py:242;config_registry.py:201-204</td><td>expert_parallel_degree(示意 4;官方 671B 配置 2)</td></tr>
+<tr><td>sparse mesh</td><td class="loc">parallel_dims.py:331-335,274</td><td>("pp","dp_replicate","efsdp","ep");efsdp = fsdp×tp//ep = 8</td></tr>
+<tr><td>轴保活条件</td><td class="loc">parallel_dims.py:197-200</td><td>efsdp 轴仅 ep&gt;1 时存在——本配置 ep=4,稀疏 mesh 生效</td></tr>
+<tr><td>专家 mesh 选择</td><td class="loc">deepseek_v3/parallelize.py:67-93</td><td>resolve_sparse_fsdp_mesh;apply_fsdp 传 ep_degree/edp_mesh</td></tr>
+<tr><td>专家参数分片</td><td class="loc">fsdp.py:194-272</td><td>专家走 edp_mesh,shard_placement_fn 按参数选 mesh(专家 Shard(0) 切专家维)</td></tr>
+<tr><td>专家权重结构</td><td class="loc">models/common/moe.py:40-53</td><td>专家权重 [256, 7168, 2048] → EP=4 → 每 rank [64, 7168, 2048]</td></tr>
+<tr><td>路由</td><td class="loc">moe.py:173-...</td><td>TokenChoiceTopKRouter:top_k=8 选择专家,route_scale=2.5</td></tr>
+<tr><td>通信后端</td><td class="loc">deepseek_v3/__init__.py:496-497</td><td>moe_comm_backend 可选("hybridep" 等,见 config_registry.py:66-92)</td></tr>
+<tr><td>专家内 TP</td><td class="loc">moe.py / fsdp.py:200-203</td><td>专家数 &lt; 分片组时专家内权重 Shard(1)(moE 内层再切)</td></tr>
+</table>
+</div>
+
+<!-- ============ 4 总表 ============ -->
+<h2><span class="num" style="background:#f1c40f;color:#0d0f14">4</span>代码位置总表(一页速查)</h2>
+<table>
+<tr><th>策略</th><th>切什么(本配置)</th><th>声明/配置</th><th>施加/调用</th><th>运行时</th></tr>
+<tr><td><span class="tag t-tp">TP</span></td><td>权重(MLA 投影/dense FFN/vocab 切半)</td><td class="loc">configs.py:130;decoder_sharding.py:65-283</td><td class="loc">deepseek_v3/parallelize.py:45-54;module.py:248-268,339-390</td><td class="loc">module.py:418-513(local_map);tensor_parallel.py:36-105(异步)</td></tr>
+<tr><td><span class="tag t-sp">SP</span></td><td>激活序列(层间 1/4)</td><td class="loc">configs.py:136;decoder_sharding.py:53-63,76-94,96-112</td><td class="loc">deepseek_v3/sharding.py</td><td class="loc">module.py:418-513(复用 TP 对)</td></tr>
+<tr><td><span class="tag t-cp">CP</span></td><td>数据序列(1/2)</td><td class="loc">configs.py:208,211</td><td class="loc">trainer.py:668-676;deepseek_v3/parallelize.py:47-52</td><td class="loc">context_parallel.py:35-109,114-271</td></tr>
+<tr><td><span class="tag t-pp">PP</span></td><td>层(3 段)+微批</td><td class="loc">configs.py:148,184,200,165,171</td><td class="loc">trainer.py:371-389;pipeline_parallel.py:315-487,530-598</td><td class="loc">trainer.py:717-724;schedules.py:709-759,952-1115</td></tr>
+<tr><td><span class="tag t-dp">DP</span></td><td>数据(8 份)</td><td class="loc">configs.py:86,97;parallel_dims.py:272</td><td class="loc">trainer.py:259-263,498-509;text_datasets.py:95,278</td><td class="loc">trainer.py:780-786,827-850(归约)</td></tr>
+<tr><td><span class="tag t-fsdp">FSDP</span></td><td>稠密参数/梯度/优化器状态(1/16)</td><td class="loc">configs.py:109;parallel_dims.py:273</td><td class="loc">deepseek_v3/parallelize.py:71-78,84-93;fsdp.py:81-336</td><td class="loc">fsdp.py:54-78(reshard 策略),27-41(梯度)</td></tr>
+<tr><td><span class="tag t-ep">EP</span></td><td>MoE 专家(256→64/rank)+ EFSDP 分片</td><td class="loc">configs.py:242;parallel_dims.py:274,331-335</td><td class="loc">deepseek_v3/parallelize.py:67-93;fsdp.py:194-272</td><td class="loc">moe.py:40-53,173(专家+路由);all-to-all 在 moe_comm_backend</td></tr>
+</table>
+
+<div class="card">
+<p><b>与 Llama3 版的三处关键差异:</b>① EP 从"未启用"变"启用":sparse_mesh 的 efsdp/ep 轴生效(<code>parallel_dims.py:197-200,331-335</code>),专家按 ep 切 4 份、走独立 edp_mesh(<code>fsdp.py:194-272</code>);② attention 是 MLA 而非 GQA——TP 切分对象是 q/kv 投影与 o 投影,注意力后端为 FlexAttention(<code>config_registry.py:96,166</code>);③ 官方 671B 用 Interleaved1F1B(<code>config_registry.py:202</code>),每 rank 持 2 个虚拟 stage。</p>
+<p style="margin-top:8px"><b>三句话收尾:</b>① 初始化把所有并行一次性定型:mesh 轴(<code>parallel_dims.py:203-384</code>,含 ep/efsdp)→ TP/SP 声明(<code>decoder_sharding.py</code>)→ PP 切层(<code>pipeline_parallel.py:315-598</code>)→ FSDP 稠密 + EFSDP 专家(<code>fsdp.py:81-336</code>)→ DP 切数据(<code>text_datasets.py:95</code>)。② 每步 train_step(<code>trainer.py:757-865</code>)只做动态的事:CP 切数据(<code>trainer.py:668-676</code>)、微批切分(<code>schedules.py:559-576</code>)、SP/TP 层内通信(<code>module.py:418-513</code>)、PP 调度(<code>schedules.py:709-759</code>)、专家路由 all-to-all(<code>moe.py</code>)、梯度归约+优化(<code>trainer.py:804-814</code>)。③ 每个策略 = 一条 mesh 轴 + 一组声明 + 一个运行时通信点,三者缺一不可。</p>
+</div>
+
+<p class="sub">调度器实现位于 PyTorch 库(torch/distributed/pipelining/),其余均在本仓库。示意配置为教学用途;官方 671B 配置见 deepseek_v3/config_registry.py:160-208(EP=2、Interleaved1F1B)。</p>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

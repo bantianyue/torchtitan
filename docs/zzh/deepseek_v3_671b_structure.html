@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepSeek V3 671B · 模型结构与代码定义</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    --tp:#1d4ed8; --cp:#b91c1c; --pp:#0f766e; --dp:#15803d; --fsdp:#c2410c; --ep:#7c3aed;
+    --bg:#eef1f6; --card:#ffffff; --txt:#1e293b; --dim:#64748b; --line:#cbd5e1; --acc:#15803d;
+    --code-bg:#0f172a; --code-fg:#e2e8f0;
+    --mono:"SF Mono","JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 28px 90px}
+  h1{font-size:26px;margin:.2em 0 .1em;color:#0f172a}
+  h2{font-size:21px;margin:1.5em 0 .4em;padding-bottom:7px;border-bottom:2px solid var(--line);
+    color:#0f172a;display:flex;align-items:center;gap:10px}
+  .num{color:#fff;width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;
+    justify-content:center;font-size:14px;font-weight:800}
+  h3{font-size:16.5px;margin:1.1em 0 .35em;color:#0f172a}
+  h4{font-size:14.5px;margin:.9em 0 .3em;color:#1d4ed8}
+  p{margin:.5em 0}
+  code{background:#e7ecf3;border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+    font-family:var(--mono);font-size:13px;color:#b91c1c}
+  .sub{color:var(--dim);font-size:12.5px}
+  svg{display:block;margin:6px auto;max-width:100%;height:auto}
+  .figcap{text-align:center;color:var(--dim);font-size:12px;margin:2px 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:.9em 0}
+  .note{border-left:3px solid var(--tp);padding:7px 13px;background:#e7f0fb;border-radius:0 6px 6px 0;margin:.6em 0}
+  .warn{border-left:3px solid #92400e;padding:7px 13px;background:#fef4e2;border-radius:0 6px 6px 0;margin:.6em 0}
+  .key{border-left:3px solid var(--ep);padding:7px 13px;background:#f2ecfb;border-radius:0 6px 6px 0;margin:.6em 0}
+  table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#e2e8f0;color:#0f172a;font-weight:600}
+  tr:nth-child(even) td{background:#f8fafc}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;font-weight:700;color:#0d0f14}
+  .t-attn{background:#dbeafe;color:#1d4ed8} .t-moe{background:#f2ecfb;color:#7c3aed}
+  .t-dense{background:#f0fdf4;color:#15803d} .t-norm{background:#fef3c7;color:#b45309}
+  .t-emb{background:#fce7f3;color:#be185d}
+  .shape{font-family:var(--mono);font-size:12px;color:#0f766e;background:#e6f6ee;padding:1px 5px;border-radius:3px}
+  pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radius:10px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.55;margin:14px 0;border:1px solid #1e293b}
+  pre code{background:none;border:none;color:inherit;padding:0;font-size:12.5px}
+  .cmt{color:#64748b} .kw{color:#f472b6} .fn{color:#7dd3fc} .cls{color:#fcd34d}
+  .str{color:#86efac} .num{color:#fdba74; width:auto; height:auto; border-radius:0; display:inline; font-size:inherit; font-weight:inherit}
+  .dec{color:#fcd34d} .self{color:#7dd3fc} .anno{color:#94a3b8}
+  .legend{font-size:11px;color:var(--dim);margin:4px 0 0}
+  .toc{background:#f1f5f9;border:1px solid var(--line);border-radius:10px;padding:12px 20px;margin:16px 0}
+  .toc b{display:block;margin-bottom:4px;color:#0f172a}
+  .toc a{display:inline-block;padding:2px 10px 2px 0;color:#1d4ed8}
+  .kv{display:grid;grid-template-columns:230px 1fr;gap:2px 14px;font-size:13px;margin:6px 0}
+  .kv b{color:#0f172a}
+  .kv span{color:#475569}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="wrap">
+
+<h1>DeepSeek V3 671B · 模型结构与代码定义</h1>
+<p class="sub">本页用 SVG 结构图 + 对应源码片段,完整拆解 DeepSeek V3 671B 的模型定义。所有代码来自 <code>torchtitan/models/deepseek_v3/</code> 与 <code>torchtitan/models/common/</code>(main 分支),形状与超参来自 <code>__init__.py::_671b</code>。</p>
+
+<div class="toc">
+<b>目录</b>
+<a href="#overview">0 全貌与参数审计</a> ·
+<a href="#arch">1 整体结构图</a> ·
+<a href="#block">2 TransformerBlock</a> ·
+<a href="#mla">3 MLA 注意力</a> ·
+<a href="#moe">4 MoE 层</a> ·
+<a href="#dense">5 Dense FFN 与组件</a> ·
+<a href="#config">6 671B 配置</a> ·
+<a href="#config-tree">7 Config 树 -> Module 树</a>
+</div>
+
+<!-- ============ 0 全貌 ============ -->
+<h2><span class="num" style="background:#0f172a">0</span>全貌与参数审计</h2>
+<p>DeepSeek V3 671B 是一个 <b>MoE 解码器</b>:61 层,前 3 层是 dense FFN,后 58 层是 MoE(256 路由专家 + 1 共享专家)。注意力用 DeepSeek 独有的 <b>MLA(Multi-head Latent Attention)</b> 低秩注意力,KV 经低秩压缩以省 KV cache;Q 也用低秩分解(<code>wq_a</code>+<code>wq_b</code>)。词表 129280,不 tying(embed 与 lm_head 各一份)。</p>
+
+<div class="kv">
+<b>总参数量</b><span><b class="cls" style="color:#7c3aed">671.0 B</b>(active,本页审计值,与官方一致)</span>
+<b>层数 / dense 层数</b><span>61 / 3(层 0-2 dense,层 3-60 MoE)</span>
+<b>model dim (D)</b><span>7168</span>
+<b>vocab (V)</b><span>129280</span>
+<b>注意力头数 (H)</b><span>128,每头 qk_nope=128 + qk_rope=64 = 192,v_head=128</span>
+<b>Q 低秩 (q_lora)</b><span>1536(wq_a: D→1536,wq_b: 1536→H·192)</span>
+<b>KV 低秩 (kv_lora)</b><span>512(wkv_a: D→512+64,wkv_b: 512→H·256)</span>
+<b>路由专家</b><span>256 个,hidden=2048,每 token top-8(sigmoid + 组限路由 8 组/4 组)</span>
+<b>共享专家</b><span>1 个,hidden=2048(=moe_h·1)</span>
+<b>dense FFN hidden</b><span>18432(仅前 3 层)</span>
+<b>RoPE</b><span>ComplexRoPE,仅作用于 qk_rope 64 维;YaRN scaling(40×,原长 4096→16384)</span>
+</div>
+
+<div class="note">
+<b>参数分布(审计):</b> 路由专家权重占 <b>97.4%</b>(~653B,58 层 × 256 专家),embed 与 lm_head 各 0.93B,61 层注意力合计仅 ~1.7%(每层 187M),共享专家 ~2.5B。即"绝大多数参数在 MoE 专家里"。
+</div>
+
+<svg viewBox="0 0 1120 250" font-family="monospace" font-size="11">
+  <rect x="20" y="10" width="1080" height="230" rx="12" fill="#f8fafc" stroke="#0f172a" stroke-width="1.5"/>
+  <text x="560" y="30" text-anchor="middle" fill="#0f172a" font-weight="700" font-size="14">参数量分布(671B,active)</text>
+  <!-- 行:标签左对齐 x=24;条形区 x=200 起;routed 数值放条内右侧,小条数值放条形右侧 -->
+  <g>
+    <!-- 路由专家 97.4% -->
+    <text x="24" y="56" fill="#334155" font-size="11">路由专家(58层×256)</text>
+    <rect x="200" y="44" width="840" height="22" rx="4" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="1032" y="60" text-anchor="end" fill="#7c3aed" font-weight="700">653.9 B · 97.4%</text>
+
+    <!-- 共享专家 0.38% -->
+    <text x="24" y="90" fill="#334155" font-size="11">共享专家(58层×1)</text>
+    <rect x="200" y="78" width="10" height="22" rx="4" fill="#e6f6ee" stroke="#15803d"/>
+    <text x="218" y="94" fill="#15803d" font-weight="700">2.55 B · 0.38%</text>
+
+    <!-- 注意力 1.7% -->
+    <text x="24" y="124" fill="#334155" font-size="11">注意力 MLA(61层)</text>
+    <rect x="200" y="112" width="16" height="22" rx="4" fill="#e7f0fb" stroke="#1d4ed8"/>
+    <text x="224" y="128" fill="#1d4ed8" font-weight="700">11.4 B · 1.7%</text>
+
+    <!-- lm_head 0.14% -->
+    <text x="24" y="158" fill="#334155" font-size="11">lm_head</text>
+    <rect x="200" y="146" width="8" height="22" rx="4" fill="#fce7f3" stroke="#be185d"/>
+    <text x="216" y="162" fill="#be185d" font-weight="700">0.93 B · 0.14%</text>
+
+    <!-- embed 0.14% -->
+    <text x="24" y="192" fill="#334155" font-size="11">tok_embeddings</text>
+    <rect x="200" y="180" width="8" height="22" rx="4" fill="#fce7f3" stroke="#be185d"/>
+    <text x="216" y="196" fill="#be185d" font-weight="700">0.93 B · 0.14%</text>
+
+    <!-- dense+router+norm 0.2% -->
+    <text x="500" y="158" fill="#334155" font-size="11">dense FFN(3层)+router+norm</text>
+    <rect x="680" y="146" width="8" height="22" rx="4" fill="#fef3c7" stroke="#b45309"/>
+    <text x="696" y="162" fill="#b45309" font-weight="700">~1.3 B · 0.2%</text>
+  </g>
+  <text x="560" y="230" text-anchor="middle" fill="#64748b" font-size="10">条形宽度按占比(路由专家 840px=97.4%,小条给最小可见宽度);MLA 低秩设计使注意力参数极小,大头全在专家权重。</text>
+</svg>
+<p class="figcap">图 0-1:671B 参数量按组件分布。路由专家占 97.4%,这是 EP(专家并行)成为 671B 训练核心并行的根本原因。</p>
+
+<!-- ============ 1 整体结构 ============ -->
+<h2 id="arch"><span class="num" style="background:#1d4ed8">1</span>整体结构图(端到端前向)</h2>
+<p>下图自上而下是 <code>DeepSeekV3Model.forward</code> 的完整数据流:token → embed → 61 个 TransformerBlock → final norm → lm_head → logits。每个 block 内部是<b>两段残差</b>(图中每段的蓝色/绿色长条即这两段):<code>x = x + Attention(RMSNorm(x))</code> 与 <code>x = x + FeedForward/MoE(RMSNorm(x))</code>。dense 层(0-2)的第二段是 FeedForward;MoE 层(3-60)的第二段换成 MoE(路由专家 + 共享专家),两种层的注意力段完全相同(MLA)。</p>
+
+<svg viewBox="0 0 1120 760" font-family="monospace" font-size="11">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker>
+    <marker id="arrA" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#1d4ed8"/></marker>
+  </defs>
+
+  <!-- input -->
+  <g transform="translate(440,16)">
+    <rect width="240" height="40" rx="8" fill="#fce7f3" stroke="#be185d"/>
+    <text x="120" y="18" text-anchor="middle" fill="#be185d" font-weight="700">tokens [B, L]</text>
+    <text x="120" y="33" text-anchor="middle" fill="#334155" font-size="10">int64, vocab 129280</text>
+  </g>
+  <path d="M 560 56 L 560 72" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- embed -->
+  <g transform="translate(380,72)">
+    <rect width="360" height="50" rx="8" fill="#fce7f3" stroke="#be185d"/>
+    <text x="180" y="20" text-anchor="middle" fill="#be185d" font-weight="700">tok_embeddings: Embedding(V=129280, D=7168)</text>
+    <text x="180" y="36" text-anchor="middle" fill="#334155" font-size="10">weight [129280, 7168] · 不 tying(与 lm_head 各一份)</text>
+  </g>
+  <path d="M 560 122 L 560 138" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="572" y="134" fill="#0f766e" font-size="10">h [B, L, 7168]</text>
+
+  <!-- dense blocks group -->
+  <g transform="translate(180,138)">
+    <rect width="760" height="116" rx="10" fill="#f0fdf4" stroke="#15803d" stroke-width="1.5"/>
+    <text x="16" y="20" fill="#15803d" font-weight="700">层 0-2 · Dense TransformerBlock(3 层)</text>
+    <text x="600" y="20" fill="#64748b" font-size="10">feed_forward = SwiGLU dense</text>
+    <!-- one dense block detail -->
+    <g transform="translate(16,32)">
+      <rect width="728" height="34" rx="6" fill="#e7f0fb" stroke="#1d4ed8"/>
+      <text x="14" y="22" fill="#1d4ed8" font-weight="700">x = x + Attention(RMSNorm(x))</text>
+      <text x="430" y="22" fill="#334155" font-size="10">MLA 注意力 · q_norm/kv_norm · RoPE</text>
+    </g>
+    <g transform="translate(16,70)">
+      <rect width="728" height="34" rx="6" fill="#f0fdf4" stroke="#15803d"/>
+      <text x="14" y="22" fill="#15803d" font-weight="700">x = x + FeedForward(RMSNorm(x))</text>
+      <text x="430" y="22" fill="#334155" font-size="10">dense SwiGLU: w1/w3 [18432,7168] · w2 [7168,18432]</text>
+    </g>
+  </g>
+  <path d="M 560 254 L 560 270" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- moe blocks group -->
+  <g transform="translate(180,270)">
+    <rect width="760" height="200" rx="10" fill="#f2ecfb" stroke="#7c3aed" stroke-width="1.5"/>
+    <text x="16" y="20" fill="#7c3aed" font-weight="700">层 3-60 · MoE TransformerBlock(58 层)</text>
+    <text x="490" y="20" fill="#64748b" font-size="10">MoE 替换 dense FFN</text>
+    <!-- attention sub-block -->
+    <g transform="translate(16,32)">
+      <rect width="728" height="34" rx="6" fill="#e7f0fb" stroke="#1d4ed8"/>
+      <text x="14" y="22" fill="#1d4ed8" font-weight="700">x = x + Attention(RMSNorm(x))</text>
+      <text x="430" y="22" fill="#334155" font-size="10">MLA(与 dense 层结构完全相同)</text>
+    </g>
+    <!-- moe sub-block, expanded -->
+    <g transform="translate(16,70)">
+      <rect width="728" height="118" rx="6" fill="#fbf8ff" stroke="#7c3aed"/>
+      <text x="14" y="18" fill="#7c3aed" font-weight="700">x = x + MoE(RMSNorm(x))</text>
+      <!-- router -->
+      <g transform="translate(20,26)">
+        <rect width="150" height="78" rx="6" fill="#fef3c7" stroke="#b45309"/>
+        <text x="75" y="16" text-anchor="middle" fill="#b45309" font-weight="700">router.gate</text>
+        <text x="75" y="32" text-anchor="middle" fill="#334155" font-size="9">[7168]→[256]</text>
+        <text x="75" y="46" text-anchor="middle" fill="#334155" font-size="9">sigmoid</text>
+        <text x="75" y="60" text-anchor="middle" fill="#334155" font-size="9">node-limited 8组/4组</text>
+        <text x="75" y="72" text-anchor="middle" fill="#334155" font-size="9">top-8</text>
+      </g>
+      <path d="M 172 65 L 200 65" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+      <!-- experts -->
+      <g transform="translate(204,26)">
+        <rect width="250" height="78" rx="6" fill="#f2ecfb" stroke="#7c3aed"/>
+        <text x="125" y="16" text-anchor="middle" fill="#7c3aed" font-weight="700">路由专家 ×256(GroupedExperts)</text>
+        <text x="125" y="32" text-anchor="middle" fill="#334155" font-size="9">dispatch(all-to-all)→ 本地专家算</text>
+        <text x="125" y="46" text-anchor="middle" fill="#334155" font-size="9">w1/w3 [256,2048,7168] w2 [256,7168,2048]</text>
+        <text x="125" y="60" text-anchor="middle" fill="#334155" font-size="9">SwiGLU: silu(w1·x)·(w3·x) → w2</text>
+        <text x="125" y="72" text-anchor="middle" fill="#334155" font-size="9">→ combine(all-to-all)回原 token</text>
+      </g>
+      <path d="M 456 65 L 484 65" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+      <text x="470" y="58" text-anchor="middle" fill="#64748b" font-size="9">+</text>
+      <!-- shared experts -->
+      <g transform="translate(488,26)">
+        <rect width="220" height="78" rx="6" fill="#e6f6ee" stroke="#15803d"/>
+        <text x="110" y="16" text-anchor="middle" fill="#15803d" font-weight="700">共享专家 ×1(FeedForward)</text>
+        <text x="110" y="32" text-anchor="middle" fill="#334155" font-size="9">不走 EP,所有 token 都过</text>
+        <text x="110" y="46" text-anchor="middle" fill="#334155" font-size="9">w1/w3 [2048,7168] w2 [7168,2048]</text>
+        <text x="110" y="60" text-anchor="middle" fill="#334155" font-size="9">dense SwiGLU</text>
+        <text x="110" y="72" text-anchor="middle" fill="#334155" font-size="9">与路由输出相加</text>
+      </g>
+    </g>
+  </g>
+  <path d="M 560 470 L 560 486" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="572" y="482" fill="#0f766e" font-size="10">h [B, L, 7168]</text>
+
+  <!-- final norm + lm_head -->
+  <g transform="translate(340,486)">
+    <rect width="440" height="50" rx="8" fill="#fef3c7" stroke="#b45309"/>
+    <text x="220" y="20" text-anchor="middle" fill="#b45309" font-weight="700">norm: RMSNorm(7168)</text>
+    <text x="220" y="36" text-anchor="middle" fill="#334155" font-size="10">decoder.py:276 · h = self.norm(h)</text>
+  </g>
+  <path d="M 560 536 L 560 552" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+
+  <g transform="translate(340,552)">
+    <rect width="440" height="50" rx="8" fill="#fce7f3" stroke="#be185d"/>
+    <text x="220" y="20" text-anchor="middle" fill="#be185d" font-weight="700">lm_head: Linear(7168 → 129280, bias=False)</text>
+    <text x="220" y="36" text-anchor="middle" fill="#334155" font-size="10">weight [129280, 7168] · logits [B, L, 129280]</text>
+  </g>
+  <path d="M 560 602 L 560 618" stroke="#64748b" stroke-width="2" marker-end="url(#arr)"/>
+
+  <g transform="translate(440,618)">
+    <rect width="240" height="40" rx="8" fill="#e7ecf3" stroke="#64748b"/>
+    <text x="120" y="18" text-anchor="middle" fill="#334155" font-weight="700">logits [B, L, 129280]</text>
+    <text x="120" y="33" text-anchor="middle" fill="#64748b" font-size="10">→ CE loss(÷ global_valid_tokens)</text>
+  </g>
+
+  <!-- residual annotation moved into the paragraph above the figure -->
+</svg>
+<p class="figcap">图 1-1:DeepSeek V3 671B 端到端结构。Dense 层(0-2)用 SwiGLU FFN;MoE 层(3-60)用"路由专家 + 共享专家"替换 FFN,注意力层两种都用 MLA。</p>
+
+<!-- ============ 2 TransformerBlock 代码 ============ -->
+<h2 id="block"><span class="num" style="background:#0f766e">2</span>TransformerBlock:两段残差的定义</h2>
+<p>每个 block 由 <code>DeepSeekV3TransformerBlock</code> 定义,继承自 <code>TransformerBlock</code>。它持有 <code>attention</code>(MLA)、两个 <code>RMSNorm</code>(<code>attention_norm</code>/<code>ffn_norm</code>),以及 <code>feed_forward</code>(dense 层)或 <code>moe</code>(MoE 层)二者之一。forward 就是标准两段残差。</p>
+
+<pre><code><span class="cmt"># torchtitan/models/deepseek_v3/model.py:149-183</span>
+<span class="kw">class</span> <span class="cls">DeepSeekV3TransformerBlock</span>(TransformerBlock):
+    <span class="str">"""DeepSeek V3 Transformer block with attention and feed-forward layers."""</span>
+
+    <span class="dec">@dataclass(kw_only=True, slots=True)</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(TransformerBlock.Config):
+        <span class="kw">pass</span>
+
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="self">self</span>, config: Config):
+        <span class="kw">super</span>().__init__()
+        <span class="self">self</span>.attention = config.attention.build()        <span class="cmt"># MLA 注意力</span>
+        <span class="self">self</span>.attention_norm = config.attention_norm.build()
+        <span class="self">self</span>.ffn_norm = config.ffn_norm.build()
+
+        <span class="self">self</span>.moe_enabled = config.moe <span class="kw">is not None</span>
+        <span class="kw">if</span> <span class="self">self</span>.moe_enabled:
+            <span class="kw">assert</span> config.moe <span class="kw">is not None</span>
+            <span class="self">self</span>.moe = config.moe.build()                <span class="cmt"># MoE 层(58 层走这里)</span>
+        <span class="kw">else</span>:
+            <span class="kw">assert</span> config.feed_forward <span class="kw">is not None</span>
+            <span class="self">self</span>.feed_forward = config.feed_forward.build()  <span class="cmt"># dense FFN(3 层走这里)</span>
+
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="self">self</span>, x, attention_masks, positions=<span class="kw">None</span>):
+        x = x + <span class="self">self</span>.attention(<span class="self">self</span>.attention_norm(x), attention_masks, positions)
+        <span class="kw">if</span> <span class="self">self</span>.moe_enabled:
+            x = x + <span class="self">self</span>.moe(<span class="self">self</span>.ffn_norm(x))
+        <span class="kw">else</span>:
+            x = x + <span class="self">self</span>.feed_forward(<span class="self">self</span>.ffn_norm(x))
+        <span class="kw">return</span> x</code></pre>
+
+<p>父类 <code>TransformerBlock.Config</code> 声明了这些字段(<code>torchtitan/models/common/decoder.py:54-60</code>):</p>
+<pre><code><span class="dec">@dataclass(kw_only=True, slots=True)</span>
+<span class="kw">class</span> <span class="cls">Config</span>(Module.Config):
+    attention: BaseAttention.Config            <span class="cmt"># 必填,无默认</span>
+    feed_forward: FeedForward.Config | <span class="kw">None</span> = <span class="kw">None</span>
+    moe: MoE.Config | <span class="kw">None</span> = <span class="kw">None</span>
+    attention_norm: RMSNorm.Config
+    ffn_norm: RMSNorm.Config</code></pre>
+
+<div class="key"><b>关键点:</b>dense 层与 MoE 层的<b>唯一结构差异</b>就是 <code>feed_forward</code> vs <code>moe</code>。两者都通过同一套两段残差 forward。这个设计由 <code>_build_dsv3_layers</code>(见第 6 节)统一生成:层 id &lt; <code>n_dense_layers</code>(=3)给 <code>feed_forward</code>,否则给 <code>moe</code>。</div>
+
+<!-- ============ 3 MLA ============ -->
+<h2 id="mla"><span class="num" style="background:#1d4ed8">3</span>MLA 注意力(Multi-head Latent Attention)</h2>
+<p>MLA 是 DeepSeek V3 区别于 Llama 的核心。它把 KV 压缩到低秩潜空间(<code>kv_lora_rank=512</code>),再按需展开成多头 K/V,大幅省 KV cache;Q 也做低秩分解(<code>wq_a</code> 降到 1536 再 <code>wq_b</code> 升回)。只有 <code>qk_rope=64</code> 维走 RoPE,其余 <code>qk_nope=128</code> 维不旋转。</p>
+
+<svg viewBox="0 0 1140 520" font-family="monospace" font-size="11">
+  <defs><marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
+  <rect x="20" y="10" width="1100" height="500" rx="12" fill="#f8fafc" stroke="#1d4ed8" stroke-width="1.5"/>
+  <text x="560" y="32" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="14">MLA forward 数据流(model.py:92-146)</text>
+
+  <!-- input x -->
+  <g transform="translate(490,48)">
+    <rect width="160" height="34" rx="6" fill="#e7ecf3" stroke="#64748b"/>
+    <text x="80" y="22" text-anchor="middle" fill="#334155" font-weight="700">x [B, L, 7168]</text>
+  </g>
+
+  <!-- Q branch -->
+  <g transform="translate(40,110)">
+    <rect width="330" height="180" rx="8" fill="#e7f0fb" stroke="#1d4ed8"/>
+    <text x="165" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">Q 分支(低秩分解)</text>
+    <text x="16" y="42" fill="#334155">wq_a: Linear(7168→1536)</text>
+    <text x="16" y="58" fill="#0f766e" font-weight="700">q [B,L,1536]</text>
+    <text x="16" y="76" fill="#334155">q_norm: RMSNorm(1536)</text>
+    <text x="16" y="94" fill="#334155">wq_b: Linear(1536→128·192)</text>
+    <text x="16" y="112" fill="#0f766e" font-weight="700">q [B,L,128,192]</text>
+    <text x="16" y="130" fill="#334155">split → q_nope[128] / q_pe[64]</text>
+    <text x="16" y="148" fill="#0f766e">q_pe 走 RoPE</text>
+    <text x="16" y="166" fill="#334155">cat → q [B,L,128,192]</text>
+  </g>
+
+  <!-- KV branch -->
+  <g transform="translate(400,110)">
+    <rect width="330" height="180" rx="8" fill="#e7f0fb" stroke="#1d4ed8"/>
+    <text x="165" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">KV 分支(低秩压缩)</text>
+    <text x="16" y="42" fill="#334155">wkv_a: Linear(7168→576)</text>
+    <text x="16" y="58" fill="#334155">split → kv[512] / k_pe[64]</text>
+    <text x="16" y="76" fill="#334155">kv_norm: RMSNorm(512)</text>
+    <text x="16" y="94" fill="#334155">wkv_b: Linear(512→128·256)</text>
+    <text x="16" y="112" fill="#334155">view → [B,L,128,256]</text>
+    <text x="16" y="130" fill="#334155">split → k_nope[128] / v[128]</text>
+    <text x="16" y="148" fill="#0f766e">k_pe 走 RoPE(expand 到 128 头)</text>
+    <text x="16" y="166" fill="#334155">k = cat(k_nope, k_pe) [B,L,128,192]</text>
+  </g>
+
+  <!-- attention -->
+  <g transform="translate(760,110)">
+    <rect width="330" height="180" rx="8" fill="#fef3c7" stroke="#b45309"/>
+    <text x="165" y="20" text-anchor="middle" fill="#b45309" font-weight="700">注意力 + 输出投影</text>
+    <text x="16" y="42" fill="#334155">inner_attention(q, k, v)</text>
+    <text x="16" y="58" fill="#334155">FlexAttention(attn_backend="flex")</text>
+    <text x="16" y="76" fill="#334155">scale = (qk_head=192)^-0.5</text>
+    <text x="16" y="94" fill="#334155">  × YaRN mscale²</text>
+    <text x="16" y="112" fill="#334155">out [B,L,128,128]</text>
+    <text x="16" y="130" fill="#334155">view → [B,L,16384]</text>
+    <text x="16" y="148" fill="#334155">wo: Linear(16384→7168)</text>
+    <text x="16" y="166" fill="#334155">return [B,L,7168]</text>
+  </g>
+
+  <path d="M 570 82 L 205 110" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="4,3"/>
+  <path d="M 570 82 L 565 110" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="4,3"/>
+  <path d="M 570 82 L 925 110" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="4,3"/>
+
+  <!-- legend of dims -->
+  <g transform="translate(40,320)">
+    <rect width="1060" height="170" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="16" y="22" fill="#0f172a" font-weight="700" font-size="12">MLA 权重清单(671B,每层 attention 187M 参数)</text>
+    <g font-size="11">
+      <text x="16" y="44" fill="#1d4ed8" font-weight="700">wq_a</text><text x="64" y="44" fill="#334155">Linear(7168→1536) · [1536,7168] · 低秩下投影 · TP 下 Replicate</text>
+      <text x="16" y="62" fill="#1d4ed8" font-weight="700">q_norm</text><text x="64" y="62" fill="#334155">RMSNorm(1536) · Replicate</text>
+      <text x="16" y="80" fill="#1d4ed8" font-weight="700">wq_b</text><text x="64" y="80" fill="#334155">Linear(1536→24576) · [24576,1536] · 低秩上投影 · TP 列并行(切头)</text>
+      <text x="16" y="98" fill="#1d4ed8" font-weight="700">wkv_a</text><text x="64" y="98" fill="#334155">Linear(7168→576) · [576,7168] · KV 压缩 · Replicate</text>
+      <text x="16" y="116" fill="#1d4ed8" font-weight="700">kv_norm</text><text x="64" y="116" fill="#334155">RMSNorm(512) · Replicate</text>
+      <text x="550" y="44" fill="#1d4ed8" font-weight="700">wkv_b</text><text x="598" y="44" fill="#334155">Linear(512→32768) · [32768,512] · 解压成多头 · TP 列并行</text>
+      <text x="550" y="62" fill="#1d4ed8" font-weight="700">wo</text><text x="598" y="62" fill="#334155">Linear(16384→7168) · [7168,16384] · 输出投影 · TP 行并行</text>
+      <text x="550" y="80" fill="#1d4ed8" font-weight="700">rope</text><text x="598" y="80" fill="#334155">ComplexRoPE(dim=64, YaRN, rope_factor=40, orig 4096) · 仅 q_pe/k_pe</text>
+      <text x="550" y="98" fill="#1d4ed8" font-weight="700">inner</text><text x="598" y="98" fill="#334155">FlexAttention · scale=192^-0.5 × mscale² · mask=causal+document</text>
+      <text x="550" y="116" fill="#1d4ed8" font-weight="700">head</text><text x="598" y="116" fill="#334155">H=128, qk_nope=128, qk_rope=64, v=128(每头 qk 192 / v 128)</text>
+      <text x="16" y="140" fill="#64748b" font-size="10">注:wq_a/wkv_a/q_norm/kv_norm 因低秩/小尺寸在 TP 下保持 Replicate;wq_b/wkv_b/wo 才切。这保证低秩潜空间不因 TP 被切碎。</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 3-1:MLA 注意力数据流。Q 走低秩分解(wq_a→q_norm→wq_b),KV 走低秩压缩(wkv_a→kv_norm→wkv_b),仅 64 维 rope 部分旋转,最后 FlexAttention + wo 输出。</p>
+
+<h4>MLA forward 源码(model.py:92-146)</h4>
+<pre><code><span class="kw">def</span> <span class="fn">forward</span>(<span class="self">self</span>, x, attention_masks, positions=<span class="kw">None</span>):
+    bsz, seqlen, _ = x.size()
+
+    <span class="cmt"># Query 投影:低秩分解 wq_a → q_norm → wq_b</span>
+    <span class="kw">if</span> <span class="self">self</span>.q_lora_rank == <span class="num">0</span>:
+        q = <span class="self">self</span>.wq(x)                       <span class="cmt"># 671B 走不到(671B q_lora_rank=1536)</span>
+    <span class="kw">else</span>:
+        q = <span class="self">self</span>.wq_a(x)                     <span class="cmt"># [B,L,7168] → [B,L,1536]</span>
+        q = <span class="self">self</span>.wq_b(<span class="self">self</span>.q_norm(q))         <span class="cmt"># → [B,L,128*192]</span>
+
+    <span class="kw">with</span> spmd.local():
+        q = q.view(bsz, seqlen, -<span class="num">1</span>, <span class="self">self</span>.qk_head_dim)   <span class="cmt"># [B,L,128,192]</span>
+    q_nope, q_pe = torch.split(q, [<span class="self">self</span>.qk_nope_head_dim, <span class="self">self</span>.qk_rope_head_dim], dim=-<span class="num">1</span>)
+
+    <span class="cmt"># KV 投影:低秩压缩 wkv_a → split → kv_norm → wkv_b</span>
+    kv = <span class="self">self</span>.wkv_a(x)                        <span class="cmt"># [B,L,7168] → [B,L,576]</span>
+    kv, k_pe = torch.split(kv, [<span class="self">self</span>.kv_lora_rank, <span class="self">self</span>.qk_rope_head_dim], dim=-<span class="num">1</span>)
+
+    q_pe, k_pe = <span class="self">self</span>.rope(q_pe, k_pe.unsqueeze(<span class="num">2</span>), positions)  <span class="cmt"># 仅 64 维旋转</span>
+    q = torch.cat([q_nope, q_pe], dim=-<span class="num">1</span>)
+
+    kv = <span class="self">self</span>.wkv_b(<span class="self">self</span>.kv_norm(kv))             <span class="cmt"># [B,L,512] → [B,L,128*256]</span>
+    <span class="kw">with</span> spmd.local():
+        kv = kv.view(bsz, seqlen, -<span class="num">1</span>, <span class="self">self</span>.qk_nope_head_dim + <span class="self">self</span>.v_head_dim)
+        k_nope, v = torch.split(kv, [<span class="self">self</span>.qk_nope_head_dim, <span class="self">self</span>.v_head_dim], dim=-<span class="num">1</span>)
+        k = torch.cat([k_nope, k_pe.expand(-<span class="num">1</span>, -<span class="num">1</span>, k_nope.size(<span class="num">2</span>), -<span class="num">1</span>)], dim=-<span class="num">1</span>)
+
+    output = <span class="self">self</span>.inner_attention(q, k, v, attention_masks=attention_masks, scale=<span class="self">self</span>.softmax_scale)
+    output = output.view(bsz, seqlen, -<span class="num">1</span>)
+    <span class="kw">return</span> <span class="self">self</span>.wo(output)                  <span class="cmt"># [B,L,16384] → [B,L,7168]</span></code></pre>
+
+<div class="note"><b>MLA vs 标准 MHA:</b> 标准 MHA 每层 K/V 是 <code>[B,L,128,128]</code>(per-head 全量);MLA 把 KV 压到 <code>[B,L,512]</code> 潜空间,只在 attention 前用 <code>wkv_b</code> 展开。这使 KV cache 缩到 ~1/8,是 671B 长上下文推理的关键。代价是多了一次 <code>wkv_b</code> matmul,但训练时算力充足、显存更值钱,故划算。</div>
+
+<!-- ============ 4 MoE ============ -->
+<h2 id="moe"><span class="num" style="background:#7c3aed">4</span>MoE 层:路由专家 + 共享专家</h2>
+<p>58 个 MoE 层用 <code>MoE</code> 模块替换 dense FFN。结构:router 给每 token 选 top-8 专家 → token dispatcher 把 token 派发(EP 时 all-to-all)到专家所在 rank → 256 个路由专家各算 SwiGLU → combine 汇回 → 与 1 个共享专家(全 token 都过)的输出相加。</p>
+
+<svg viewBox="0 0 1140 560" font-family="monospace" font-size="11">
+  <defs><marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
+  <rect x="20" y="10" width="1100" height="540" rx="12" fill="#f8fafc" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="560" y="32" text-anchor="middle" fill="#7c3aed" font-weight="700" font-size="14">MoE.forward 数据流(moe.py:390-510)</text>
+
+  <!-- input -->
+  <g transform="translate(470,48)">
+    <rect width="200" height="34" rx="6" fill="#e7ecf3" stroke="#64748b"/>
+    <text x="100" y="22" text-anchor="middle" fill="#334155" font-weight="700">x [B, L, 7168]</text>
+  </g>
+  <path d="M 570 82 L 570 100" stroke="#64748b" stroke-width="2" marker-end="url(#arr3)"/>
+
+  <!-- router -->
+  <g transform="translate(370,100)">
+    <rect width="400" height="80" rx="8" fill="#fef3c7" stroke="#b45309"/>
+    <text x="200" y="20" text-anchor="middle" fill="#b45309" font-weight="700">router: TokenChoiceTopKRouter</text>
+    <text x="14" y="40" fill="#334155">gate: Linear(7168→256),float32 算分</text>
+    <text x="14" y="56" fill="#334155">sigmoid → node-limited(8 组/4 组)→ top-8</text>
+    <text x="14" y="72" fill="#334155">→ topk_scores [B,L,8], topk_expert_ids [B,L,8]</text>
+  </g>
+  <path d="M 570 180 L 570 196" stroke="#64748b" stroke-width="2" marker-end="url(#arr3)"/>
+
+  <!-- split to experts + shared -->
+  <g transform="translate(40,196)">
+    <rect width="560" height="240" rx="8" fill="#fbf8ff" stroke="#7c3aed"/>
+    <text x="280" y="20" text-anchor="middle" fill="#7c3aed" font-weight="700">路由专家路径:experts(GroupedExperts)</text>
+    <!-- dispatch -->
+    <g transform="translate(14,32)">
+      <rect width="530" height="56" rx="6" fill="#fcefe2" stroke="#c2410c"/>
+      <text x="265" y="20" text-anchor="middle" fill="#c2410c" font-weight="700">dispatch(token_dispatcher)</text>
+      <text x="265" y="36" text-anchor="middle" fill="#334155" font-size="10">按 top-8 重排 token → EP 时 all-to-all 送到专家所在 rank</text>
+      <text x="265" y="50" text-anchor="middle" fill="#64748b" font-size="9">→ routed_input [R,7168](R=路由到本地专家的 token 数)</text>
+    </g>
+    <!-- experts compute -->
+    <g transform="translate(14,96)">
+      <rect width="530" height="76" rx="6" fill="#f2ecfb" stroke="#7c3aed"/>
+      <text x="265" y="18" text-anchor="middle" fill="#7c3aed" font-weight="700">256 路由专家(_experts_forward,grouped_mm)</text>
+      <text x="265" y="34" text-anchor="middle" fill="#334155" font-size="10">h = silu(grouped_mm(x, w1ᵀ)) · grouped_mm(x, w3ᵀ)</text>
+      <text x="265" y="48" text-anchor="middle" fill="#334155" font-size="10">out = grouped_mm(h, w2ᵀ)</text>
+      <text x="265" y="62" text-anchor="middle" fill="#64748b" font-size="9">w1/w3 [256,2048,7168] · w2 [256,7168,2048] · SwiGLU</text>
+    </g>
+    <!-- combine -->
+    <g transform="translate(14,180)">
+      <rect width="530" height="50" rx="6" fill="#fcefe2" stroke="#c2410c"/>
+      <text x="265" y="20" text-anchor="middle" fill="#c2410c" font-weight="700">combine(token_dispatcher)</text>
+      <text x="265" y="36" text-anchor="middle" fill="#334155" font-size="10">all-to-all 汇回原 token · scatter_add 按 topk_scores 加权</text>
+    </g>
+  </g>
+
+  <!-- shared experts -->
+  <g transform="translate(620,196)">
+    <rect width="480" height="240" rx="8" fill="#f0fdf4" stroke="#15803d"/>
+    <text x="240" y="20" text-anchor="middle" fill="#15803d" font-weight="700">共享专家路径:shared_experts(FeedForward)</text>
+    <g transform="translate(14,32)">
+      <rect width="452" height="56" rx="6" fill="#e6f6ee" stroke="#15803d"/>
+      <text x="226" y="20" text-anchor="middle" fill="#15803d" font-weight="700">dense SwiGLU(所有 token 都过)</text>
+      <text x="226" y="36" text-anchor="middle" fill="#334155" font-size="10">不走 EP,不走 router;与路由并行计算</text>
+      <text x="226" y="50" text-anchor="middle" fill="#64748b" font-size="9">hidden = moe_h × num_shared = 2048 × 1 = 2048</text>
+    </g>
+    <g transform="translate(14,96)">
+      <rect width="452" height="76" rx="6" fill="#f0fdf4" stroke="#15803d"/>
+      <text x="226" y="18" text-anchor="middle" fill="#15803d" font-weight="700">SwiGLU: w2(silu(w1(x)) · w3(x))</text>
+      <text x="226" y="34" text-anchor="middle" fill="#334155" font-size="10">w1/w3 [2048,7168] · w2 [7168,2048]</text>
+      <text x="226" y="48" text-anchor="middle" fill="#64748b" font-size="9">共享专家 = 一个"永远被选"的专家</text>
+      <text x="226" y="62" text-anchor="middle" fill="#64748b" font-size="9">提供公共知识,降低路由专家负担</text>
+    </g>
+    <g transform="translate(14,180)">
+      <rect width="452" height="50" rx="6" fill="#e6f6ee" stroke="#15803d"/>
+      <text x="226" y="20" text-anchor="middle" fill="#15803d" font-weight="700">shared_out [B,L,7168]</text>
+      <text x="226" y="36" text-anchor="middle" fill="#64748b" font-size="9">与 DeepEP async combine 重叠(若用 DeepEP 且 sp=1)</text>
+    </g>
+  </g>
+
+  <!-- merge -->
+  <path d="M 320 436 L 540 470" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr3)" stroke-dasharray="4,3"/>
+  <path d="M 860 436 L 600 470" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr3)" stroke-dasharray="4,3"/>
+  <g transform="translate(440,470)">
+    <rect width="260" height="50" rx="8" fill="#fef3c7" stroke="#b45309"/>
+    <text x="130" y="20" text-anchor="middle" fill="#b45309" font-weight="700">out = 路由专家输出 + 共享专家输出</text>
+    <text x="130" y="36" text-anchor="middle" fill="#64748b" font-size="10">out_BLD = out_BLD + shared_out_BLD</text>
+  </g>
+  <text x="560" y="545" text-anchor="middle" fill="#64748b" font-size="10">注:auxiliary-loss-free 负载均衡由 expert_bias_E buffer + tokens_per_expert_E 统计驱动,在 optimizer pre-hook 更新 bias(不在 forward 图中)。</text>
+</svg>
+<p class="figcap">图 4-1:MoE 层数据流。router 选 top-8 → dispatch/combine(EP all-to-all)做路由专家 SwiGLU → 与共享专家相加。共享专家全 token 都过,弥补路由稀疏。</p>
+
+<h4>MoE 核心源码(moe.py:358-389 构造 + 390-510 forward 摘要)</h4>
+<pre><code><span class="kw">class</span> <span class="cls">MoE</span>(Module):
+    <span class="dec">@dataclass(kw_only=True, slots=True)</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Module.Config):
+        num_experts: <span class="cls">int</span> = <span class="num">8</span>
+        experts: GroupedExperts.Config
+        router: TokenChoiceTopKRouter.Config
+        load_balance_coeff: <span class="cls">float</span> | <span class="kw">None</span> = <span class="num">1e-3</span>
+        shared_experts: FeedForward.Config | <span class="kw">None</span> = <span class="kw">None</span>
+        seq_dim_tp_sharded: <span class="cls">bool</span> = <span class="kw">False</span>
+
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="self">self</span>, config):
+        <span class="kw">super</span>().__init__()
+        <span class="self">self</span>.experts = config.experts.build()        <span class="cmt"># 256 路由专家(GroupedExperts)</span>
+        <span class="self">self</span>.router = config.router.build()          <span class="cmt"># TokenChoiceTopKRouter</span>
+        <span class="self">self</span>.shared_experts = config.shared_experts.build() <span class="kw">if</span> config.shared_experts <span class="kw">else None</span>
+        <span class="cmt"># auxiliary-loss-free 负载均衡 buffers:</span>
+        <span class="self">self</span>.register_buffer(<span class="str">"expert_bias_E"</span>, torch.zeros(num_experts))      <span class="cmt"># [256],persistent</span>
+        <span class="self">self</span>.register_buffer(<span class="str">"tokens_per_expert_E"</span>, torch.zeros(num_experts)) <span class="cmt"># [256],不持久</span>
+
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="self">self</span>, x_BLD):
+        <span class="cmt"># 1. router 选专家(float32 算分,sigmoid,node-limited,top-8)</span>
+        topk_scores_BLK, topk_expert_ids_BLK, scores_BLE = <span class="self">self</span>.router(x_BLD, <span class="self">self</span>.expert_bias_E)
+
+        <span class="cmt"># 2. 路由专家:dispatch → grouped_mm SwiGLU → combine</span>
+        out_BLD = <span class="self">self</span>.experts(x_BLD, topk_scores_BLK, topk_expert_ids_BLK,
+                            num_local_tokens_per_expert_E, ...)
+
+        <span class="cmt"># 3. 共享专家:所有 token 都过的 dense SwiGLU(与 combine 并行)</span>
+        shared_out_BLD = <span class="self">self</span>.shared_experts(x_BLD) <span class="kw">if</span> <span class="self">self</span>.shared_experts <span class="kw">else None</span>
+
+        <span class="cmt"># 4. 合并</span>
+        <span class="kw">if</span> shared_out_BLD <span class="kw">is not None</span>:
+            out_BLD = out_BLD + shared_out_BLD
+        <span class="kw">return</span> out_BLD</code></pre>
+
+<h4>路由专家 GroupedExperts 的权重与计算(moe.py:35-110)</h4>
+<pre><code><span class="kw">class</span> <span class="cls">GroupedExperts</span>(Module):
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="self">self</span>, config):
+        <span class="self">self</span>.num_experts = config.num_experts            <span class="cmt"># 256</span>
+        <span class="cmt"># 三个权重都是 [E, F, D] / [E, D, F] 形状的参数(分组矩阵乘)</span>
+        <span class="self">self</span>.w1_EFD = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))  <span class="cmt"># [256,2048,7168]</span>
+        <span class="self">self</span>.w2_EDF = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))  <span class="cmt"># [256,7168,2048]</span>
+        <span class="self">self</span>.w3_EFD = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))  <span class="cmt"># [256,2048,7168]</span>
+        <span class="self">self</span>.token_dispatcher = config.token_dispatcher.build()
+
+    <span class="kw">def</span> <span class="fn">_experts_forward</span>(<span class="self">self</span>, x_RD, num_tokens_per_expert_E):
+        <span class="cmt"># SwiGLU,用 torch._grouped_mm 按 expert offset 分组算</span>
+        h_RF = F.silu(torch._grouped_mm(x_RD, w1_EFD.transpose(-<span class="num">2</span>,-<span class="num">1</span>), offs=offsets_E))
+        h_RF = h_RF * torch._grouped_mm(x_RD, w3_EFD.transpose(-<span class="num">2</span>,-<span class="num">1</span>), offs=offsets_E)
+        <span class="kw">return</span> torch._grouped_mm(h_RF, w2_EDF.transpose(-<span class="num">2</span>,-<span class="num">1</span>), offs=offsets_E)</code></pre>
+
+<h4>路由器 TokenChoiceTopKRouter(moe.py:173-323 摘要)</h4>
+<pre><code><span class="kw">class</span> <span class="cls">TokenChoiceTopKRouter</span>(Module):
+    <span class="dec">@dataclass(kw_only=True, slots=True)</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Module.Config):
+        num_experts: <span class="cls">int</span>
+        gate: Linear.Config
+        num_expert_groups: <span class="cls">int</span> | <span class="kw">None</span> = <span class="kw">None</span>      <span class="cmt"># 671B = 8</span>
+        num_limited_groups: <span class="cls">int</span> | <span class="kw">None</span> = <span class="kw">None</span> <span class="cmt"># 671B = 4(节点限路由)</span>
+        top_k: <span class="cls">int</span> = <span class="num">1</span>                          <span class="cmt"># 671B = 8</span>
+        score_func: <span class="cls">Literal</span>[<span class="str">"softmax"</span>, <span class="str">"sigmoid"</span>] = <span class="str">"sigmoid"</span>
+        route_norm: <span class="cls">bool</span> = <span class="kw">False</span>              <span class="cmt"># 671B = True</span>
+        route_scale: <span class="cls">float</span> = <span class="num">1.0</span>              <span class="cmt"># 671B = 2.5</span>
+
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="self">self</span>, x_BLD, expert_bias_E=<span class="kw">None</span>):
+        <span class="kw">with</span> torch.autocast(dtype=torch.float32):    <span class="cmt"># float32 算分,稳负载均衡</span>
+            scores_BLE = <span class="self">self</span>.gate(x_BLD)              <span class="cmt"># [B,L,256]</span>
+        scores_BLE = torch.sigmoid(scores_BLE)
+        <span class="kw">if</span> <span class="self">self</span>.num_expert_groups <span class="kw">is not None</span>:        <span class="cmt"># node-limited:8 组选 4 组</span>
+            scores_BLE = <span class="self">self</span>._get_node_limited_routing_scores(scores_BLE)
+        _, topk_expert_ids_BLK = torch.topk(scores_BLE, k=<span class="self">self</span>.top_k, dim=-<span class="num">1</span>)  <span class="cmt"># top-8</span>
+        topk_scores_BLK = scores_BLE.gather(-<span class="num">1</span>, topk_expert_ids_BLK)
+        <span class="kw">if</span> <span class="self">self</span>.route_norm:                      <span class="cmt"># 归一化(671B 开)</span>
+            topk_scores_BLK = topk_scores_BLK / (topk_scores_BLK.sum(-<span class="num">1</span>, keepdim=<span class="kw">True</span>) + <span class="num">1e-20</span>)
+        topk_scores_BLK = topk_scores_BLK * <span class="self">self</span>.route_scale
+        <span class="kw">return</span> topk_scores_BLK, topk_expert_ids_BLK, scores_BLE</code></pre>
+
+<div class="warn"><b>node-limited 路由(671B 特有):</b> 256 个专家分 8 组(每组 32,对应物理节点),每 token 只在得分最高的 4 组里选 top-8。这把跨节点 all-to-all 通信限制在 4 个节点内,显著降通信量。<code>route_scale=2.5</code> + <code>route_norm=True</code> 是 DeepSeek 的路由缩放归一化。</div>
+
+<!-- ============ 5 dense & components ============ -->
+<h2 id="dense"><span class="num" style="background:#15803d">5</span>Dense FFN 与基础组件</h2>
+
+<h4>FeedForward — SwiGLU(feed_forward.py:34-54)</h4>
+<p>dense 层(0-2)与共享专家都用 <code>FeedForward</code>,标准 SwiGLU:<code>w2(silu(w1(x)) · w3(x))</code>。三者都是 <code>Linear</code>(无 bias)。</p>
+<pre><code><span class="kw">class</span> <span class="cls">FeedForward</span>(Module):
+    <span class="dec">@dataclass(kw_only=True, slots=True)</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Module.Config):
+        w1: Linear.Config
+        w2: Linear.Config
+        w3: Linear.Config
+
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="self">self</span>, x):
+        <span class="kw">return</span> <span class="self">self</span>.w2(F.silu(<span class="self">self</span>.w1(x)) * <span class="self">self</span>.w3(x))</code></pre>
+<div class="kv">
+<b>dense 层 FFN</b><span>w1/w3: [18432,7168],w2: [7168,18432] · hidden=18432</span>
+<b>共享专家 FFN</b><span>w1/w3: [2048,7168],w2: [7168,2048] · hidden=2048(=moe_h×1)</span>
+</div>
+
+<h4>RMSNorm — 归一化(nn_modules.py:151-165)</h4>
+<p>所有 norm 都是 <code>RMSNorm</code>(无 mean,只除 RMS)。block 内 <code>attention_norm</code>/<code>ffn_norm</code> 归一化 <code>dim=7168</code>;MLA 内 <code>q_norm</code> 归一化 1536、<code>kv_norm</code> 归一化 512。final <code>norm</code> 归一化 7168。</p>
+<pre><code><span class="kw">class</span> <span class="cls">RMSNorm</span>(nn.RMSNorm, Module):   <span class="cmt"># diamond: 复用 nn.RMSNorm 全部逻辑</span>
+    <span class="dec">@dataclass(kw_only=True, slots=True)</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Module.Config):
+        normalized_shape: <span class="cls">int</span>
+        eps: <span class="cls">float</span> = <span class="num">1e-5</span>
+        elementwise_affine: <span class="cls">bool</span> = <span class="kw">True</span></code></pre>
+
+<h4>Linear 与 Embedding(nn_modules.py:134-148 / embedding.py:24-79)</h4>
+<pre><code><span class="kw">class</span> <span class="cls">Linear</span>(nn.Linear, Module):
+    <span class="dec">@dataclass(kw_only=True, slots=True)</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Module.Config):
+        in_features: <span class="cls">int</span>
+        out_features: <span class="cls">int</span>
+        bias: <span class="cls">bool</span> = <span class="kw">False</span>            <span class="cmt"># 所有 DeepSeek V3 Linear 都无 bias</span>
+
+<span class="kw">class</span> <span class="cls">Embedding</span>(nn.Embedding, Module):
+    <span class="dec">@dataclass(kw_only=True, slots=True)</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Module.Config):
+        num_embeddings: <span class="cls">int</span>     <span class="cmt"># vocab 129280</span>
+        embedding_dim: <span class="cls">int</span>      <span class="cmt"># dim 7168</span>
+    <span class="cmt"># forward 支持词表并行(TP 时每 rank 只持半词表,mask 越界 token)</span></code></pre>
+
+<h4>Decoder 整体容器(decoder.py:229-284 摘要)</h4>
+<pre><code><span class="kw">class</span> <span class="cls">DeepSeekV3Model</span>(Decoder):
+    <span class="kw">def</span> <span class="fn">__init__</span>(<span class="self">self</span>, config):              <span class="cmt"># Decoder.__init__</span>
+        <span class="self">self</span>.tok_embeddings = config.tok_embeddings.build()   <span class="cmt"># Embedding</span>
+        <span class="self">self</span>.layers = ModuleDict()
+        <span class="kw">for</span> i, layer_config <span class="kw">in</span> enumerate(config.layers):
+            <span class="self">self</span>.layers[str(i)] = layer_config.build()        <span class="cmt"># 61 个 block</span>
+        <span class="self">self</span>.norm = config.norm.build()                       <span class="cmt"># final RMSNorm</span>
+        <span class="self">self</span>.lm_head = config.lm_head.build()                 <span class="cmt"># Linear</span>
+        <span class="kw">if</span> <span class="self">self</span>.enable_weight_tying:  <span class="cmt"># 671B = False,不 tying</span>
+            <span class="self">self</span>.tok_embeddings.weight = <span class="self">self</span>.lm_head.weight
+
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="self">self</span>, tokens, positions=<span class="kw">None</span>, attention_masks=<span class="kw">None</span>):
+        h = <span class="self">self</span>.tok_embeddings(tokens)            <span class="cmt"># [B,L] → [B,L,7168]</span>
+        <span class="kw">for</span> layer <span class="kw">in</span> <span class="self">self</span>.layers.values():         <span class="cmt"># 61 个 block 依次过</span>
+            h = layer(h, attention_masks, positions)
+        h = <span class="self">self</span>.norm(h)                          <span class="cmt"># final RMSNorm</span>
+        <span class="kw">if</span> <span class="self">self</span>._skip_lm_head: <span class="kw">return</span> h          <span class="cmt"># chunked loss 时跳过</span>
+        <span class="kw">return</span> <span class="self">self</span>.lm_head(h)                  <span class="cmt"># [B,L,7168] → [B,L,129280]</span></code></pre>
+
+<!-- ============ 6 config ============ -->
+<h2 id="config"><span class="num" style="background:#7c3aed">6</span>671B 配置:如何用代码定义这一切</h2>
+<p>所有结构由 <code>_671b()</code> 工厂函数构造。它先定好超参,再用 <code>_build_dsv3_layers</code> 逐层生成 61 个 block config(dense/MoE 自动分流),最后组装成 <code>DeepSeekV3Model.Config</code>。</p>
+
+<h4>完整模型定义的代码索引</h4>
+<p>DeepSeek V3 的模型定义跨两类文件:<code>torchtitan/models/deepseek_v3/</code>(模型专属:MLA 注意力、层组装、配置工厂、切分声明)与 <code>torchtitan/models/common/</code>(所有模型共享的基类与组件)。下表是"从哪个文件、哪个类/函数、第几行"定义了什么。</p>
+
+<h5 style="margin:.8em 0 .3em;color:#7c3aed">A. deepseek_v3/ 专属文件(定义 671B 特有结构)</h5>
+<table>
+<tr><th>文件</th><th>定义的类 / 函数(行号)</th><th>作用</th></tr>
+<tr><td><code>model.py</code></td><td><code>Attention</code>(MLA):27 · <code>DeepSeekV3TransformerBlock</code>:149 · <code>DeepSeekV3Model</code>:186</td><td>MLA 注意力 forward、block 两段残差、模型容器(继承 Decoder)</td></tr>
+<tr><td><code>__init__.py</code></td><td><code>_make_dsv3_attn_config</code>:78 · <code>_build_dsv3_layers</code>:160 · <code>_671b</code>:458 · <code>model_registry</code>:534</td><td><b>入口</b>:<code>_671b</code> 定超参 -> <code>_build_dsv3_layers</code> 生成 61 层 -> 组装 Config -> <code>model_registry</code> 包成 ModelSpec</td></tr>
+<tr><td><code>sharding.py</code></td><td><code>set_deepseek_v3_sharding_config</code>:41 · <code>_set_deepseek_v3_layer_sharding</code>:65</td><td>声明式切分:MLA 各投影 TP 放置、MoE EP 放置、SP local_map(并行时读)</td></tr>
+<tr><td><code>parallelize.py</code></td><td><code>parallelize_deepseekv3</code>:27</td><td>施加并行:CP 包 attention -> parallelize -> async TP -> AC -> compile -> FSDP</td></tr>
+<tr><td><code>state_dict_adapter.py</code></td><td><code>DeepSeekV3StateDictAdapter</code></td><td>HF checkpoint 权重名映射(加载/保存预训练权重)</td></tr>
+</table>
+
+<h5 style="margin:.8em 0 .3em;color:#15803d">B. common/ 共享文件(基类与通用组件,DeepSeek V3 复用)</h5>
+<table>
+<tr><th>文件</th><th>定义的类(行号)</th><th>作用</th></tr>
+<tr><td><code>decoder.py</code></td><td><code>TransformerBlock</code>:42 · <code>Decoder</code>:63</td><td>block 基类(attention+norm+ffn/moe 字段)、Decoder 容器(embed/layers/norm/lm_head + forward)</td></tr>
+<tr><td><code>moe.py</code></td><td><code>GroupedExperts</code>:35 · <code>TokenChoiceTopKRouter</code>:173 · <code>MoE</code>:326</td><td>路由专家(grouped_mm SwiGLU)、top-k 路由器、MoE 容器(路由+共享专家)</td></tr>
+<tr><td><code>feed_forward.py</code></td><td><code>FeedForward</code>:34</td><td>SwiGLU FFN(dense 层与共享专家都用)</td></tr>
+<tr><td><code>attention.py</code></td><td><code>FlexAttention</code>:208 · <code>ScaledDotProductAttention</code>:342 · <code>BaseAttention</code>:640</td><td>注意力后端(671B 用 FlexAttention,attn_backend="flex")</td></tr>
+<tr><td><code>rope.py</code></td><td><code>RoPE</code>:42 · <code>ComplexRoPE</code>:137</td><td>旋转位置编码(671B 用 ComplexRoPE + YaRN,仅 qk_rope 64 维)</td></tr>
+<tr><td><code>nn_modules.py</code></td><td><code>Linear</code>:134 · <code>RMSNorm</code>:151</td><td>无 bias Linear、RMSNorm(所有投影与归一化)</td></tr>
+<tr><td><code>embedding.py</code></td><td><code>Embedding</code>:24</td><td>词表嵌入(支持词表并行)</td></tr>
+<tr><td><code>moe/</code>(子目录)</td><td>token dispatcher 等</td><td>EP token 派发(AllToAll/DeepEP/HybridEP)</td></tr>
+</table>
+
+<div class="key"><b>一句话定位:</b> 模型结构的"根定义"是 <code>deepseek_v3/__init__.py::_671b</code>(行 458) -- 它调 <code>_build_dsv3_layers</code>(行 160)生成 61 层,每层的 attention 由 <code>model.py::Attention</code>(行 27,MLA forward)实现,MoE 由 <code>common/moe.py::MoE</code>(行 326)实现,最终装配成 <code>model.py::DeepSeekV3Model</code>(行 186,继承 <code>common/decoder.py::Decoder</code> 行 63)。</div>
+
+<h4>_671b 配置工厂(__init__.py:459-525 摘要)</h4>
+<pre><code><span class="kw">def</span> <span class="fn">_671b</span>(attn_backend, moe_comm_backend, non_blocking_capacity_factor=<span class="kw">None</span>):
+    dim = <span class="num">7168</span>; n_layers = <span class="num">61</span>; vocab_size = <span class="num">129280</span>; n_heads = <span class="num">128</span>
+    q_lora_rank = <span class="num">1536</span>; moe_hidden_dim = <span class="num">2048</span>; num_shared_experts = <span class="num">1</span>
+    dense_hidden_dim = <span class="num">18432</span>; rope_dim = <span class="num">64</span>; num_experts = <span class="num">256</span>; n_dense_layers = <span class="num">3</span>
+
+    layers = _build_dsv3_layers(
+        n_layers=n_layers, n_dense_layers=n_dense_layers, dim=dim, n_heads=n_heads,
+        q_lora_rank=q_lora_rank, kv_lora_rank=<span class="num">512</span>,
+        qk_nope_head_dim=<span class="num">128</span>, qk_rope_head_dim=rope_dim, v_head_dim=<span class="num">128</span>,
+        mscale=<span class="num">1.0</span>, dense_hidden_dim=dense_hidden_dim, moe_hidden_dim=moe_hidden_dim,
+        num_experts=num_experts, num_shared_experts=num_shared_experts,
+        router_top_k=<span class="num">8</span>, router_score_func=<span class="str">"sigmoid"</span>,
+        router_num_expert_groups=<span class="num">8</span>, router_num_limited_groups=<span class="num">4</span>,  <span class="cmt"># node-limited</span>
+        router_route_scale=<span class="num">2.5</span>, router_route_norm=<span class="kw">True</span>,
+        attn_backend=attn_backend, moe_comm_backend=moe_comm_backend, ...,
+        rope=ComplexRoPE.Config(dim=rope_dim, max_seq_len=<span class="num">4096</span>*<span class="num">4</span>, theta=<span class="num">10000.0</span>,
+                                scaling=<span class="str">"yarn"</span>, rope_factor=<span class="num">40.0</span>, original_seq_len=<span class="num">4096</span>, ...),
+    )
+    <span class="kw">return</span> DeepSeekV3Model.Config(
+        vocab_size=vocab_size, dim=dim,
+        tok_embeddings=Embedding.Config(num_embeddings=vocab_size, embedding_dim=dim, ...),
+        norm=RMSNorm.Config(normalized_shape=dim, ...),
+        lm_head=Linear.Config(in_features=dim, out_features=vocab_size, ...),  <span class="cmt"># 不 tying</span>
+        layers=layers,
+    )</code></pre>
+
+<h4>_build_dsv3_layers:dense/MoE 自动分流(__init__.py:160-262 核心)</h4>
+<pre><code><span class="kw">def</span> <span class="fn">_build_dsv3_layers</span>(*, n_layers, n_dense_layers, dim, ...):
+    <span class="str">"""层 id < n_dense_layers 给 dense FFN,否则给 MoE。"""</span>
+    layers = []
+    <span class="kw">for</span> layer_id <span class="kw">in</span> range(n_layers):
+        attn_cfg = _make_dsv3_attn_config(layer_id=layer_id, dim=dim, n_heads=n_heads,
+                                          q_lora_rank=q_lora_rank, ...)   <span class="cmt"># MLA config</span>
+        <span class="kw">if</span> layer_id &lt; n_dense_layers:                  <span class="cmt"># 0,1,2 → dense</span>
+            ffn_cfg = make_ffn_config(dim=dim, hidden_dim=dense_hidden_dim, ...)  <span class="cmt"># SwiGLU</span>
+            moe_cfg = <span class="kw">None</span>
+        <span class="kw">else</span>:                                        <span class="cmt"># 3..60 → MoE</span>
+            ffn_cfg = <span class="kw">None</span>
+            moe_cfg = make_moe_config(
+                num_experts=num_experts,
+                router=make_router_config(dim=dim, num_experts=num_experts, top_k=router_top_k,
+                                          score_func=router_score_func,
+                                          num_expert_groups=..., num_limited_groups=..., ...),
+                experts=make_experts_config(dim=dim, hidden_dim=moe_hidden_dim,
+                                            num_experts=num_experts, comm_backend=moe_comm_backend, ...),
+                shared_experts=make_ffn_config(dim=dim,
+                                               hidden_dim=moe_hidden_dim * num_shared_experts, ...),
+            )
+        layers.append(DeepSeekV3TransformerBlock.Config(
+            attention=attn_cfg,
+            attention_norm=RMSNorm.Config(normalized_shape=dim, ...),
+            ffn_norm=RMSNorm.Config(normalized_shape=dim, ...),
+            feed_forward=ffn_cfg, moe=moe_cfg,
+        ))
+    <span class="kw">return</span> layers</code></pre>
+
+<div class="key"><b>设计要点:</b> dense 与 MoE 的差异被封装在"block config 的 feed_forward vs moe 字段"里,<code>DeepSeekV3TransformerBlock.forward</code> 用一个 <code>if self.moe_enabled</code> 分流。新增模型只需写 config 工厂,不改 forward 逻辑。MLA 的低秩结构则封装在 <code>_make_dsv3_attn_config</code> + <code>Attention.forward</code> 里,与 MoE 完全正交。</div>
+
+<h3>组件清单对照表</h3>
+<table>
+<tr><th>组件</th><th>类</th><th>671B 参数</th><th>shape(全量,未切分)</th><th>源码位置</th></tr>
+<tr><td>嵌入</td><td><code>Embedding</code></td><td>0.93B</td><td><span class="shape">[129280, 7168]</span></td><td>embedding.py:24</td></tr>
+<tr><td>MLA 注意力(每层)</td><td><code>Attention</code></td><td>187M</td><td>wq_a[1536,7168] wq_b[24576,1536] wkv_a[576,7168] wkv_b[32768,512] wo[7168,16384]</td><td>model.py:27</td></tr>
+<tr><td>Q 范数</td><td><code>RMSNorm</code></td><td>1.5K</td><td><span class="shape">[1536]</span></td><td>nn_modules.py:151</td></tr>
+<tr><td>KV 范数</td><td><code>RMSNorm</code></td><td>0.5K</td><td><span class="shape">[512]</span></td><td>nn_modules.py:151</td></tr>
+<tr><td>block 归一化</td><td><code>RMSNorm</code> ×2</td><td>14K/层</td><td><span class="shape">[7168]</span> ×2</td><td>nn_modules.py:151</td></tr>
+<tr><td>dense FFN(前3层)</td><td><code>FeedForward</code></td><td>396M/层</td><td>w1/w3[18432,7168] w2[7168,18432]</td><td>feed_forward.py:34</td></tr>
+<tr><td>路由器(58 MoE 层)</td><td><code>TokenChoiceTopKRouter</code></td><td>1.8M/层</td><td>gate[256,7168]</td><td>moe.py:173</td></tr>
+<tr><td>路由专家(58 MoE 层)</td><td><code>GroupedExperts</code></td><td>11.27B/层</td><td>w1/w3[256,2048,7168] w2[256,7168,2048]</td><td>moe.py:35</td></tr>
+<tr><td>共享专家(58 MoE 层)</td><td><code>FeedForward</code></td><td>44M/层</td><td>w1/w3[2048,7168] w2[7168,2048]</td><td>feed_forward.py:34</td></tr>
+<tr><td>final norm</td><td><code>RMSNorm</code></td><td>7K</td><td><span class="shape">[7168]</span></td><td>nn_modules.py:151</td></tr>
+<tr><td>输出头</td><td><code>Linear</code></td><td>0.93B</td><td><span class="shape">[129280, 7168]</span></td><td>nn_modules.py:134</td></tr>
+</table>
+
+<!-- ============ 7 Config 树 -> Module 树 ============ -->
+<h2 id="config-tree"><span class="num" style="background:#0f172a">7</span>Config 树 -> Module 树:代码怎么完整表示这个模型</h2>
+<p>前面六节讲的是"671B 长什么样"。这一节回答更根本的问题:<b>一个 671B、含上千个子模块的模型,源码里只有几十个类,是怎么完整表示出来的?</b> 答案是 torchtitan 的核心抽象:<b>Config 树与 Module 树同构,靠递归 <code>build()</code> 互相转换</b>。</p>
+
+<h3>7.1 为什么看起来"只有 1 个 Config"?--其实是 1 棵 Config 树</h3>
+<p><code>DeepSeekV3Model</code> 内部只定义了一个嵌套 <code>Config</code>(<code>model.py:191</code>),但它继承 <code>Decoder.Config</code>(<code>decoder.py:70-84</code>),后者的字段类型<b>本身又是别的 Config</b>:</p>
+<pre><code><span class="kw">class</span> <span class="cls">DeepSeekV3Model</span>(Decoder):
+    <span class="dec">@dataclass(kw_only=True, slots=True)</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Decoder.Config):       <span class="cmt"># 根 Config</span>
+        dim: <span class="cls">int</span> = <span class="num">2048</span>
+        vocab_size: <span class="cls">int</span> = <span class="num">102400</span>
+
+<span class="cmt"># decoder.py:70-84  Decoder.Config(根 Config 的字段在父类里)</span>
+<span class="dec">@dataclass(kw_only=True, slots=True)</span>
+<span class="kw">class</span> <span class="cls">Config</span>(BaseModel.Config):
+    dim: <span class="cls">int</span>
+    vocab_size: <span class="cls">int</span>
+    lm_head: Linear.Config            <span class="cmt"># 子 Config(引用)</span>
+    tok_embeddings: Embedding.Config  <span class="cmt"># 子 Config(引用)</span>
+    norm: RMSNorm.Config              <span class="cmt"># 子 Config(引用)</span>
+    layers: <span class="cls">list</span>                    <span class="cmt"># list[Block.Config] = 61 个子 Config!</span>
+    enable_weight_tying: <span class="cls">bool</span> = <span class="kw">False</span></code></pre>
+
+<div class="key"><b>关键认知:</b> <code>Config</code> 是个 dataclass,它的字段是对其他 <code>Config</code> <b>实例的引用</b>。所以 1 个 <code>DeepSeekV3Model.Config</code> 内部其实嵌套了<b>上千个</b> Config 节点。"每类一个嵌套 Config"是源码组织方式,不是配置数量。</div>
+
+<svg viewBox="0 0 1140 560" font-family="monospace" font-size="11">
+  <rect x="20" y="10" width="1100" height="540" rx="12" fill="#f8fafc" stroke="#0f172a" stroke-width="1.5"/>
+  <text x="560" y="30" text-anchor="middle" fill="#0f172a" font-weight="700" font-size="13">671B 的 Config 树(局部:1 个根 + 1 个 block 展开,实际有 61 个 block)</text>
+
+  <!-- root -->
+  <g transform="translate(420,48)">
+    <rect width="300" height="40" rx="8" fill="#e7f0fb" stroke="#1d4ed8"/>
+    <text x="150" y="25" text-anchor="middle" fill="#1d4ed8" font-weight="700">DeepSeekV3Model.Config(根)</text>
+  </g>
+  <!-- children of root -->
+  <g font-size="10">
+    <line x1="570" y1="88" x2="200" y2="118" stroke="#cbd5e1"/>
+    <line x1="570" y1="88" x2="400" y2="118" stroke="#cbd5e1"/>
+    <line x1="570" y1="88" x2="600" y2="118" stroke="#cbd5e1"/>
+    <line x1="570" y1="88" x2="830" y2="118" stroke="#cbd5e1"/>
+
+    <rect x="120" y="118" width="160" height="34" rx="6" fill="#fce7f3" stroke="#be185d"/><text x="200" y="139" text-anchor="middle" fill="#be185d">tok_embeddings: Embedding.Config</text>
+    <rect x="320" y="118" width="160" height="34" rx="6" fill="#fef3c7" stroke="#b45309"/><text x="400" y="139" text-anchor="middle" fill="#b45309">norm: RMSNorm.Config</text>
+    <rect x="520" y="118" width="160" height="34" rx="6" fill="#fce7f3" stroke="#be185d"/><text x="600" y="139" text-anchor="middle" fill="#be185d">lm_head: Linear.Config</text>
+    <rect x="720" y="118" width="220" height="34" rx="6" fill="#f0fdf4" stroke="#15803d"/><text x="830" y="139" text-anchor="middle" fill="#15803d">layers: list[Block.Config] ×61</text>
+  </g>
+
+  <!-- one block expanded -->
+  <line x1="830" y1="152" x2="830" y2="178" stroke="#cbd5e1"/>
+  <g transform="translate(560,178)">
+    <rect width="540" height="40" rx="8" fill="#e6f6ee" stroke="#15803d"/>
+    <text x="270" y="25" text-anchor="middle" fill="#15803d" font-weight="700">Block.Config(layers[i])(展开 1 个,共 61 个)</text>
+  </g>
+  <g font-size="10">
+    <line x1="830" y1="218" x2="430" y2="248" stroke="#cbd5e1"/>
+    <line x1="830" y1="218" x2="640" y2="248" stroke="#cbd5e1"/>
+    <line x1="830" y1="218" x2="860" y2="248" stroke="#cbd5e1"/>
+    <line x1="830" y1="218" x2="1060" y2="248" stroke="#cbd5e1"/>
+
+    <rect x="350" y="248" width="160" height="34" rx="6" fill="#e7f0fb" stroke="#1d4ed8"/><text x="430" y="269" text-anchor="middle" fill="#1d4ed8">attention: Attention.Config</text>
+    <rect x="560" y="248" width="160" height="34" rx="6" fill="#fef3c7" stroke="#b45309"/><text x="640" y="269" text-anchor="middle" fill="#b45309">attention_norm: RMSNorm</text>
+    <rect x="780" y="248" width="160" height="34" rx="6" fill="#fef3c7" stroke="#b45309"/><text x="860" y="269" text-anchor="middle" fill="#b45309">ffn_norm: RMSNorm</text>
+    <rect x="980" y="248" width="160" height="34" rx="6" fill="#f2ecfb" stroke="#7c3aed"/><text x="1060" y="269" text-anchor="middle" fill="#7c3aed">moe: MoE.Config</text>
+  </g>
+
+  <!-- attention leaf -->
+  <line x1="430" y1="282" x2="430" y2="308" stroke="#cbd5e1"/>
+  <g transform="translate(40,308)">
+    <rect width="360" height="118" rx="8" fill="#f1f5f9" stroke="#1d4ed8"/>
+    <text x="180" y="18" text-anchor="middle" fill="#1d4ed8" font-weight="700">Attention.Config 展开为 5 个 Linear.Config + 2 个 RMSNorm.Config + RoPE/Attn</text>
+    <text x="16" y="40" fill="#334155">wq_a: Linear.Config(7168->1536)</text>
+    <text x="16" y="56" fill="#334155">wq_b: Linear.Config(1536->24576)</text>
+    <text x="16" y="72" fill="#334155">wkv_a: Linear.Config(7168->576)</text>
+    <text x="16" y="88" fill="#334155">wkv_b: Linear.Config(512->32768)</text>
+    <text x="16" y="104" fill="#334155">wo: Linear.Config(16384->7168) + q_norm/kv_norm + rope + inner</text>
+  </g>
+
+  <!-- moe leaf -->
+  <line x1="1060" y1="282" x2="1060" y2="308" stroke="#cbd5e1"/>
+  <g transform="translate(440,308)">
+    <rect width="680" height="118" rx="8" fill="#f1f5f9" stroke="#7c3aed"/>
+    <text x="340" y="18" text-anchor="middle" fill="#7c3aed" font-weight="700">MoE.Config 展开为 router + experts + shared_experts(全是子 Config)</text>
+    <text x="16" y="40" fill="#334155">router: TokenChoiceTopKRouter.Config -> gate: Linear.Config(7168->256)</text>
+    <text x="16" y="56" fill="#334155">experts: GroupedExperts.Config -> token_dispatcher.Config + 3 个 w_EFD/w_EDF 参数</text>
+    <text x="16" y="72" fill="#334155">shared_experts: FeedForward.Config -> w1/w2/w3 三个 Linear.Config</text>
+    <text x="16" y="88" fill="#334155">expert_bias_E / tokens_per_expert_E: buffer(运行时统计)</text>
+    <text x="16" y="104" fill="#64748b">注:dense 层(0-2)此处是 feed_forward: FeedForward.Config,无 moe 字段</text>
+  </g>
+
+  <text x="560" y="460" text-anchor="middle" fill="#0f172a" font-weight="700" font-size="12">每个 Config 节点都带两个横切字段:param_init(权重初始化器) + sharding_config(并行切分声明)</text>
+  <text x="560" y="478" text-anchor="middle" fill="#64748b" font-size="10">Module.Config (module.py:56-70) 给所有节点统一加了这两个字段,build() 时挂到实例的 _param_init / _sharding_config 上。</text>
+  <text x="560" y="500" text-anchor="middle" fill="#64748b" font-size="10">整棵树共有约 61×(8 attention Linear + MoE/router/shared 的 ~6 Config) + 顶层 4 ≈ 上千个 Config 节点,但源码里只有 ~12 个 Config 类(每类一个嵌套 Config)。</text>
+  <text x="560" y="522" text-anchor="middle" fill="#0f766e" font-size="10" font-weight="700">Config 树的形状 = 模型结构的形状。这就是"源码几十个类,表示上千子模块"的秘密。</text>
+</svg>
+<p class="figcap">图 7-1:671B 的 Config 树(局部)。根 Config 的字段是对子 Config 的引用,层层嵌套成一棵与模型同构的树。</p>
+
+<h3>7.2 递归 build():Config 树实例化成 Module 树</h3>
+<p>转换靠 <code>Configurable.Config.build()</code>(<code>configurable.py:134-160</code>)的<b>递归</b>。两个机制:</p>
+
+<p><b>① 自动接线 <code>_owner</code></b>(<code>configurable.py:162-180</code>):每个类定义嵌套 <code>Config</code> 时,<code>__init_subclass__</code> 自动把 <code>Config._owner</code> 指向所属类。于是 <code>DeepSeekV3Model.Config._owner = DeepSeekV3Model</code>、<code>Attention.Config._owner = Attention</code>……所有 Config 都"知道"自己该 build 成谁。</p>
+
+<p><b>② <code>build()</code> 调所属类的 <code>__init__</code>,而 <code>__init__</code> 又对子 Config 字段调 <code>build()</code></b>--递归到底:</p>
+<pre><code><span class="cmt"># configurable.py:134-160  Config.build() 的核心</span>
+<span class="kw">def</span> <span class="fn">build</span>(<span class="self">self</span>, **kwargs):
+    <span class="kw">if</span> <span class="self">self</span>._owner <span class="kw">is None</span>:
+        <span class="kw">raise</span> <span class="cls">NotImplementedError</span>(...)
+    <span class="kw">return</span> <span class="self">self</span>._owner(config=replace(<span class="self">self</span>))   <span class="cmt"># 调所属类的 __init__(config=...)</span>
+
+<span class="cmt"># decoder.py:229-240  Decoder.__init__ 对每个子 Config 再调 build()</span>
+<span class="kw">def</span> <span class="fn">__init__</span>(<span class="self">self</span>, config):
+    <span class="self">self</span>.tok_embeddings = config.tok_embeddings.build()   <span class="cmt"># Embedding.Config -> Embedding</span>
+    <span class="self">self</span>.layers = ModuleDict()
+    <span class="kw">for</span> i, layer_config <span class="kw">in</span> enumerate(config.layers):
+        <span class="self">self</span>.layers[str(i)] = layer_config.build()          <span class="cmt"># Block.Config -> Block(继续递归!)</span>
+    <span class="self">self</span>.norm = config.norm.build()
+    <span class="self">self</span>.lm_head = config.lm_head.build()
+
+<span class="cmt"># model.py:158-170  Block.__init__ 继续递归到 attention / moe</span>
+<span class="kw">def</span> <span class="fn">__init__</span>(<span class="self">self</span>, config):
+    <span class="self">self</span>.attention = config.attention.build()   <span class="cmt"># Attention.Config -> MLA(再递归 build wq_a/wq_b...)</span>
+    <span class="self">self</span>.moe = config.moe.build()                 <span class="cmt"># 或 feed_forward = config.feed_forward.build()</span></code></pre>
+
+<p>所以 <code>model_config.build()</code> <b>一次调用,递归实例化整棵上千个 Module 的树</b>。Config 树和 Module 树同构--每个 Config 节点对应一个 Module 节点,FQN 一致(如 <code>layers.5.attention.wq_b</code>)。</p>
+
+<h4>build() 同时挂载两个横切关注点</h4>
+<p>每个 <code>Module.Config</code> 还带 <code>param_init</code> 和 <code>sharding_config</code> 两个字段(<code>module.py:56-70</code>),<code>build()</code> 时挂到实例上。这让<b>权重初始化</b>和<b>并行切分</b>与结构定义解耦:</p>
+<pre><code><span class="cmt"># module.py:56-70  Module.Config.build() 挂载横切字段</span>
+<span class="kw">def</span> <span class="fn">build</span>(<span class="self">self</span>, **kwargs):
+    instance = Configurable.Config.build(<span class="self">self</span>, **kwargs)   <span class="cmt"># 实例化 Module</span>
+    <span class="kw">if</span> <span class="self">self</span>.param_init <span class="kw">is not None</span>:
+        instance._param_init = <span class="self">self</span>.param_init            <span class="cmt"># 权重初始化器字典</span>
+    <span class="kw">if</span> <span class="self">self</span>.sharding_config <span class="kw">is not None</span>:
+        instance._sharding_config = <span class="self">self</span>.sharding_config    <span class="cmt"># 并行切分声明</span>
+    <span class="kw">return</span> instance</code></pre>
+<div class="kv">
+<b>param_init</b><span>形如 <code>{"weight": partial(nn.init.trunc_normal_, std=depth_scaled_std(0.02, layer_id))}</code>。671B 用 <code>_depth_init(layer_id)</code> 让每层 std 随深度缩放;专家用 <code>_depth_experts_init</code>(w1 固定 std=0.02,w2/w3 随深度)。<code>init_states</code> 时按参数名查表初始化。</span>
+<b>sharding_config</b><span>声明该参数/buffer 在 TP/EP/SP 下的放置(见 sharding.py)。build 时不切分,留给 <code>parallelize()</code> 在训练初始化时按声明施加。</span>
+</div>
+
+<h3>7.3 完整生命周期:从 ModelSpec 到可训练模型</h3>
+<p>trainer 把上述机制串成一条流水线(<code>trainer.py:280-433</code>):</p>
+
+<svg viewBox="0 0 1140 360" font-family="monospace" font-size="11">
+  <defs><marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
+  <rect x="20" y="10" width="1100" height="340" rx="12" fill="#f8fafc" stroke="#0f172a" stroke-width="1.5"/>
+  <text x="560" y="30" text-anchor="middle" fill="#0f172a" font-weight="700" font-size="13">模型构建生命周期(trainer 驱动)</text>
+
+  <!-- stage 1 -->
+  <g transform="translate(40,56)">
+    <rect width="240" height="90" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="120" y="20" text-anchor="middle" fill="#7c3aed" font-weight="700">① 构造 Config 树</text>
+    <text x="12" y="40" fill="#334155" font-size="10">model_registry("671B")</text>
+    <text x="12" y="56" fill="#64748b" font-size="9">__init__.py:534 -> _671b():458</text>
+    <text x="12" y="72" fill="#334155" font-size="10">_build_dsv3_layers 生成 61 层</text>
+    <text x="12" y="86" fill="#64748b" font-size="9">-> ModelSpec(model=Config树,...)</text>
+  </g>
+  <path d="M 280 101 L 310 101" stroke="#64748b" stroke-width="2" marker-end="url(#arr4)"/>
+
+  <!-- stage 2 -->
+  <g transform="translate(314,56)">
+    <rect width="240" height="90" rx="8" fill="#e7f0fb" stroke="#1d4ed8"/>
+    <text x="120" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">② update_from_config</text>
+    <text x="12" y="40" fill="#334155" font-size="10">挂 sharding_config 到树</text>
+    <text x="12" y="56" fill="#64748b" font-size="9">trainer.py:282</text>
+    <text x="12" y="72" fill="#334155" font-size="10">set_deepseek_v3_sharding_config</text>
+    <text x="12" y="86" fill="#64748b" font-size="9">model.py:209(给每个子 Config)</text>
+  </g>
+  <path d="M 554 101 L 584 101" stroke="#64748b" stroke-width="2" marker-end="url(#arr4)"/>
+
+  <!-- stage 3 -->
+  <g transform="translate(588,56)">
+    <rect width="240" height="90" rx="8" fill="#fef3c7" stroke="#b45309"/>
+    <text x="120" y="20" text-anchor="middle" fill="#b45309" font-weight="700">③ apply_overrides</text>
+    <text x="12" y="40" fill="#334155" font-size="10">按 FQN 替换树中子 Config</text>
+    <text x="12" y="56" fill="#64748b" font-size="9">trainer.py:293</text>
+    <text x="12" y="72" fill="#334155" font-size="10">可替换任意 Configurable</text>
+    <text x="12" y="86" fill="#64748b" font-size="9">(如换 optimizer/loss/某层)</text>
+  </g>
+  <path d="M 828 101 L 858 101" stroke="#64748b" stroke-width="2" marker-end="url(#arr4)"/>
+
+  <!-- stage 4 -->
+  <g transform="translate(862,56)">
+    <rect width="238" height="90" rx="8" fill="#f0fdf4" stroke="#15803d"/>
+    <text x="119" y="20" text-anchor="middle" fill="#15803d" font-weight="700">④ build() 递归建树</text>
+    <text x="12" y="40" fill="#334155" font-size="10">with torch.device("meta"):</text>
+    <text x="12" y="56" fill="#64748b" font-size="9">trainer.py:297-301</text>
+    <text x="12" y="72" fill="#334155" font-size="10">model = model_config.build()</text>
+    <text x="12" y="86" fill="#64748b" font-size="9">递归实例化上千 Module(meta,不占显存)</text>
+  </g>
+
+  <!-- second row -->
+  <path d="M 981 146 L 981 172" stroke="#64748b" stroke-width="2" marker-end="url(#arr4)"/>
+  <g transform="translate(862,176)">
+    <rect width="238" height="70" rx="8" fill="#e7ecf3" stroke="#64748b"/>
+    <text x="119" y="20" text-anchor="middle" fill="#334155" font-weight="700">⑤ to_empty + init_states</text>
+    <text x="12" y="38" fill="#64748b" font-size="9">trainer.py:402/429 分配真实显存</text>
+    <text x="12" y="54" fill="#64748b" font-size="9">init_states 递归用 param_init 初始化权重</text>
+  </g>
+  <path d="M 862 211 L 832 211" stroke="#64748b" stroke-width="2" marker-end="url(#arr4)"/>
+  <g transform="translate(588,176)">
+    <rect width="240" height="70" rx="8" fill="#e6f6ee" stroke="#0f766e"/>
+    <text x="120" y="20" text-anchor="middle" fill="#0f766e" font-weight="700">⑥ parallelize_deepseekv3</text>
+    <text x="12" y="38" fill="#64748b" font-size="9">trainer.py:384/419</text>
+    <text x="12" y="54" fill="#64748b" font-size="9">CP包装/parallelize(读 sharding_config)/FSDP/AC/compile</text>
+  </g>
+  <path d="M 588 211 L 558 211" stroke="#64748b" stroke-width="2" marker-end="url(#arr4)"/>
+  <g transform="translate(314,176)">
+    <rect width="240" height="70" rx="8" fill="#fce7f3" stroke="#be185d"/>
+    <text x="120" y="20" text-anchor="middle" fill="#be185d" font-weight="700">⑦ train loop</text>
+    <text x="12" y="38" fill="#64748b" font-size="9">trainer.py forward_backward_step</text>
+    <text x="12" y="54" fill="#64748b" font-size="9">model(tokens) -> logits -> CE loss -> backward</text>
+  </g>
+
+  <!-- bottom annotation -->
+  <g transform="translate(40,266)">
+    <rect width="1060" height="68" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="16" y="22" fill="#0f172a" font-weight="700" font-size="12">关键:每一阶段都"看见"整棵树</text>
+    <text x="16" y="40" fill="#334155" font-size="11">update_from_config 递归给树挂 sharding_config · overrides 按 FQN(如 layers.5.attention.wq_b)定位替换 · build() 递归实例化 · init_states 递归初始化 · parallelize 递归切分。</text>
+    <text x="16" y="56" fill="#64748b" font-size="10">Config 树是"图纸",Module 树是"成品",两者同构。改结构=改 Config 树(在工厂函数里),改初始化=改 param_init,改并行=改 sharding_config--三件事互不耦合。</text>
+  </g>
+</svg>
+<p class="figcap">图 7-2:从 ModelSpec 到可训练模型的完整生命周期。Config 树贯穿始终,build() 是 Config->Module 的转换点。</p>
+
+<h4>init_states:递归初始化权重(module.py:72-119)</h4>
+<pre><code><span class="kw">def</span> <span class="fn">init_states</span>(<span class="self">self</span>, *, buffer_device=<span class="kw">None</span>):
+    <span class="cmt"># 1. 先递归所有子 Module(广度优先队列)</span>
+    queue = <span class="cls">list</span>(<span class="self">self</span>.children())
+    <span class="kw">while</span> queue:
+        child = queue.pop(<span class="num">0</span>)
+        <span class="kw">if</span> <span class="cls">isinstance</span>(child, Module):
+            child.init_states(buffer_device=buffer_device)   <span class="cmt"># 递归</span>
+        <span class="kw">else</span>:
+            queue.extend(child.children())                    <span class="cmt"># 穿过 compile/AC 包装</span>
+    <span class="cmt"># 2. 再初始化自己的参数(用 build() 时挂上的 _param_init 字典)</span>
+    <span class="self">self</span>._init_self_parameters()
+    <span class="cmt"># 3. 再初始化自己的 buffer(如 RoPE cache、MoE 计数器)</span>
+    <span class="self">self</span>._init_self_buffers(buffer_device=buffer_device)</code></pre>
+<p><code>_init_self_parameters</code>(<code>module.py:160-190</code>)按参数名查 <code>_param_init</code> 字典:有就用对应初始化器(如 671B 的 <code>_depth_init(layer_id)</code>),没有就回退到 <code>reset_parameters()</code>(<code>nn.Linear</code> 等 PyTorch 默认)。这样 671B 每层权重能按层 id 做深度缩放初始化,而无需在 forward 里写任何初始化代码。</p>
+
+<div class="note">
+<b>一句话总结:</b> <code>DeepSeekV3Model.Config</code> 不是"唯一的配置",而是<b>配置树的根节点</b>。每个类各自定义一个嵌套 <code>Config</code>,通过 dataclass 字段引用串成与模型同构的树;<code>build()</code> 递归把 Config 树实例化成 Module 树;<code>init_states</code> 递归初始化、<code>parallelize</code> 递归切分。结构(param_init)、并行(sharding_config)、初始化(_param_init)三件事在 Config 层声明、在 Module 层施加,完全解耦--这就是 torchtitan 用几十个类表示上千子模块的完整机制。
+</div>
+
+<div class="note">
+<b>结构总结:</b> DeepSeek V3 671B = <code>Decoder</code> 容器(61 个 <code>DeepSeekV3TransformerBlock</code>)+ embed/lm_head。每 block = MLA 注意力 + (dense FFN 或 MoE)。MLA 用 Q/KV 双低秩压缩省显存;MoE 用"256 路由专家 top-8 + 1 共享专家"实现稀疏激活(每 token 只激活 9 个专家,但总参数 671B)。代码上 dense 与 MoE、MLA 与 MoE 完全正交,靠 config 工厂组合。
+</div>
+
+<p class="sub">本页结构依据 <code>torchtitan/models/deepseek_v3/{model,__init__}.py</code> 与 <code>torchtitan/models/common/{decoder,moe,feed_forward,nn_modules,embedding,attention,rope}.py</code>(main 分支)。参数量为本页按 671B 超参审计值,与官方一致(671.0B)。并行切分(EP/TP/SP)细节见同系列 <a href="training_flow_overview.html">训练流程全景</a>。</p>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>
