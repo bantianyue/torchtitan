@@ -268,187 +268,226 @@
 <h3>简化版:四层各管什么(演示用)</h3>
 <p>用户层 -> ① torchtitan -> ② pytorch -> ③ CUDA/NCCL,逐格列出四策略(FSDP/TP/PP/CP)的关键做法与落点,排版稀疏适合投屏。每格已对照源码核验 old 版描述并纠正(见下图注)。</p>
 
-<svg viewBox="0 0 1170 770" font-family="monospace" font-size="12">
+<svg viewBox="0 0 1170 838" font-family="monospace" font-size="12">
   <defs><marker id="ars" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L5,3 L0,6 z" fill="#64748b"/></marker></defs>
   <text x="585" y="24" text-anchor="middle" fill="#0f172a" font-weight="700" font-size="15">四层各管什么:用户配置 -> torchtitan 调 API -> pytorch 插通信+融合 -> NCCL/CUDA 执行</text>
 
-  <!-- ===== 用户层 ===== -->
-  <rect x="20" y="42" width="1130" height="156" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
-  <text x="44" y="72" fill="#475569" font-weight="700" font-size="16">用户层</text>
-  <text x="44" y="90" fill="#334155" font-size="10">用法:config_registry 里返回</text>
-  <text x="44" y="101" fill="#64748b" font-size="9">Trainer.Config(parallelism=</text>
-  <text x="44" y="112" fill="#64748b" font-size="9">ParallelismConfig(</text>
-  <text x="44" y="123" fill="#64748b" font-size="9">  data_parallel_shard_degree=8,</text>
-  <text x="44" y="134" fill="#64748b" font-size="9">  tensor_parallel_degree=2,</text>
-  <text x="44" y="145" fill="#64748b" font-size="9">  pipeline_parallel_degree=4,</text>
-  <text x="44" y="156" fill="#64748b" font-size="9">  context_parallel_degree=1,</text>
-  <text x="44" y="167" fill="#64748b" font-size="9">  expert_parallel_degree=2,</text>
-  <text x="44" y="178" fill="#64748b" font-size="9">  spmd_backend="default"))</text>
-  <text x="44" y="192" fill="#c2410c" font-size="9">等价 CLI:--parallelism.&lt;key&gt;=&lt;val&gt;</text>
-  <g font-size="10">
-    <rect x="290" y="54" width="207" height="132" rx="8" fill="#fcefe2" stroke="#c2410c"/>
-    <text x="394" y="74" text-anchor="middle" fill="#c2410c" font-weight="700" font-size="12">FSDP</text>
-    <text x="302" y="92" fill="#334155">data_parallel_shard_degree=8</text>
-    <text x="302" y="108" fill="#334155">data_parallel_replicate_degree=1</text>
-    <text x="302" y="124" fill="#64748b" font-size="9">fsdp_reshard_after_forward=default</text>
-    <text x="302" y="140" fill="#334155">参数按 8 路切,每 rank 持 1/8</text>
-    <text x="302" y="156" fill="#64748b">(HSDP 副本&gt;1;PP 默认不 reshard)</text>
-    <text x="302" y="172" fill="#c2410c">--&gt; 触发 FSDP</text>
-    <rect x="507" y="54" width="207" height="132" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="611" y="74" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
-    <text x="519" y="92" fill="#334155">tensor_parallel_degree=2</text>
-    <text x="519" y="108" fill="#334155">enable_sequence_parallel=True</text>
-    <text x="519" y="124" fill="#334155">enable_async_tensor_parallel</text>
-    <text x="519" y="140" fill="#64748b">=False(需 compile 才生效)</text>
-    <text x="519" y="156" fill="#334155">权重按 2 路切,每 rank 持半份</text>
-    <text x="519" y="172" fill="#1d4ed8">--&gt; 触发 TP 切分</text>
-    <rect x="724" y="54" width="207" height="132" rx="8" fill="#dcfce7" stroke="#0f766e"/>
-    <text x="828" y="74" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
-    <text x="736" y="92" fill="#334155">pipeline_parallel_degree=4</text>
-    <text x="736" y="108" fill="#334155">pipeline_parallel_schedule=</text>
-    <text x="736" y="124" fill="#334155">"Interleaved1F1B"(671B 用)</text>
-    <text x="736" y="140" fill="#334155">pipeline_parallel_microbatch</text>
-    <text x="736" y="156" fill="#64748b">_size=1;层分 4 段各一组 GPU</text>
-    <text x="736" y="172" fill="#0f766e">--&gt; 触发 PP 切分</text>
-    <rect x="941" y="54" width="199" height="132" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
-    <text x="1041" y="74" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
-    <text x="953" y="92" fill="#334155">context_parallel_degree=4</text>
-    <text x="953" y="108" fill="#334155">context_parallel_load_balancer</text>
-    <text x="953" y="124" fill="#64748b">="headtail"(均衡 causal 负载)</text>
-    <text x="953" y="140" fill="#334155">序列按 4 路切,每 rank 1/4</text>
-    <text x="953" y="156" fill="#b91c1c">--&gt; 触发 CP 切分</text>
-  </g>
+  <!-- ===== 0 用户层 ===== -->
+  <rect x="20" y="42" width="1150" height="172" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <text x="30" y="66" fill="#475569" font-weight="700" font-size="14">0 用户侧: 用哪些,并行度</text>
 
-  <path d="M 585 200 L 585 226" stroke="#64748b" stroke-width="2.5" marker-end="url(#ars)"/>
-  <text x="596" y="217" fill="#64748b" font-size="10">写配置</text>
+  <!-- 总 -->
+  <rect x="20" y="54" width="230" height="148" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="30" y="74" fill="#475569" font-weight="700" font-size="11">总</text>
+  <text x="30" y="92" fill="#334155" font-size="9.5">决定启用哪些并行策略</text>
+  <text x="30" y="106" fill="#334155" font-size="9.5">(TP / PP / CP / EP / DP)</text>
+  <text x="30" y="120" fill="#334155" font-size="9.5">及各自并行度</text>
+  <text x="30" y="134" fill="#334155" font-size="9.5">通过 CLI 或</text>
+  <text x="30" y="148" fill="#334155" font-size="9.5">Trainer.Config 配置</text>
+  <text x="30" y="164" fill="#64748b" font-size="9">只填数字,不写并行逻辑</text>
+  <text x="30" y="178" fill="#64748b" font-size="9">不碰代码</text>
 
-  <!-- ===== torchtitan 层 ===== -->
-  <rect x="20" y="230" width="1130" height="156" rx="12" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
-  <text x="44" y="260" fill="#15803d" font-weight="700" font-size="16">① torchtitan</text>
-  <text x="44" y="282" fill="#334155" font-size="11.5">切什么:ShardingConfig 声明</text>
-  <text x="44" y="300" fill="#64748b" font-size="10.5">+ parallelize 编排顺序</text>
-  <text x="44" y="318" fill="#64748b" font-size="10.5">翻译成 pytorch API 调用</text>
-  <text x="44" y="336" fill="#64748b" font-size="10.5">自己不实现通信(声明层)</text>
-  <g font-size="10">
-    <rect x="290" y="242" width="207" height="132" rx="8" fill="#fcefe2" stroke="#c2410c"/>
-    <text x="394" y="262" text-anchor="middle" fill="#c2410c" font-weight="700" font-size="12">FSDP</text>
-    <text x="302" y="280" fill="#334155">shard_placement_fn 分 mesh</text>
-    <text x="302" y="296" fill="#334155">专家参数-&gt;edp_mesh</text>
-    <text x="302" y="312" fill="#334155">其余-&gt;dp_mesh</text>
-    <text x="302" y="328" fill="#334155">PP 下默认 reshard=False</text>
-    <text x="302" y="344" fill="#64748b">apply_fsdp_to_decoder (fsdp.py)</text>
-    <rect x="507" y="242" width="207" height="132" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="611" y="262" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
-    <text x="519" y="280" fill="#334155">ShardingConfig 声明放置</text>
-    <text x="519" y="296" fill="#334155">wkv_b/wq_b=Shard(0) 列并行</text>
-    <text x="519" y="312" fill="#334155">wo=Shard(1) 行并行</text>
-    <text x="519" y="328" fill="#334155">wkv_a/wq_a=Replicate</text>
-    <text x="519" y="344" fill="#64748b">colwise/rowwise_config (sharding.py)</text>
-    <rect x="724" y="242" width="207" height="132" rx="8" fill="#dcfce7" stroke="#0f766e"/>
-    <text x="828" y="262" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
-    <text x="736" y="280" fill="#334155">pipeline_llm 按 FQN 切段</text>
-    <text x="736" y="296" fill="#334155">_generate_llm_fqn_per_model_part</text>
-    <text x="736" y="312" fill="#334155">+ _split_module</text>
-    <text x="736" y="328" fill="#334155">逐 stage 调 parallelize_fn</text>
-    <text x="736" y="344" fill="#64748b">传 get_mesh 重建 DTensor</text>
-    <rect x="941" y="242" width="199" height="132" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
-    <text x="1041" y="262" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
-    <text x="953" y="280" fill="#334155">apply_cp_to_forward</text>
-    <text x="953" y="296" fill="#334155">(必须早于 parallelize)</text>
-    <text x="953" y="312" fill="#334155">替换 attention.forward</text>
-    <text x="953" y="328" fill="#334155">为 CP 版;cp_shard 切 seq</text>
-    <text x="953" y="344" fill="#64748b">context_parallel.py</text>
-  </g>
+  <!-- FSDP -->
+  <rect x="270" y="54" width="215" height="148" rx="8" fill="#fcefe2" stroke="#c2410c"/>
+  <text x="378" y="74" text-anchor="middle" fill="#c2410c" font-weight="700" font-size="12">FSDP</text>
+  <text x="280" y="92" fill="#334155" font-size="9">Trainer.Config(</text>
+  <text x="280" y="106" fill="#334155" font-size="9">  parallelism=ParallelismConfig(</text>
+  <text x="280" y="120" fill="#334155" font-size="9">    data_parallel_shard_degree=8,</text>
+  <text x="280" y="134" fill="#334155" font-size="9">    data_parallel_replicate_degree=1))</text>
+  <text x="280" y="150" fill="#64748b" font-size="9"># 每 rank 持 1/8 参数</text>
+  <text x="280" y="164" fill="#64748b" font-size="9"># HSDP:dp_replicate&gt;1 加副本</text>
 
-  <path d="M 585 388 L 585 410" stroke="#64748b" stroke-width="2.5" marker-end="url(#ars)"/>
-  <text x="596" y="402" fill="#64748b" font-size="10">调 API</text>
+  <!-- TP -->
+  <rect x="495" y="54" width="215" height="148" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="603" y="74" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
+  <text x="505" y="92" fill="#334155" font-size="9">Trainer.Config(</text>
+  <text x="505" y="106" fill="#334155" font-size="9">  parallelism=ParallelismConfig(</text>
+  <text x="505" y="120" fill="#334155" font-size="9">    tensor_parallel_degree=2,</text>
+  <text x="505" y="134" fill="#334155" font-size="9">    enable_sequence_parallel=True))</text>
+  <text x="505" y="150" fill="#64748b" font-size="9"># 权重按 2 路切</text>
+  <text x="505" y="164" fill="#64748b" font-size="9"># SP 开:激活序列维也切</text>
 
-  <!-- ===== pytorch 层 ===== -->
-  <rect x="20" y="412" width="1130" height="156" rx="12" fill="#e7ecf3" stroke="#1d4ed8" stroke-width="2"/>
-  <text x="44" y="440" fill="#1d4ed8" font-weight="700" font-size="16">② pytorch</text>
-  <text x="44" y="462" fill="#334155" font-size="11">根据声明在运行时插入通信</text>
-  <text x="44" y="479" fill="#334155" font-size="11">操作 DTensor + PP schedule</text>
-  <text x="44" y="498" fill="#64748b" font-size="10.5">compile 时 Inductor 融合重叠</text>
-  <text x="44" y="516" fill="#64748b" font-size="10.5">(hook/redistribute + _c10d_functional)</text>
-  <g font-size="10">
-    <rect x="290" y="424" width="207" height="132" rx="8" fill="#fcefe2" stroke="#c2410c"/>
-    <text x="394" y="444" text-anchor="middle" fill="#c2410c" font-weight="700" font-size="12">FSDP</text>
-    <text x="302" y="462" fill="#334155">fully_shard 注册 hook</text>
-    <text x="302" y="478" fill="#334155">前向 all-gather 拼回参数</text>
-    <text x="302" y="494" fill="#334155">反向 reduce-scatter 梯度回分片</text>
-    <text x="302" y="510" fill="#64748b">分片态=DTensor(Shard)</text>
-    <text x="302" y="526" fill="#7c3aed">compile 时 Inductor 把通信降级</text>
-    <text x="302" y="542" fill="#7c3aed">为 _CollectiveKernel 与 matmul 重叠</text>
-    <rect x="507" y="424" width="207" height="132" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="611" y="444" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
-    <text x="519" y="462" fill="#334155">Colwise/Rowwise 注册 hook</text>
-    <text x="519" y="478" fill="#334155">边界对激活 redistribute</text>
-    <text x="519" y="494" fill="#334155">出列并行:reduce-scatter</text>
-    <text x="519" y="510" fill="#334155">出行并行:all-reduce</text>
-    <text x="519" y="526" fill="#64748b">开 SP 时入列前 all-gather 序列</text>
-    <rect x="724" y="424" width="207" height="132" rx="8" fill="#dcfce7" stroke="#0f766e"/>
-    <text x="828" y="444" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
-    <text x="736" y="462" fill="#334155">Schedule1F1B 推微批</text>
-    <text x="736" y="478" fill="#334155">warmup/稳态/cooldown</text>
-    <text x="736" y="494" fill="#334155">stage 间 isend/irecv</text>
-    <text x="736" y="510" fill="#334155">传 hidden 与梯度</text>
-    <text x="736" y="526" fill="#64748b">收端重建 DTensor</text>
-    <rect x="941" y="424" width="199" height="132" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
-    <text x="1041" y="444" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
-    <text x="953" y="462" fill="#334155">flex_cp_allgather</text>
-    <text x="953" y="478" fill="#334155">收全量 K/V(跨 cp_mesh)</text>
-    <text x="953" y="494" fill="#334155">本地 Q 段对全量 K/V 算</text>
-    <text x="953" y="510" fill="#334155">反向 reduce-scatter K/V</text>
-    <text x="953" y="526" fill="#64748b">SDPA 走 ring attention</text>
-  </g>
+  <!-- PP -->
+  <rect x="720" y="54" width="215" height="148" rx="8" fill="#dcfce7" stroke="#0f766e"/>
+  <text x="828" y="74" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
+  <text x="730" y="92" fill="#334155" font-size="9">Trainer.Config(</text>
+  <text x="730" y="106" fill="#334155" font-size="9">  parallelism=ParallelismConfig(</text>
+  <text x="730" y="120" fill="#334155" font-size="9">    pipeline_parallel_degree=4,</text>
+  <text x="730" y="134" fill="#334155" font-size="9">    pipeline_parallel_schedule=</text>
+  <text x="730" y="148" fill="#334155" font-size="9">    "Interleaved1F1B"))</text>
+  <text x="730" y="164" fill="#64748b" font-size="9"># 层分 4 段,每段一组 GPU</text>
 
-  <path d="M 585 570 L 585 596" stroke="#64748b" stroke-width="2.5" marker-end="url(#ars)"/>
-  <text x="596" y="586" fill="#64748b" font-size="10">集合算子</text>
+  <!-- CP -->
+  <rect x="945" y="54" width="215" height="148" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
+  <text x="1053" y="74" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
+  <text x="955" y="92" fill="#334155" font-size="9">Trainer.Config(</text>
+  <text x="955" y="106" fill="#334155" font-size="9">  parallelism=ParallelismConfig(</text>
+  <text x="955" y="120" fill="#334155" font-size="9">    context_parallel_degree=4,</text>
+  <text x="955" y="134" fill="#334155" font-size="9">    context_parallel_load_balancer=</text>
+  <text x="955" y="148" fill="#334155" font-size="9">    "headtail"))</text>
+  <text x="955" y="164" fill="#64748b" font-size="9"># 序列按 4 路切,每 rank 1/4</text>
 
-  <!-- ===== NCCL 层 ===== -->
-  <rect x="20" y="598" width="1130" height="156" rx="12" fill="#f2ecfb" stroke="#7c3aed" stroke-width="2"/>
-  <text x="44" y="626" fill="#7c3aed" font-weight="700" font-size="16">③ CUDA / NCCL</text>
-  <text x="44" y="644" fill="#334155" font-size="11">执行通信:GPU 收发数据</text>
-  <text x="44" y="661" fill="#334155" font-size="11">启动 NCCL 内核 + CUDA 执行</text>
-  <text x="44" y="680" fill="#64748b" font-size="10">NCCL(多卡通信)建于 CUDA 之上</text>
-  <text x="44" y="697" fill="#64748b" font-size="10">只执行不融合</text>
-  <text x="44" y="714" fill="#64748b" font-size="10">(融合在 ② Inductor)</text>
-  <g font-size="10">
-    <rect x="290" y="610" width="207" height="132" rx="8" fill="#fcefe2" stroke="#c2410c"/>
-    <text x="394" y="630" text-anchor="middle" fill="#c2410c" font-weight="700" font-size="12">FSDP</text>
-    <text x="302" y="648" fill="#334155">③ 干两件事(不止启动内核):</text>
-    <text x="302" y="664" fill="#334155">前向 ncclAllGather:各 rank 的</text>
-    <text x="302" y="680" fill="#334155">1/N 分片拼回完整参数</text>
-    <text x="302" y="696" fill="#334155">反向 ncclReduceScatter:梯度</text>
-    <text x="302" y="712" fill="#334155">求和后切回各 rank 的 1/N</text>
-    <text x="302" y="728" fill="#7c3aed">CUDA stream 异步,与计算重叠</text>
-    <rect x="507" y="610" width="207" height="132" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="611" y="630" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
-    <text x="519" y="648" fill="#334155">② Inductor:async TP 融合</text>
-    <text x="519" y="664" fill="#334155">(micro_pipeline_tp 重叠)</text>
-    <text x="519" y="680" fill="#334155">③ NCCL 内核同 FSDP:</text>
-    <text x="519" y="696" fill="#64748b">_c10d_functional -&gt;</text>
-    <text x="519" y="712" fill="#7c3aed">ncclAllGather / RS</text>
-    <text x="519" y="728" fill="#64748b">③ 只执行不融合</text>
-    <rect x="724" y="610" width="207" height="132" rx="8" fill="#dcfce7" stroke="#0f766e"/>
-    <text x="828" y="630" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
-    <text x="736" y="648" fill="#334155">点对点(非集合)通信</text>
-    <text x="736" y="664" fill="#334155">isend/irecv -&gt;</text>
-    <text x="736" y="680" fill="#334155">ncclSend / ncclRecv</text>
-    <text x="736" y="696" fill="#7c3aed">批量 ncclGroupStart/End</text>
-    <text x="736" y="712" fill="#64748b">②③ 都无 Inductor 融合</text>
-    <text x="736" y="728" fill="#64748b">(p2p 已与计算重叠)</text>
-    <rect x="941" y="610" width="199" height="132" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
-    <text x="1041" y="630" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
-    <text x="953" y="648" fill="#334155">内部即 all_gather_tensor</text>
-    <text x="953" y="664" fill="#334155">反向 reduce_scatter_tensor</text>
-    <text x="953" y="680" fill="#334155">与 FSDP/TP 同路径</text>
-    <text x="953" y="696" fill="#64748b">-&gt; _c10d_functional</text>
-    <text x="953" y="712" fill="#7c3aed">ncclAllGather</text>
-    <text x="953" y="728" fill="#7c3aed">ncclReduceScatter</text>
-  </g>
+  <path d="M 585 216 L 585 242" stroke="#64748b" stroke-width="2.5" marker-end="url(#ars)"/>
+  <text x="596" y="233" fill="#64748b" font-size="10">写配置</text>
+
+  <!-- ===== 1 TorchTitan ===== -->
+  <rect x="20" y="246" width="1150" height="172" rx="12" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
+  <text x="30" y="270" fill="#15803d" font-weight="700" font-size="14">① TorchTitan: 切什么</text>
+
+  <!-- 总 -->
+  <rect x="20" y="258" width="230" height="148" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="30" y="278" fill="#475569" font-weight="700" font-size="11">总</text>
+  <text x="30" y="296" fill="#334155" font-size="9.5">声明每个参数/激活怎么放</text>
+  <text x="30" y="310" fill="#334155" font-size="9.5">(Shard/Replicate/Partial</text>
+  <text x="30" y="324" fill="#334155" font-size="9.5">在哪个 mesh 轴)</text>
+  <text x="30" y="338" fill="#334155" font-size="9.5">编排各并行策略</text>
+  <text x="30" y="352" fill="#64748b" font-size="9">(自己零通信,只写声明)</text>
+  <text x="30" y="366" fill="#64748b" font-size="9">不搬张量,不知 NCCL</text>
+
+  <!-- FSDP -->
+  <rect x="270" y="258" width="215" height="148" rx="8" fill="#fcefe2" stroke="#c2410c"/>
+  <text x="378" y="278" text-anchor="middle" fill="#c2410c" font-weight="700" font-size="12">FSDP</text>
+  <text x="280" y="296" fill="#334155" font-size="9.5">切分策略(FSDP 组):</text>
+  <text x="280" y="310" fill="#334155" font-size="9.5">专家参数 -&gt; edp_mesh</text>
+  <text x="280" y="324" fill="#334155" font-size="9.5">稠密参数 -&gt; dp_mesh</text>
+  <text x="280" y="338" fill="#334155" font-size="9.5">每 rank 持 1/N 分片</text>
+  <text x="280" y="354" fill="#64748b" font-size="9">(PP 下默认 reshard=False)</text>
+  <text x="280" y="368" fill="#64748b" font-size="9">shard_placement_fn 分流</text>
+
+  <!-- TP -->
+  <rect x="495" y="258" width="215" height="148" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="603" y="278" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
+  <text x="505" y="296" fill="#334155" font-size="9.5">ShardingConfig 声明:</text>
+  <text x="505" y="310" fill="#334155" font-size="9.5">wkv_b/wq_b=Shard(0) 列并行</text>
+  <text x="505" y="324" fill="#334155" font-size="9.5">wo=Shard(1) 行并行</text>
+  <text x="505" y="338" fill="#334155" font-size="9.5">wkv_a/wq_a=Replicate</text>
+  <text x="505" y="354" fill="#64748b" font-size="9">(colwise/rowwise_config)</text>
+
+  <!-- PP -->
+  <rect x="720" y="258" width="215" height="148" rx="8" fill="#dcfce7" stroke="#0f766e"/>
+  <text x="828" y="278" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
+  <text x="730" y="296" fill="#334155" font-size="9.5">pipeline_llm 按 FQN 切段</text>
+  <text x="730" y="310" fill="#334155" font-size="9.5">_generate_llm_fqn_per_</text>
+  <text x="730" y="324" fill="#334155" font-size="9.5">model_part + _split_module</text>
+  <text x="730" y="338" fill="#334155" font-size="9.5">逐 stage 调 parallelize_fn</text>
+  <text x="730" y="354" fill="#64748b" font-size="9">传 get_mesh 重建 DTensor</text>
+
+  <!-- CP -->
+  <rect x="945" y="258" width="215" height="148" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
+  <text x="1053" y="278" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
+  <text x="955" y="296" fill="#334155" font-size="9.5">apply_cp_to_forward</text>
+  <text x="955" y="310" fill="#334155" font-size="9.5">(必须早于 parallelize)</text>
+  <text x="955" y="324" fill="#334155" font-size="9.5">替换 attention.forward</text>
+  <text x="955" y="338" fill="#334155" font-size="9.5">为 CP 版;cp_shard 切 seq</text>
+  <text x="955" y="354" fill="#64748b" font-size="9">context_parallel.py</text>
+
+  <path d="M 585 420 L 585 446" stroke="#64748b" stroke-width="2.5" marker-end="url(#ars)"/>
+  <text x="596" y="437" fill="#64748b" font-size="10">调 API</text>
+
+  <!-- ===== 2 PyTorch ===== -->
+  <rect x="20" y="450" width="1150" height="172" rx="12" fill="#e7ecf3" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="30" y="474" fill="#1d4ed8" font-weight="700" font-size="14">② PyTorch: 插通信+编译</text>
+
+  <!-- 总 -->
+  <rect x="20" y="462" width="230" height="148" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="30" y="482" fill="#475569" font-weight="700" font-size="11">总</text>
+  <text x="30" y="500" fill="#334155" font-size="9.5">运行时插入通信</text>
+  <text x="30" y="514" fill="#334155" font-size="9.5">(前向/反向 hook、</text>
+  <text x="30" y="528" fill="#334155" font-size="9.5">DTensor.redistribute、</text>
+  <text x="30" y="542" fill="#334155" font-size="9.5">P2P isend/irecv)</text>
+  <text x="30" y="556" fill="#334155" font-size="9.5">DTensor 记分片状态</text>
+  <text x="30" y="570" fill="#334155" font-size="9.5">PP schedule;Inductor</text>
+  <text x="30" y="584" fill="#334155" font-size="9.5">融合重叠(compile)</text>
+
+  <!-- FSDP -->
+  <rect x="270" y="462" width="215" height="148" rx="8" fill="#fcefe2" stroke="#c2410c"/>
+  <text x="378" y="482" text-anchor="middle" fill="#c2410c" font-weight="700" font-size="12">FSDP</text>
+  <text x="280" y="500" fill="#334155" font-size="9.5">fully_shard 注册 4 个 hook;</text>
+  <text x="280" y="514" fill="#7c3aed" font-size="9">Inductor 重叠(compile)</text>
+  <text x="280" y="530" fill="#334155" font-size="9.5">pre_fwd: A-G 拼回完整参数</text>
+  <text x="280" y="544" fill="#334155" font-size="9.5">post_fwd: (若 reshard)释放</text>
+  <text x="280" y="558" fill="#334155" font-size="9.5">pre_bwd: 重新 all-gather</text>
+  <text x="280" y="572" fill="#334155" font-size="9.5">post_bwd: 梯度 reduce-scatter</text>
+
+  <!-- TP -->
+  <rect x="495" y="462" width="215" height="148" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="603" y="482" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
+  <text x="505" y="500" fill="#334155" font-size="9.5">Colwise/Rowwise 注册 hook</text>
+  <text x="505" y="514" fill="#334155" font-size="9.5">边界对激活 redistribute:</text>
+  <text x="505" y="528" fill="#334155" font-size="9.5">出列并行 -&gt; reduce-scatter</text>
+  <text x="505" y="542" fill="#334155" font-size="9.5">出行并行 -&gt; all-reduce</text>
+  <text x="505" y="558" fill="#64748b" font-size="9">(开 SP 时入列前 A-G 序列)</text>
+
+  <!-- PP -->
+  <rect x="720" y="462" width="215" height="148" rx="8" fill="#dcfce7" stroke="#0f766e"/>
+  <text x="828" y="482" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
+  <text x="730" y="500" fill="#334155" font-size="9.5">Schedule1F1B 推微批过 stage</text>
+  <text x="730" y="514" fill="#334155" font-size="9.5">warmup/稳态/cooldown</text>
+  <text x="730" y="528" fill="#334155" font-size="9.5">stage 间 isend/irecv 传</text>
+  <text x="730" y="542" fill="#334155" font-size="9.5">hidden(前向)与梯度(反向)</text>
+  <text x="730" y="558" fill="#64748b" font-size="9">收端重建 DTensor</text>
+
+  <!-- CP -->
+  <rect x="945" y="462" width="215" height="148" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
+  <text x="1053" y="482" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
+  <text x="955" y="500" fill="#334155" font-size="9.5">flex_cp_allgather 跨 cp_mesh</text>
+  <text x="955" y="514" fill="#334155" font-size="9.5">收全量 K/V</text>
+  <text x="955" y="528" fill="#334155" font-size="9.5">本地 Q 段对全量 K/V 计算</text>
+  <text x="955" y="542" fill="#334155" font-size="9.5">反向 K/V reduce-scatter</text>
+  <text x="955" y="558" fill="#64748b" font-size="9">SDPA 分支走 ring attention</text>
+
+  <path d="M 585 624 L 585 650" stroke="#64748b" stroke-width="2.5" marker-end="url(#ars)"/>
+  <text x="596" y="641" fill="#64748b" font-size="10">集合算子</text>
+
+  <!-- ===== 3 CUDA&NCCL ===== -->
+  <rect x="20" y="654" width="1150" height="172" rx="12" fill="#f2ecfb" stroke="#7c3aed" stroke-width="2"/>
+  <text x="30" y="678" fill="#7c3aed" font-weight="700" font-size="14">③ CUDA&NCCL: 怎么执行通信</text>
+
+  <!-- 总 -->
+  <rect x="20" y="666" width="230" height="148" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="30" y="686" fill="#475569" font-weight="700" font-size="11">总</text>
+  <text x="30" y="704" fill="#334155" font-size="9.5">实现 GPU 收发数据</text>
+  <text x="30" y="718" fill="#334155" font-size="9.5">执行 NCCL 内核</text>
+  <text x="30" y="732" fill="#334155" font-size="9.5">实现通信与计算重叠</text>
+  <text x="30" y="748" fill="#64748b" font-size="9">(Inductor 编排重叠,</text>
+  <text x="30" y="762" fill="#64748b" font-size="9">③ 只执行不融合)</text>
+
+  <!-- FSDP -->
+  <rect x="270" y="666" width="215" height="148" rx="8" fill="#fcefe2" stroke="#c2410c"/>
+  <text x="378" y="686" text-anchor="middle" fill="#c2410c" font-weight="700" font-size="12">FSDP</text>
+  <text x="280" y="704" fill="#334155" font-size="9.5">前向 ncclAllGather:</text>
+  <text x="280" y="718" fill="#334155" font-size="9.5">拼回完整参数</text>
+  <text x="280" y="732" fill="#334155" font-size="9.5">反向 ncclReduceScatter:</text>
+  <text x="280" y="746" fill="#334155" font-size="9.5">梯度求和后切回各 rank 1/N</text>
+  <text x="280" y="762" fill="#7c3aed" font-size="9">CUDA stream 异步,与计算重叠</text>
+
+  <!-- TP -->
+  <rect x="495" y="666" width="215" height="148" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="603" y="686" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
+  <text x="505" y="704" fill="#334155" font-size="9.5">ncclAllGather /</text>
+  <text x="505" y="718" fill="#334155" font-size="9.5">ncclReduceScatter 同 FSDP 路径</text>
+  <text x="505" y="732" fill="#334155" font-size="9.5">async TP 融合由 ② Inductor 做</text>
+  <text x="505" y="746" fill="#334155" font-size="9.5">③ 只启动内核执行</text>
+
+  <!-- PP -->
+  <rect x="720" y="666" width="215" height="148" rx="8" fill="#dcfce7" stroke="#0f766e"/>
+  <text x="828" y="686" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
+  <text x="730" y="704" fill="#334155" font-size="9.5">点对点(非集合):ncclSend /</text>
+  <text x="730" y="718" fill="#334155" font-size="9.5">ncclRecv</text>
+  <text x="730" y="732" fill="#334155" font-size="9.5">批量 ncclGroupStart/End</text>
+  <text x="730" y="746" fill="#64748b" font-size="9">②③ 都无 Inductor 融合</text>
+  <text x="730" y="760" fill="#64748b" font-size="9">(p2p 已与计算重叠)</text>
+
+  <!-- CP -->
+  <rect x="945" y="666" width="215" height="148" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
+  <text x="1053" y="686" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
+  <text x="955" y="704" fill="#334155" font-size="9.5">同 FSDP/TP 路径:</text>
+  <text x="955" y="718" fill="#334155" font-size="9.5">_c10d_functional -&gt;</text>
+  <text x="955" y="732" fill="#334155" font-size="9.5">ProcessGroupNCCL -&gt;</text>
+  <text x="955" y="746" fill="#7c3aed" font-size="9.5">ncclAllGather /</text>
+  <text x="955" y="760" fill="#7c3aed" font-size="9.5">ncclReduceScatter</text>
 </svg>
-<p class="figcap">图 0-2:四层 × 四策略总览(用户层 -> torchtitan -> pytorch -> CUDA/NCCL)。每格恢复 old 版关键做法并对照源码核验:<b>① 层</b>全部准确(专家 edp_mesh/其余 dp_mesh、wkv_b 走 colwise Sh(0)/wo 走 rowwise Sh(1)、FQN 切段、CP 早于 parallelize)。<b>② TP</b>纠正:colwise 入参为 Replicate 无通信,序列 all-gather 实为 SP 行为,已标注"开 SP 时"。<b>③ CP</b>纠正:删除误称的 ncclGroupStart/End,实为两次 funcol.all_gather_tensor(反向 reduce_scatter_tensor),与 FSDP/TP 同路径。用户层字段名更正为 data_parallel_shard_degree。</p>
+<p class="figcap">图 0-2:四层 × 五格总览(总 + FSDP/TP/PP/CP)。0 用户层:Trainer.Config 里怎么传并行度;① torchtitan:切什么(声明放置+编排);② pytorch:插通信(hook/redistribute/schedule)+ Inductor 编译融合;③ CUDA&NCCL:执行通信(NCCL 内核+GPU 收发,只执行不融合,重叠由 ② 编排)。各策略格均对照源码核验。</p>
 </p>
 
 <div class="key" style="margin-top:14px"><b>② 和 ③ 按代码归属分层(纠正:Inductor 属 PyTorch ② 层,不在 CUDA/NCCL 层):</b>
