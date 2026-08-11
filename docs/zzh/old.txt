@@ -1,0 +1,50 @@
+层级	角色	典型组件/代码位置
+① torchtitan	声明层：定义“怎么切”，只写配置/声明，不搬张量，零通信。	sharding.py, fsdp.py, pipeline_parallel.py, context_parallel.py
+② PyTorch	执行层：根据声明在运行时插入真实通信与计算，操作 DTensor，调度流水线。	fsdp_state.py, tensor/parallel/style.py, pipelining/schedules.py, _context_parallel/
+③ CUDA/NCCL	硬件层：真正在 GPU 上收发数据，执行 NCCL 内核，实现通信与计算重叠。	comm_lowering.py, micro_pipeline_tp.py, ProcessGroupNCCL, _cp_custom_ops.py
+🔍 逐层详解
+① torchtitan（声明层）
+并行策略	具体做法	关键代码/概念
+FSDP	决定怎么切，只写声明，不搬数据。shard_placement_fn 按参数归属分 mesh：专家参数 → edp_mesh，其余 → dp_mesh。PP 下默认 reshard=False。	fsdp.py 中的 shard_placement_fn 逻辑；apply_fsdp_to_decoder 的配置。
+TP	通过 ShardingConfig 声明放置策略：wkv_b/wq_b = Shard(0)（列并行），wo = Shard(1)（行并行），wkv_a/wq_a/gate = Replicate（复制）。	sharding.py 中的 colwise_config / rowwise_config，产出切分方案（配置树 + 调用顺序）。
+PP	pipeline_llm 按 FQN（完全限定名）把层切分成多个 stage，逐 stage 调用 parallelize_fn，并准备 get_mesh 回调供重建 DTensor 用。	pipeline_parallel.py 中的 _generate_llm_fqn_per_model_part 和 _split_module。
+CP	parallelize 之前先替换 attention.forward 为 CP 版本；cp_shard 沿序列切分输入（必须先于 parallelize）。	context_parallel.py 中的 apply_cp_to_forward（顺序：必须先于 parallelize）。
+本层特点：只产生配置、回调、替换函数，不触发任何实际通信，甚至不知道 NCCL 的存在。
+
+② PyTorch（执行层）
+并行策略	具体做法	关键代码/概念
+FSDP	按声明在运行时插通信。fully_shard 注册 4 个 hook（pre/post forward/backward）：前向 All-Gather 拼回完整参数，反向 Reduce-Scatter 梯度回分片。	fsdp_state.py 中的 _pre_forward / _post_forward / _pre_backward 钩子。
+TP	Colwise / Rowwise 注册 pre/post hook，边界处做 redistribute：入列并行前 All-Gather 序列，出行并行后 Reduce-Scatter。DTensor 用 Shard 表示分片态。	tensor/parallel/style.py 中的 _prepare_input_fn / _prepare_output_fn。
+PP	Schedule1F1B 按 warmup / 稳态 / cooldown 三个阶段推进微批过 stage，使用 isend / irecv 传 hidden 与梯度，收端重建 DTensor。	pipelining/schedules.py 中的 step 方法，isend/irecv 点对点通信。
+CP	Attention 内部 flex_cp_allgather 跨 cp_mesh 收全量 K/V，本地 Q 段对全量 K/V 计算；若用 SDPA 则走 Ring Attention 路径。	_context_parallel/ 中的 flex_cp_allgather 和 _enable_context_parallel_dispatcher。
+本层特点：真实动数据，通过 hook / redistribute / P2P 逐个调用，但各策略独立，不融合也不重叠（通信和计算串行）。
+
+③ CUDA/NCCL（硬件层）
+并行策略	具体做法	关键代码/概念
+FSDP	all_gather / reduce_scatter 转成 all_gather_tensor / reduce_scatter_tensor，并放到 _c10d_functional 路径，最终由 ProcessGroupNCCL 执行 NCCL 内核。	torch.distributed 底层，ProcessGroupNCCL::allgather / reduce_scatter。
+TP	all_gather → matmul 改写为与 matmul 同排的图节点，通过 Inductor 做通信融合（micro_pipeline_tp.py），通信流与计算流重叠。	comm_lowering.py 中的 lower 逻辑，micro_pipeline_tp.py 的 TP 微流水线。
+PP	点对点非集合通信：isend / irecv 实际映射到 ncclSend / ncclRecv，与 FSDP/TP 共用同一套 NCCL 路径。	ProcessGroupNCCL::send / recv。
+CP	内部即 all_gather_tensor，与 FSDP 同路径，也利用 ncclGroupStart/End 批量启动，NCCL 内核决定实际速度。	_cp_custom_ops.py 中的自定义算子，底层调用 all_gather。
+本层特点：真正在 GPU 上收发数据，通信与计算流重叠（通过 CUDA 流），Inductor 可做图级融合，NCCL 负责启动内核，“快不快”由它决定。
+
+🔗 三层之间的依赖关系
+torchtitan 声明 “做什么” → PyTorch 翻译成 “怎么在 DTensor 上操作” → CUDA/NCCL 真正执行 “数据搬运”
+
+每一层对上层透明，对下层依赖：
+
+torchtitan 只写配置，不直接调用 dist 或 NCCL。
+
+PyTorch 将配置解析为 hook / redistribute / 调度，触发 dist 原语。
+
+CUDA/NCCL 最终执行这些原语，并利用流、融合、内核做性能优化。
+
+💎 总结
+这张图完美诠释了 “声明式分布式训练” 的分层实现：
+
+上层定义策略（What），
+
+中层翻译为操作（How），
+
+下层执行通信（Actually Do）。
+
+每一层只关注自己的职责，使得 torchtitan 的代码简洁、可扩展，同时 PyTorch 的 DTensor / FSDP / TP / PP / CP 机制得以复用，而底层的 NCCL / Inductor 又保障了极致性能。

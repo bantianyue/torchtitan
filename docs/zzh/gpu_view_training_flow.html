@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 视图 · 各 GPU 怎么切分与集合通信（Llama3-8B）</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    --tp:#3498db; --sp:#f1c40f; --cp:#e74c3c; --pp:#1abc9c;
+    --dp:#2ecc71; --fsdp:#e67e22; --ep:#9b59b6;
+    --bg:#0d0f14; --card:#161a22; --txt:#d7dde6; --dim:#8b94a3; --line:#272d39; --acc:#9be0a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1200px;margin:0 auto;padding:26px 20px 90px}
+  h1{font-size:26px;margin:.2em 0 .1em;color:#fff}
+  h2{font-size:21px;margin:1.6em 0 .4em;padding-bottom:7px;border-bottom:2px solid var(--line);
+    color:#fff;display:flex;align-items:center;gap:10px}
+  .num{color:#0d0f14;width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;
+    justify-content:center;font-size:15px;font-weight:800}
+  h3{font-size:16.5px;margin:1.1em 0 .35em;color:#cdd4df}
+  p{margin:.5em 0}
+  code{background:#0a0c11;border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+    font-family:"JetBrains Mono",Consolas,Menlo,monospace;font-size:13px;color:var(--acc)}
+  .sub{color:var(--dim);font-size:12.5px}
+  svg{display:block;margin:6px auto;max-width:100%;height:auto}
+  .figcap{text-align:center;color:var(--dim);font-size:12px;margin:2px 0 16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:.9em 0}
+  .note{border-left:3px solid var(--tp);padding:7px 13px;background:#11161e;border-radius:0 6px 6px 0;margin:.6em 0}
+  .warn{border-left:3px solid #f0ad4e;padding:7px 13px;background:#1a160d;border-radius:0 6px 6px 0;margin:.6em 0}
+  table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#1c212c;color:#eef2f8;font-weight:600}
+  tr:nth-child(even) td{background:#11151c}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;font-weight:700;color:#0d0f14}
+  .t-tp{background:var(--tp)} .t-sp{background:var(--sp)} .t-cp{background:var(--cp)}
+  .t-pp{background:var(--pp)} .t-dp{background:var(--dp)} .t-fsdp{background:var(--fsdp)} .t-ep{background:var(--ep);color:#fff}
+  .pal{display:inline-flex;align-items:center;gap:6px;margin:3px 10px 3px 0;font-size:12.5px}
+  .pal i{width:13px;height:13px;border-radius:3px;display:inline-block}
+  .hero{background:linear-gradient(135deg,#161a22,#0f1620);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:14px 0}
+  ul{margin:.3em 0;padding-left:22px} li{margin:.2em 0}
+  .shape{font-family:"JetBrains Mono",Consolas,monospace;font-size:12.5px;color:var(--acc)}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="wrap">
+
+<h1>GPU 视图 · 各 GPU 怎么切分与集合通信</h1>
+<p class="sub">Llama3-8B · 192 GPU · TP=2 / SP=2 / CP=4 / PP=3 / FSDP=8。从具体 GPU 编号看：每块卡持有什么、和谁通信、怎么把结果拼起来。</p>
+
+<div class="hero">
+<span class="pal"><i style="background:#2ecc71"></i>DP=8</span>
+<span class="pal"><i style="background:#e67e22"></i>FSDP=8</span>
+<span class="pal"><i style="background:#3498db"></i>TP=2</span>
+<span class="pal"><i style="background:#f1c40f"></i>SP=2</span>
+<span class="pal"><i style="background:#e74c3c"></i>CP=4</span>
+<span class="pal"><i style="background:#1abc9c"></i>PP=3</span>
+<p class="sub" style="margin-top:8px">注：FSDP=8 指配置中的 dp_shard 度；FSDP 实际分片组 = dp_shard×cp = 32 块（见第 4.3 节）。<b>本页配置（示意）：</b>global_batch=64、local_batch_size=4、<b>seq_len=8192</b>、pipeline_parallel_microbatch_size=1 → 梯度累积 = 64/(4×8) = 2，每轮 PP微批 = 4。所有序列相关 shape 都从 8192 推出：CP÷4→2048，SP÷2→1024。dataloader 每迭代给每 rank 一整批 <code>[local_batch_size, seq_len]</code>，schedule 再切成 PP微批。</p>
+</div>
+
+<!-- ============ 1 GPU 编号映射 ============ -->
+<h2><span class="num" style="background:linear-gradient(135deg,#3498db,#e67e22);color:#fff">1</span>GPU 编号怎么来的：rank = ((pp×8+batch)×4+cp)×2+tp</h2>
+<p>torchtitan 用 <code>init_device_mesh</code> 按<b>行优先</b>展开 world rank,顺序 <code>("pp","batch","cp","tp")</code> 度数 <code>(3,8,4,2)</code>。所以 GPU 编号公式：</p>
+<pre style="background:#0a0c11;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto"><code style="background:none;border:none;color:#c8d0dc">rank = ((pp_idx * 8 + batch_idx) * 4 + cp_idx) * 2 + tp_idx
+
+例：
+  GPU0  = ((0*8+0)*4+0)*2+0  -> pp0 batch0 cp0 tp0
+  GPU1  = ((0*8+0)*4+0)*2+1  -> pp0 batch0 cp0 tp1   (与 GPU0 同 cp, 做 TP 通信)
+  GPU2  = ((0*8+0)*4+1)*2+0  -> pp0 batch0 cp1 tp0   (与 GPU0 同 batch/tp, 做 CP 通信)
+  GPU8  = ((0*8+1)*4+0)*2+0  -> pp0 batch1 cp0 tp0   (与 GPU0 同 cp, 不同 batch)
+  GPU64 = ((1*8+0)*4+0)*2+0  -> pp1 batch0 cp0 tp0   (与 GPU0 同 batch/cp/tp, 不同 PP 阶段)
+  GPU128= ((2*8+0)*4+0)*2+0  -> pp2 batch0 cp0 tp0</code></pre>
+<p>192 块太多画不全。下面用<b>缩样</b>：每个 PP 阶段画 8 个代表 GPU（batch0 的 cp0-3 × tp0-1 = 8 块），其余 batch1-7 同构省略。</p>
+
+<!-- ============ 2 64 GPU grid ============ -->
+<h2><span class="num" style="background:#1abc9c;color:#0d0f14">2</span>单 PP 阶段的 64 GPU 全景（pp0 为例）</h2>
+<p>pp0 阶段有 64 块 GPU（batch8 × cp4 × tp2）。下图标出每块的编号、它持什么、和谁通信。其余 pp1/pp2 阶段结构相同,只是算的层不同。</p>
+
+<svg viewBox="0 0 1160 420" font-family="monospace" font-size="11">
+  <defs>
+    <marker id="g1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker>
+  </defs>
+  <!-- axis labels -->
+  <text x="60" y="20" fill="#8b94a3" font-size="11">行 = cp (0..3) ↓　　列 = batch (0..7) →　　每格内 2 块 = tp0/tp1</text>
+
+  <!-- 4 rows x 8 cols, each cell shows tp0,tp1 -->
+  <g transform="translate(20,36)">
+    <!-- col headers batch0..7 -->
+    <g font-size="10" text-anchor="middle" fill="#2ecc71">
+      <text x="65" y="0">b0</text><text x="135" y="0">b1</text><text x="205" y="0">b2</text><text x="275" y="0">b3</text>
+      <text x="345" y="0">b4</text><text x="415" y="0">b5</text><text x="485" y="0">b6</text><text x="555" y="0">b7</text>
+    </g>
+    <!-- row0 cp0 -->
+    <g transform="translate(0,12)">
+      <text x="-8" y="24" text-anchor="end" fill="#e74c3c" font-size="10">cp0</text>
+      <!-- b0: GPU0,GPU1 -->
+      <rect x="30" y="6" width="30" height="18" fill="#101f2c" stroke="#3498db"/><text x="45" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">0</text>
+      <rect x="60" y="6" width="30" height="18" fill="#101f2c" stroke="#3498db"/><text x="75" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">1</text>
+      <rect x="100" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="115" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">8</text>
+      <rect x="130" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="145" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">9</text>
+      <rect x="170" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="193" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">16</text>
+      <rect x="200" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="223" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">17</text>
+      <rect x="240" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="263" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">24</text>
+      <rect x="270" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="293" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">25</text>
+      <rect x="310" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="333" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">32</text>
+      <rect x="340" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="363" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">33</text>
+      <rect x="380" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="403" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">40</text>
+      <rect x="410" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="433" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">41</text>
+      <rect x="450" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="473" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">48</text>
+      <rect x="480" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="503" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">49</text>
+      <rect x="520" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="543" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">56</text>
+      <rect x="550" y="6" width="30" height="18" fill="#11241a" stroke="#3498db"/><text x="573" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">57</text>
+    </g>
+    <!-- rows cp1..cp3 simplified as bands -->
+    <g transform="translate(0,52)">
+      <text x="-8" y="24" text-anchor="end" fill="#e74c3c" font-size="10">cp1</text>
+      <rect x="30" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c"/><text x="60" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">2,3 (b0)</text>
+      <rect x="100" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c"/><text x="130" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">10,11</text>
+      <rect x="170" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c"/><text x="200" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">18,19</text>
+      <rect x="240" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c"/><text x="270" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">26,27</text>
+      <rect x="310" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c"/><text x="340" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">34,35</text>
+      <rect x="380" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c"/><text x="410" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">42,43</text>
+      <rect x="450" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c"/><text x="480" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">50,51</text>
+      <rect x="520" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c"/><text x="550" y="19" text-anchor="middle" fill="#c8d0dc" font-size="9">58,59</text>
+    </g>
+    <g transform="translate(0,92)">
+      <text x="-8" y="24" text-anchor="end" fill="#e74c3c" font-size="10">cp2</text>
+      <rect x="30" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c" stroke-dasharray="3,2"/><text x="60" y="19" text-anchor="middle" fill="#8b94a3" font-size="9">4,5</text>
+      <rect x="100" y="6" width="550" height="18" fill="#1a1416" stroke="#e74c3c" stroke-dasharray="3,2"/><text x="375" y="19" text-anchor="middle" fill="#8b94a3" font-size="9">… (cp2 行各 batch) …</text>
+    </g>
+    <g transform="translate(0,132)">
+      <text x="-8" y="24" text-anchor="end" fill="#e74c3c" font-size="10">cp3</text>
+      <rect x="30" y="6" width="60" height="18" fill="#1a1416" stroke="#e74c3c" stroke-dasharray="3,2"/><text x="60" y="19" text-anchor="middle" fill="#8b94a3" font-size="9">6,7</text>
+      <rect x="100" y="6" width="550" height="18" fill="#1a1416" stroke="#e74c3c" stroke-dasharray="3,2"/><text x="375" y="19" text-anchor="middle" fill="#8b94a3" font-size="9">… (cp3 行各 batch) …</text>
+    </g>
+    <!-- note: pp1/pp2 are +64/+128 offset -->
+    <text x="590" y="180" fill="#1abc9c" font-size="11">pp1 阶段 = 全部编号 +64</text>
+    <text x="590" y="196" fill="#1abc9c" font-size="11">pp2 阶段 = 全部编号 +128</text>
+    <text x="590" y="216" fill="#8b94a3" font-size="11">（同位置不同 stage 算不同层,</text>
+    <text x="590" y="232" fill="#8b94a3" font-size="11">  之间点对点传 hidden）</text>
+  </g>
+</svg>
+<p class="figcap">图 2-1：pp0 阶段 64 GPU 编号网格（行=cp，列=batch，每格=tp0/tp1 两块）。蓝边=TP 对，红边框=CP 行。</p>
+
+<!-- ============ 3 单 GPU 持有什么 ============ -->
+<h2><span class="num" style="background:#e67e22;color:#0d0f14">3</span>单块 GPU 持有什么：以 GPU0 为例</h2>
+<p>GPU0 = pp0/batch0/cp0/tp0。它在<b>当前 PP 阶段</b>（layers 0-10）持有：</p>
+
+<div class="card">
+<b>先记住：Llama3-8B 原始（未切分）权重 shape</b> —— 下面所有"切半 / 1/32 分片"都从这些全量 shape 出发：
+<table>
+<tr><th>权重</th><th>原始全量 shape</th><th>含义</th></tr>
+<tr><td>tok_embeddings / lm_head</td><td class="shape">[128256, 4096]</td><td>vocab(128256) × hidden(4096)</td></tr>
+<tr><td>wqkv（融合 Q/K/V 投影）</td><td class="shape">[6144, 4096]</td><td>(32Q + 8K + 8V) heads × 128 head_dim × hidden</td></tr>
+<tr><td>wo</td><td class="shape">[4096, 4096]</td><td>hidden × hidden</td></tr>
+<tr><td>w1 / w3</td><td class="shape">[14336, 4096]</td><td>ffn_dim(14336) × hidden</td></tr>
+<tr><td>w2</td><td class="shape">[4096, 14336]</td><td>hidden × ffn_dim</td></tr>
+</table>
+<p class="sub">切分链：原始全量 → TP=2 切（列并行切输出维、行并行切输入维）→ FSDP 按 32 块各持 1/32。下图中"完整参数"= TP 切分后、FSDP all-gather 出的本层权重（如 wqkv [3072,4096]）；图 6-2 步骤② 同义。</p>
+</div>
+<svg viewBox="0 0 1160 360" font-family="monospace" font-size="12">
+  <defs><marker id="g3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+  <!-- GPU0 big box -->
+  <g transform="translate(40,20)">
+    <rect width="280" height="300" rx="10" fill="#0e1219" stroke="#8b94a3" stroke-width="2"/>
+    <text x="140" y="26" text-anchor="middle" fill="#fff" font-weight="700" font-size="16">GPU 0</text>
+    <text x="140" y="44" text-anchor="middle" fill="#8b94a3" font-size="11">pp0 / batch0 / cp0 / tp0</text>
+    <line x1="16" y1="56" x2="264" y2="56" stroke="#272d39"/>
+    <g font-size="11.5">
+      <text x="16" y="78" fill="#1abc9c" font-weight="700">层（PP）</text>
+      <text x="16" y="96" fill="#9be0a3">layers 0-10（11 层，pp0 阶段）</text>
+      <text x="16" y="118" fill="#3498db" font-weight="700">权重（TP 切半）</text>
+      <text x="16" y="136" fill="#9be0a3">wqkv [3072,4096] (一半 heads)</text>
+      <text x="16" y="152" fill="#9be0a3">wo [4096,2048], w1/w3 [7168,4096]</text>
+      <text x="16" y="168" fill="#9be0a3">w2 [4096,7168], embed/lm_head 半 vocab</text>
+      <text x="16" y="190" fill="#e67e22" font-weight="700">参数分片（FSDP）</text>
+      <text x="16" y="208" fill="#9be0a3">上述权重各持 1/32（batch8 × cp4 共 32 rank 分）</text>
+      <text x="16" y="230" fill="#e74c3c" font-weight="700">激活（CP 切序列）</text>
+      <text x="16" y="248" fill="#9be0a3">Q 本地段 [1,2048,...]（1/4 序列，headtail 分两段）</text>
+      <text x="16" y="270" fill="#f1c40f" font-weight="700">激活（SP 切序列）</text>
+      <text x="16" y="288" fill="#9be0a3">norm/FFN 输入 [1,1024,4096]</text>
+    </g>
+  </g>
+
+  <!-- right: communication partners -->
+  <g transform="translate(360,20)">
+    <text x="0" y="0" fill="#fff" font-weight="700" font-size="14">GPU0 的通信伙伴</text>
+    <g transform="translate(0,16)">
+      <rect width="760" height="284" rx="8" fill="#0e1219" stroke="#272d39"/>
+      <!-- TP -->
+      <text x="16" y="26" fill="#3498db" font-weight="700">TP 对（同 pp/batch/cp，tp0↔tp1）</text>
+      <text x="16" y="44" fill="#c8d0dc">GPU0 ↔ GPU1：reduce-scatter / all-gather 序列与特征</text>
+      <text x="16" y="60" fill="#8b94a3" font-size="11">→ wqkv 列并行无通信；wo/w2 行并行 reduce-scatter；SP all-gather</text>
+      <line x1="16" y1="74" x2="744" y2="74" stroke="#272d39"/>
+      <!-- CP -->
+      <text x="16" y="96" fill="#e74c3c" font-weight="700">CP 组（同 pp/batch/tp，cp0-3 共 4 块）</text>
+      <text x="16" y="114" fill="#c8d0dc">GPU0 ↔ GPU2,4,6(同 b0)：attention 内 all-gather K/V</text>
+      <text x="16" y="130" fill="#8b94a3" font-size="11">→ 各持 1/4 序列算 Q，K/V all-gather 成全量 8192；反向 K/V grad reduce</text>
+      <line x1="16" y1="144" x2="744" y2="144" stroke="#272d39"/>
+      <!-- FSDP -->
+      <text x="16" y="166" fill="#e67e22" font-weight="700">FSDP 组（同 pp/tp，dp_shard×cp = 8×4 = 32 块）</text>
+      <text x="16" y="184" fill="#c8d0dc">GPU0 ↔ 同 pp/tp 的全部 32 块：参数 all-gather / 梯度 reduce-scatter</text>
+      <text x="16" y="200" fill="#8b94a3" font-size="11">→ stage 前向开头 all-gather 完整参数（PP 默认不逐层）；grad reduce-scatter 回 1/32</text>
+      <line x1="16" y1="214" x2="744" y2="214" stroke="#272d39"/>
+      <!-- PP -->
+      <text x="16" y="236" fill="#1abc9c" font-weight="700">PP 邻居（同 batch/cp/tp，跨 pp）</text>
+      <text x="16" y="254" fill="#c8d0dc">GPU0(pp0) → GPU64(pp1)：点对点传 hidden [1,1024,4096]</text>
+      <text x="16" y="270" fill="#8b94a3" font-size="11">→ 反向则 GPU64 → GPU0 回传梯度；末阶段 pp2 持 lm_head</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 3-1：GPU0 持有的权重/参数/激活 + 四类通信伙伴（TP/CP/FSDP/PP）。SP 复用 TP 组的 tp0↔tp1 通信。</p>
+
+<!-- ============ 4 集合通信图 ============ -->
+<h2><span class="num" style="background:#9b59b6;color:#fff">4</span>集合通信图：每类通信哪些 GPU 参与、怎么连</h2>
+<p>下面 4 张小图分别画 TP / CP / FSDP / PP 的通信拓扑。颜色 = 该通信对应的并行策略。</p>
+
+<svg viewBox="0 0 1160 760" font-family="monospace" font-size="11">
+  <defs>
+    <marker id="g4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker>
+  </defs>
+
+  <!-- 4.1 TP -->
+  <g transform="translate(30,20)">
+    <rect width="540" height="330" rx="10" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="270" y="26" text-anchor="middle" fill="#3498db" font-weight="700" font-size="14">TP 通信：tp0 ↔ tp1（2 块一组）</text>
+    <text x="270" y="44" text-anchor="middle" fill="#8b94a3" font-size="11">同 pp/batch/cp 的相邻两块 GPU，共 96 组</text>
+    <!-- pairs -->
+    <g transform="translate(40,70)">
+      <!-- pair 0-1 -->
+      <rect x="0" y="0" width="60" height="34" rx="6" fill="#101f2c" stroke="#3498db"/><text x="30" y="22" text-anchor="middle" fill="#c8d0dc">GPU0</text>
+      <line x1="60" y1="17" x2="100" y2="17" stroke="#3498db" stroke-width="2" marker-end="url(#g4)"/>
+      <line x1="100" y1="17" x2="60" y2="17" stroke="#3498db" stroke-width="2" marker-end="url(#g4)"/>
+      <rect x="100" y="0" width="60" height="34" rx="6" fill="#101f2c" stroke="#3498db"/><text x="130" y="22" text-anchor="middle" fill="#c8d0dc">GPU1</text>
+      <text x="80" y="52" text-anchor="middle" fill="#8b94a3" font-size="10">reduce-scatter / all-gather</text>
+    </g>
+    <g transform="translate(220,70)">
+      <rect x="0" y="0" width="60" height="34" rx="6" fill="#11241a" stroke="#3498db"/><text x="30" y="22" text-anchor="middle" fill="#c8d0dc">GPU8</text>
+      <line x1="60" y1="17" x2="100" y2="17" stroke="#3498db" stroke-width="2" marker-end="url(#g4)"/>
+      <rect x="100" y="0" width="60" height="34" rx="6" fill="#11241a" stroke="#3498db"/><text x="130" y="22" text-anchor="middle" fill="#c8d0dc">GPU9</text>
+    </g>
+    <g transform="translate(40,140)">
+      <text x="0" y="0" fill="#f1c40f" font-weight="700">SP 也走这组</text>
+      <text x="0" y="18" fill="#8b94a3" font-size="11">SP 的 all-gather(TP)/reduce-scatter(TP)</text>
+      <text x="0" y="34" fill="#8b94a3" font-size="11">复用 tp0↔tp1 通信，不另开组</text>
+    </g>
+    <g transform="translate(40,200)">
+      <text x="0" y="0" fill="#9be0a3" font-weight="700">每步通信内容（forward）</text>
+      <text x="0" y="18" fill="#c8d0dc" font-size="11">① 进 wqkv 前：all-gather 序列 1024→2048</text>
+      <text x="0" y="34" fill="#c8d0dc" font-size="11">② 出 wo 后：reduce-scatter（求和+切序列 2048→1024）</text>
+      <text x="0" y="50" fill="#c8d0dc" font-size="11">③ 进 w1/w3 前：all-gather 序列 1024→2048</text>
+      <text x="0" y="66" fill="#c8d0dc" font-size="11">④ 出 w2 后：reduce-scatter（同②）</text>
+      <text x="0" y="86" fill="#8b94a3" font-size="11">→ 每层 4 次 TP 通信，32 层共 128 次</text>
+    </g>
+  </g>
+
+  <!-- 4.2 CP -->
+  <g transform="translate(590,20)">
+    <rect width="540" height="330" rx="10" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="270" y="26" text-anchor="middle" fill="#e74c3c" font-weight="700" font-size="14">CP 通信：cp0-3 全互连（4 块一组）</text>
+    <text x="270" y="44" text-anchor="middle" fill="#8b94a3" font-size="11">同 pp/batch/tp 的 4 块 GPU，共 48 组</text>
+    <!-- 4 gpus in a row, all-gather K/V -->
+    <g transform="translate(60,76)">
+      <rect x="0" y="0" width="70" height="34" rx="6" fill="#2a1614" stroke="#e74c3c"/><text x="35" y="22" text-anchor="middle" fill="#c8d0dc">GPU0</text>
+      <rect x="100" y="0" width="70" height="34" rx="6" fill="#241416" stroke="#e74c3c"/><text x="135" y="22" text-anchor="middle" fill="#c8d0dc">GPU2</text>
+      <rect x="200" y="0" width="70" height="34" rx="6" fill="#2a1614" stroke="#e74c3c"/><text x="235" y="22" text-anchor="middle" fill="#c8d0dc">GPU4</text>
+      <rect x="300" y="0" width="70" height="34" rx="6" fill="#241416" stroke="#e74c3c"/><text x="335" y="22" text-anchor="middle" fill="#c8d0dc">GPU6</text>
+      <!-- all-gather arrows (ring) -->
+      <path d="M 35 34 Q 35 56 135 56" fill="none" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#g4)"/>
+      <path d="M 135 34 Q 135 56 235 56" fill="none" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#g4)"/>
+      <path d="M 235 34 Q 235 56 335 56" fill="none" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#g4)"/>
+      <text x="185" y="76" text-anchor="middle" fill="#8b94a3" font-size="10">all-gather K/V（每块把自留的 1/4 序列的 K/V 发给其余 3 块）</text>
+    </g>
+    <g transform="translate(40,140)">
+      <text x="0" y="0" fill="#9be0a3" font-weight="700">每块持什么（以 GPU0 为例）</text>
+      <text x="0" y="18" fill="#c8d0dc" font-size="11">Q = 序列第 0 段 [1,2048,16,128]（本地算）</text>
+      <text x="0" y="34" fill="#c8d0dc" font-size="11">K/V = all-gather 后 [1,8192,4,128]（全量）</text>
+      <text x="0" y="50" fill="#c8d0dc" font-size="11">→ 各块只算自己那 1/4 段 query 的 attention</text>
+    </g>
+    <g transform="translate(40,210)">
+      <text x="0" y="0" fill="#f0ad4e" font-weight="700">反向</text>
+      <text x="0" y="18" fill="#c8d0dc" font-size="11">K/V 梯度在 cp 组上 reduce（求和）</text>
+      <text x="0" y="34" fill="#c8d0dc" font-size="11">loss/valid_tokens 也在含 cp 的 loss_mesh 上 all-reduce</text>
+    </g>
+  </g>
+
+  <!-- 4.3 FSDP -->
+  <g transform="translate(30,370)">
+    <rect width="540" height="370" rx="10" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="270" y="26" text-anchor="middle" fill="#e67e22" font-weight="700" font-size="14">FSDP 通信：32 块全互连（同 pp/tp）</text>
+    <text x="270" y="44" text-anchor="middle" fill="#8b94a3" font-size="11">dp_shard(8)×cp(4) = 32 块，共 6 组（3pp × 2tp）</text>
+    <!-- ring of 8 (simplified, actually 32) -->
+    <g transform="translate(270,150)">
+      <circle r="70" fill="none" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <g font-size="9" text-anchor="middle">
+        <rect x="-22" y="-90" width="44" height="20" rx="4" fill="#2a1d10" stroke="#e67e22"/><text x="0" y="-76" fill="#c8d0dc">GPU0</text>
+        <rect x="48" y="-50" width="44" height="20" rx="4" fill="#2a1d10" stroke="#e67e22"/><text x="70" y="-36" fill="#c8d0dc">G8</text>
+        <rect x="68" y="20" width="44" height="20" rx="4" fill="#2a1d10" stroke="#e67e22"/><text x="90" y="34" fill="#c8d0dc">G16</text>
+        <rect x="28" y="70" width="44" height="20" rx="4" fill="#2a1d10" stroke="#e67e22"/><text x="50" y="84" fill="#c8d0dc">G24</text>
+        <rect x="-22" y="78" width="44" height="20" rx="4" fill="#2a1d10" stroke="#e67e22"/><text x="0" y="92" fill="#c8d0dc">G32</text>
+        <rect x="-72" y="70" width="44" height="20" rx="4" fill="#2a1d10" stroke="#e67e22"/><text x="-50" y="84" fill="#c8d0dc">G40</text>
+        <rect x="-92" y="20" width="44" height="20" rx="4" fill="#2a1d10" stroke="#e67e22"/><text x="-70" y="34" fill="#c8d0dc">G48</text>
+        <rect x="-72" y="-50" width="44" height="20" rx="4" fill="#2a1d10" stroke="#e67e22"/><text x="-50" y="-36" fill="#c8d0dc">G56</text>
+      </g>
+      <text x="0" y="4" text-anchor="middle" fill="#8b94a3" font-size="10">实际 32 块</text>
+      <text x="0" y="18" text-anchor="middle" fill="#8b94a3" font-size="10">(本图示 8)</text>
+    </g>
+    <g transform="translate(40,250)">
+      <text x="0" y="0" fill="#9be0a3" font-weight="700">每块持 1/32 参数分片（实际 1/8×4cp）</text>
+      <text x="0" y="18" fill="#c8d0dc" font-size="11">forward 前：all-gather 凑齐完整参数</text>
+      <text x="0" y="34" fill="#c8d0dc" font-size="11">forward 后：reshard 回分片（省显存）</text>
+      <text x="0" y="50" fill="#c8d0dc" font-size="11">backward：同 all-gather；grad reduce-scatter 回 1/32</text>
+      <text x="0" y="66" fill="#c8d0dc" font-size="11">optimizer：AdamW 在自己的分片上更新</text>
+      <text x="0" y="86" fill="#8b94a3" font-size="11">→ 激活 shape 不变；只参数/梯度/optim 分片</text>
+    </g>
+  </g>
+
+  <!-- 4.4 PP -->
+  <g transform="translate(590,370)">
+    <rect width="540" height="370" rx="10" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+    <text x="270" y="26" text-anchor="middle" fill="#1abc9c" font-weight="700" font-size="14">PP 通信：3 阶段链式点对点</text>
+    <text x="270" y="44" text-anchor="middle" fill="#8b94a3" font-size="11">同 batch/cp/tp 的 GPU 串成 3 级，共 64 条链</text>
+    <!-- chain pp0->pp1->pp2 -->
+    <g transform="translate(60,90)">
+      <rect x="0" y="0" width="80" height="40" rx="6" fill="#0e1a17" stroke="#1abc9c"/><text x="40" y="18" text-anchor="middle" fill="#c8d0dc">GPU0</text><text x="40" y="32" text-anchor="middle" fill="#8b94a3" font-size="9">pp0·L0-10</text>
+      <line x1="80" y1="20" x2="140" y2="20" stroke="#9be0a3" stroke-width="2" marker-end="url(#g4)"/>
+      <rect x="140" y="0" width="80" height="40" rx="6" fill="#0e1a17" stroke="#1abc9c"/><text x="180" y="18" text-anchor="middle" fill="#c8d0dc">GPU64</text><text x="180" y="32" text-anchor="middle" fill="#8b94a3" font-size="9">pp1·L11-21</text>
+      <line x1="220" y1="20" x2="280" y2="20" stroke="#9be0a3" stroke-width="2" marker-end="url(#g4)"/>
+      <rect x="280" y="0" width="80" height="40" rx="6" fill="#0e1a17" stroke="#1abc9c"/><text x="320" y="18" text-anchor="middle" fill="#c8d0dc">GPU128</text><text x="320" y="32" text-anchor="middle" fill="#8b94a3" font-size="9">pp2·L22-31</text>
+      <text x="110" y="12" text-anchor="middle" fill="#9be0a3" font-size="9">hidden</text>
+      <text x="250" y="12" text-anchor="middle" fill="#9be0a3" font-size="9">hidden</text>
+      <!-- backward grad -->
+      <path d="M 280 36 Q 250 50 220 36" fill="none" stroke="#f0ad4e" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#g4)"/>
+      <path d="M 140 36 Q 110 50 80 36" fill="none" stroke="#f0ad4e" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#g4)"/>
+      <text x="250" y="58" text-anchor="middle" fill="#f0ad4e" font-size="9">grad</text>
+      <text x="110" y="58" text-anchor="middle" fill="#f0ad4e" font-size="9">grad</text>
+    </g>
+    <g transform="translate(40,170)">
+      <text x="0" y="0" fill="#9be0a3" font-weight="700">前向（绿）</text>
+      <text x="0" y="18" fill="#c8d0dc" font-size="11">GPU0 算完 L0-10 → hidden [1,1024,4096]</text>
+      <text x="0" y="34" fill="#c8d0dc" font-size="11">点对点发给 GPU64 继续算 L11-21</text>
+      <text x="0" y="50" fill="#c8d0dc" font-size="11">→ GPU128 算 L22-31 + lm_head + loss</text>
+    </g>
+    <g transform="translate(40,238)">
+      <text x="0" y="0" fill="#f0ad4e" font-weight="700">反向（橙）</text>
+      <text x="0" y="18" fill="#c8d0dc" font-size="11">GPU128 反向算梯度 → 点对点回传给 GPU64</text>
+      <text x="0" y="34" fill="#c8d0dc" font-size="11">→ GPU64 → GPU0，逐 stage 算完梯度</text>
+    </g>
+    <g transform="translate(40,300)">
+      <text x="0" y="0" fill="#8b94a3" font-size="11">1F1B 调度下，4 个 PP微批在这条链上填充、稳态、排空</text>
+      <text x="0" y="16" fill="#8b94a3" font-size="11">（每轮 4 微批 × 3 阶段；4 < 2×3-1，存在流水线气泡）</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 4-1：四类集合通信拓扑。TP=2 块成对；CP=4 块全互连 all-gather K/V；FSDP=32 块环形 all-gather/reduce-scatter；PP=3 阶段链式点对点。</p>
+
+<!-- ============ 5 一层内通信时序 ============ -->
+<h2><span class="num" style="background:linear-gradient(135deg,#2ecc71,#1abc9c);color:#0d0f14">5</span>一层内各 GPU 的通信时序（pp0 阶段 b0 组为例）</h2>
+<p>盯住 <b>GPU0/GPU1/GPU2/GPU4/GPU6</b> 这 5 块（同 b0），看它们在一层 Transformer 里什么时候和谁通信。</p>
+
+<svg viewBox="0 0 1160 500" font-family="monospace" font-size="11">
+  <defs><marker id="g5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+  <!-- 5 GPU lanes -->
+  <text x="20" y="20" fill="#8b94a3" font-size="11">→ 时间</text>
+  <g transform="translate(20,30)">
+    <!-- lane labels -->
+    <g font-size="10">
+      <text x="0" y="54" fill="#c8d0dc">GPU0 (cp0,tp0)</text>
+      <text x="0" y="134" fill="#c8d0dc">GPU1 (cp0,tp1)</text>
+      <text x="0" y="214" fill="#c8d0dc">GPU2 (cp1,tp0)</text>
+      <text x="0" y="294" fill="#c8d0dc">GPU4 (cp2,tp0)</text>
+      <text x="0" y="374" fill="#c8d0dc">GPU6 (cp3,tp0)</text>
+    </g>
+    <!-- lane baselines -->
+    <line x1="120" y1="50" x2="1120" y2="50" stroke="#272d39"/>
+    <line x1="120" y1="130" x2="1120" y2="130" stroke="#272d39"/>
+    <line x1="120" y1="210" x2="1120" y2="210" stroke="#272d39"/>
+    <line x1="120" y1="290" x2="1120" y2="290" stroke="#272d39"/>
+    <line x1="120" y1="370" x2="1120" y2="370" stroke="#272d39"/>
+
+    <!-- t1: norm (local, no comm) all lanes -->
+    <g>
+      <rect x="120" y="38" width="60" height="24" rx="4" fill="#0e2225" stroke="#f1c40f"/><text x="150" y="54" text-anchor="middle" fill="#f1c40f" font-size="9">norm</text>
+      <rect x="120" y="118" width="60" height="24" rx="4" fill="#0e2225" stroke="#f1c40f"/><text x="150" y="134" text-anchor="middle" fill="#f1c40f" font-size="9">norm</text>
+      <rect x="120" y="198" width="60" height="24" rx="4" fill="#0e2225" stroke="#f1c40f"/><text x="150" y="214" text-anchor="middle" fill="#f1c40f" font-size="9">norm</text>
+      <rect x="120" y="278" width="60" height="24" rx="4" fill="#0e2225" stroke="#f1c40f"/><text x="150" y="294" text-anchor="middle" fill="#f1c40f" font-size="9">norm</text>
+      <rect x="120" y="358" width="60" height="24" rx="4" fill="#0e2225" stroke="#f1c40f"/><text x="150" y="374" text-anchor="middle" fill="#f1c40f" font-size="9">norm</text>
+    </g>
+
+    <!-- t2: all-gather(TP) GPU0<->GPU1 (only tp pairs) -->
+    <g>
+      <path d="M 180 50 L 220 130" fill="none" stroke="#3498db" stroke-width="2" marker-end="url(#g5)"/>
+      <path d="M 180 130 L 220 50" fill="none" stroke="#3498db" stroke-width="2" marker-end="url(#g5)"/>
+      <text x="210" y="20" fill="#3498db" font-size="10">all-gather(TP)</text>
+      <text x="210" y="34" fill="#8b94a3" font-size="9">S 1024→2048</text>
+    </g>
+
+    <!-- t3: wqkv (local) -->
+    <g>
+      <rect x="240" y="38" width="70" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="275" y="54" text-anchor="middle" fill="#3498db" font-size="9">wqkv</text>
+      <rect x="240" y="118" width="70" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="275" y="134" text-anchor="middle" fill="#3498db" font-size="9">wqkv</text>
+      <rect x="240" y="198" width="70" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="275" y="214" text-anchor="middle" fill="#3498db" font-size="9">wqkv</text>
+      <rect x="240" y="278" width="70" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="275" y="294" text-anchor="middle" fill="#3498db" font-size="9">wqkv</text>
+      <rect x="240" y="358" width="70" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="275" y="374" text-anchor="middle" fill="#3498db" font-size="9">wqkv</text>
+    </g>
+
+    <!-- t4: CP all-gather K/V among GPU0,2,4,6 (tp0 lane) -->
+    <g>
+      <path d="M 320 50 L 380 210" fill="none" stroke="#e74c3c" stroke-width="1.8" marker-end="url(#g5)"/>
+      <path d="M 320 50 L 380 290" fill="none" stroke="#e74c3c" stroke-width="1.8" marker-end="url(#g5)"/>
+      <path d="M 320 50 L 380 370" fill="none" stroke="#e74c3c" stroke-width="1.8" marker-end="url(#g5)"/>
+      <path d="M 320 210 L 380 50" fill="none" stroke="#e74c3c" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <path d="M 320 290 L 380 50" fill="none" stroke="#e74c3c" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <path d="M 320 370 L 380 50" fill="none" stroke="#e74c3c" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <text x="350" y="20" fill="#e74c3c" font-size="10">CP all-gather K/V</text>
+      <text x="350" y="34" fill="#8b94a3" font-size="9">→ 全量 8192</text>
+    </g>
+
+    <!-- t5: attention (local) -->
+    <g>
+      <rect x="390" y="38" width="70" height="24" rx="4" fill="#1a1424" stroke="#e74c3c"/><text x="425" y="54" text-anchor="middle" fill="#e74c3c" font-size="9">attn</text>
+      <rect x="390" y="118" width="70" height="24" rx="4" fill="#1a1424" stroke="#e74c3c"/><text x="425" y="134" text-anchor="middle" fill="#e74c3c" font-size="9">attn</text>
+      <rect x="390" y="198" width="70" height="24" rx="4" fill="#1a1424" stroke="#e74c3c"/><text x="425" y="214" text-anchor="middle" fill="#e74c3c" font-size="9">attn</text>
+      <rect x="390" y="278" width="70" height="24" rx="4" fill="#1a1424" stroke="#e74c3c"/><text x="425" y="294" text-anchor="middle" fill="#e74c3c" font-size="9">attn</text>
+      <rect x="390" y="358" width="70" height="24" rx="4" fill="#1a1424" stroke="#e74c3c"/><text x="425" y="374" text-anchor="middle" fill="#e74c3c" font-size="9">attn</text>
+    </g>
+
+    <!-- t6: wo + reduce-scatter(TP) GPU0<->GPU1 -->
+    <g>
+      <path d="M 470 50 L 530 130" fill="none" stroke="#3498db" stroke-width="2" marker-end="url(#g5)"/>
+      <path d="M 470 130 L 530 50" fill="none" stroke="#3498db" stroke-width="2" marker-end="url(#g5)"/>
+      <text x="500" y="20" fill="#3498db" font-size="10">reduce-scatter(TP)</text>
+      <text x="500" y="34" fill="#8b94a3" font-size="9">求和+切 S 2048→1024</text>
+    </g>
+
+    <!-- t7: ffn (local then TP comm) -->
+    <g>
+      <rect x="540" y="38" width="80" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="580" y="54" text-anchor="middle" fill="#3498db" font-size="9">w1/w3→w2</text>
+      <rect x="540" y="118" width="80" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="580" y="134" text-anchor="middle" fill="#3498db" font-size="9">w1/w3→w2</text>
+      <rect x="540" y="198" width="80" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="580" y="214" text-anchor="middle" fill="#3498db" font-size="9">w1/w3→w2</text>
+      <rect x="540" y="278" width="80" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="580" y="294" text-anchor="middle" fill="#3498db" font-size="9">w1/w3→w2</text>
+      <rect x="540" y="358" width="80" height="24" rx="4" fill="#101f2c" stroke="#3498db"/><text x="580" y="374" text-anchor="middle" fill="#3498db" font-size="9">w1/w3→w2</text>
+    </g>
+    <g>
+      <path d="M 630 50 L 680 130" fill="none" stroke="#3498db" stroke-width="2" marker-end="url(#g5)"/>
+      <path d="M 630 130 L 680 50" fill="none" stroke="#3498db" stroke-width="2" marker-end="url(#g5)"/>
+      <text x="665" y="20" fill="#3498db" font-size="10">reduce-scatter(TP)</text>
+    </g>
+
+    <!-- t8: FSDP reshard (every lane, ring) -->
+    <g>
+      <text x="720" y="20" fill="#e67e22" font-size="10">FSDP（PP 默认不逐层 reshard）</text>
+      <rect x="720" y="38" width="70" height="24" rx="4" fill="#2a1d10" stroke="#e67e22" stroke-dasharray="3,2"/><text x="755" y="54" text-anchor="middle" fill="#8b94a3" font-size="9">无</text>
+      <rect x="720" y="118" width="70" height="24" rx="4" fill="#2a1d10" stroke="#e67e22" stroke-dasharray="3,2"/><text x="755" y="134" text-anchor="middle" fill="#8b94a3" font-size="9">无</text>
+      <rect x="720" y="198" width="70" height="24" rx="4" fill="#2a1d10" stroke="#e67e22" stroke-dasharray="3,2"/><text x="755" y="214" text-anchor="middle" fill="#8b94a3" font-size="9">无</text>
+      <rect x="720" y="278" width="70" height="24" rx="4" fill="#2a1d10" stroke="#e67e22" stroke-dasharray="3,2"/><text x="755" y="294" text-anchor="middle" fill="#8b94a3" font-size="9">无</text>
+      <rect x="720" y="358" width="70" height="24" rx="4" fill="#2a1d10" stroke="#e67e22" stroke-dasharray="3,2"/><text x="755" y="374" text-anchor="middle" fill="#8b94a3" font-size="9">无</text>
+      <text x="720" y="400" fill="#8b94a3" font-size="9">参数在 stage 前向开头一次性 all-gather，</text>
+      <text x="720" y="414" fill="#8b94a3" font-size="9">反向结束后才 reshard（fsdp_reshard_after_forward=default）</text>
+    </g>
+
+    <!-- t9: PP send (only pp0 boundary, GPU0 -> GPU64) -->
+    <g>
+      <text x="820" y="20" fill="#1abc9c" font-size="10">PP 发送（阶段边界）</text>
+      <path d="M 800 50 L 880 50" fill="none" stroke="#1abc9c" stroke-width="2" marker-end="url(#g5)"/>
+      <text x="900" y="54" fill="#1abc9c" font-size="10">→ GPU64(pp1)</text>
+      <text x="900" y="70" fill="#8b94a3" font-size="9">hidden [1,1024,4096]</text>
+    </g>
+
+    <!-- legend -->
+    <g transform="translate(820,120)" font-size="10">
+      <rect width="280" height="240" rx="6" fill="#0a0c11" stroke="#272d39"/>
+      <text x="12" y="20" fill="#fff" font-weight="700">图例</text>
+      <rect x="12" y="30" width="14" height="12" fill="#0e2225" stroke="#f1c40f"/><text x="32" y="40" fill="#c8d0dc">norm/SP 本地计算</text>
+      <rect x="12" y="50" width="14" height="12" fill="#101f2c" stroke="#3498db"/><text x="32" y="60" fill="#c8d0dc">TP 线性层（本地）</text>
+      <rect x="12" y="70" width="14" height="12" fill="#1a1424" stroke="#e74c3c"/><text x="32" y="80" fill="#c8d0dc">attention（本地）</text>
+      <rect x="12" y="90" width="14" height="12" fill="#2a1d10" stroke="#e67e22"/><text x="32" y="100" fill="#c8d0dc">FSDP（stage 首尾，非逐层）</text>
+      <line x1="12" y1="116" x2="26" y2="116" stroke="#3498db" stroke-width="2"/><text x="32" y="120" fill="#c8d0dc">TP 通信（GPU0↔1）</text>
+      <line x1="12" y1="136" x2="26" y2="136" stroke="#e74c3c" stroke-width="2"/><text x="32" y="140" fill="#c8d0dc">CP 通信（0↔8↔16↔24）</text>
+      <line x1="12" y1="156" x2="26" y2="156" stroke="#1abc9c" stroke-width="2"/><text x="32" y="160" fill="#c8d0dc">PP 点对点</text>
+      <text x="12" y="184" fill="#8b94a3">注：GPU1 是 GPU0 的 TP 对，</text>
+      <text x="12" y="200" fill="#8b94a3">共享同 cp0；GPU2/4/6 是</text>
+      <text x="12" y="216" fill="#8b94a3">GPU0 的 CP 对（同 b0/tp0）。</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 5-1：一层内 5 块 GPU 的通信时序。蓝=TP(GPU0↔1)，红=CP(GPU0↔2↔4↔6)，橙=FSDP（PP 下不逐层，仅 stage 首尾），青=PP 发往下一阶段。</p>
+
+<!-- ============ 6 一个完整优化步 ============ -->
+<h2><span class="num" style="background:linear-gradient(135deg,#e74c3c,#1abc9c);color:#0d0f14">6</span>一个完整优化步：8 个 PP微批如何流过这些 GPU</h2>
+<p>下面的总图把<b>整步</b>画出来：横轴 = 3 个 PP 阶段（GPU0->GPU64->GPU128 链），纵轴 = 两次 4 微批 1F1B（梯度累积微批2 × PP微批4；两轮之间流水线排空，无 B/F 交错）的调度时间线。每格标注该步在哪个 GPU 上算、触发什么通信。</p>
+
+<svg viewBox="0 0 1160 740" font-family="monospace" font-size="11">
+  <defs><marker id="g6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+
+  <!-- ===== 3 PP stage containers. Each: width 300, internal cells relative. ===== -->
+  <!-- pp0 at x=80, pp1 at x=420, pp2 at x=760. Gap 40 for arrows. -->
+  <!-- time grid: 12 slots, each 44px tall, starting y=60. Slot centers at 60+44*i+22. -->
+
+  <!-- column headers -->
+  <g font-size="12" text-anchor="middle">
+    <text x="230" y="30" fill="#1abc9c" font-weight="700">pp0 阶段 · GPU0</text>
+    <text x="230" y="46" fill="#8b94a3" font-size="10">layers 0-10</text>
+    <text x="570" y="30" fill="#1abc9c" font-weight="700">pp1 阶段 · GPU64</text>
+    <text x="570" y="46" fill="#8b94a3" font-size="10">layers 11-21</text>
+    <text x="910" y="30" fill="#1abc9c" font-weight="700">pp2 阶段 · GPU128</text>
+    <text x="910" y="46" fill="#8b94a3" font-size="10">layers 22-31 + lm_head + loss</text>
+  </g>
+
+  <!-- time axis labels (left) -->
+  <g font-size="9" text-anchor="end" fill="#8b94a3">
+    <text x="74" y="84">t0</text><text x="74" y="128">t1</text><text x="74" y="172">t2</text>
+    <text x="74" y="216">t3</text><text x="74" y="260">t4</text><text x="74" y="304">t5</text>
+    <text x="74" y="348">t6</text><text x="74" y="392">t7</text><text x="74" y="436">t8</text>
+    <text x="74" y="480">t9</text><text x="74" y="524">t10</text><text x="74" y="568">t11</text>
+  </g>
+  <text x="40" y="320" fill="#8b94a3" font-size="10" transform="rotate(-90 40 320)">时间 -></text>
+
+  <!-- ===== pp0 container ===== -->
+  <g transform="translate(80,60)">
+    <!-- stage frame -->
+    <rect x="0" y="0" width="300" height="528" rx="10" fill="#0e1a17" stroke="#1abc9c" stroke-width="2"/>
+    <!-- F/B cells. Cell height 36, row pitch 44. Slot i top = i*44.
+         Two separate schedule.step calls (grad_accum=2), each a 4-microbatch 1F1B,
+         with a full drain between calls (no B/F interleave across calls).
+         Schedule1F1B op order, stage 0 of 3, n_mbs=4: warmup F1-F3, 1B1F B1 F4, cooldown B2-B4. -->
+    <g font-size="10" text-anchor="middle">
+      <!-- call 1: warmup F1-F3, 1B1F B1/F4, cooldown B2-B4 -->
+      <rect x="10" y="4" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="20" fill="#0d0f14" font-weight="700">F 微批1</text><text x="150" y="34" fill="#0d0f14" font-size="9">取数+embed+11层前向</text>
+      <rect x="10" y="48" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="64" fill="#0d0f14" font-weight="700">F 微批2</text>
+      <rect x="10" y="92" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="108" fill="#0d0f14" font-weight="700">F 微批3</text>
+      <rect x="10" y="136" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="152" fill="#fff" font-weight="700">B 微批1</text><text x="150" y="166" fill="#fff" font-size="9">11层反向 -> 发梯度给 pp1</text>
+      <rect x="10" y="180" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="196" fill="#0d0f14" font-weight="700">F 微批4</text>
+      <rect x="10" y="224" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="240" fill="#fff" font-weight="700">B 微批2</text>
+      <rect x="10" y="268" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="284" fill="#fff" font-weight="700">B 微批3</text>
+      <rect x="10" y="312" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="328" fill="#fff" font-weight="700">B 微批4</text>
+      <!-- divider: call 1 drained; call 2 (grad_accum step 2) starts fresh -->
+      <line x1="10" y1="352" x2="290" y2="352" stroke="#8b94a3" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <rect x="10" y="356" width="280" height="36" rx="5" fill="#1abc9c" opacity=".6"/><text x="150" y="372" fill="#0d0f14" font-weight="700">F 微批5·第2轮</text>
+      <rect x="10" y="400" width="280" height="36" rx="5" fill="#1abc9c" opacity=".6"/><text x="150" y="416" fill="#0d0f14" font-weight="700">F 微批6·第2轮</text>
+      <rect x="10" y="444" width="280" height="36" rx="5" fill="#1abc9c" opacity=".6"/><text x="150" y="460" fill="#0d0f14" font-weight="700">F 微批7·第2轮</text>
+      <text x="150" y="500" fill="#8b94a3" font-size="9">第 2 轮单独跑 4 微批 1F1B：F8 与 B5-B8 在此后完成（两轮之间流水线排空，无交错）</text>
+    </g>
+  </g>
+
+  <!-- ===== pp1 container (offset: F starts 1 slot later) ===== -->
+  <g transform="translate(420,60)">
+    <rect x="0" y="0" width="300" height="528" rx="10" fill="#0e1a17" stroke="#1abc9c" stroke-width="2"/>
+    <!-- Schedule1F1B, stage 1 of 3, n_mbs=4: warmup F1-F2, 1B1F B1 F3 / B2 F4, cooldown B3-B4 -->
+    <g font-size="10" text-anchor="middle">
+      <rect x="10" y="48" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="64" fill="#0d0f14" font-weight="700">F 微批1</text><text x="150" y="78" fill="#0d0f14" font-size="9">收 hidden + 11层前向</text>
+      <rect x="10" y="92" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="108" fill="#0d0f14" font-weight="700">F 微批2</text>
+      <rect x="10" y="136" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="152" fill="#fff" font-weight="700">B 微批1</text>
+      <rect x="10" y="180" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="196" fill="#0d0f14" font-weight="700">F 微批3</text>
+      <rect x="10" y="224" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="240" fill="#fff" font-weight="700">B 微批2</text>
+      <rect x="10" y="268" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="284" fill="#0d0f14" font-weight="700">F 微批4</text>
+      <rect x="10" y="312" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="328" fill="#fff" font-weight="700">B 微批3</text>
+      <rect x="10" y="356" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="372" fill="#fff" font-weight="700">B 微批4</text>
+      <line x1="10" y1="396" x2="290" y2="396" stroke="#8b94a3" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <rect x="10" y="400" width="280" height="36" rx="5" fill="#1abc9c" opacity=".6"/><text x="150" y="416" fill="#0d0f14" font-weight="700">F 微批5·第2轮</text>
+      <rect x="10" y="444" width="280" height="36" rx="5" fill="#1abc9c" opacity=".6"/><text x="150" y="460" fill="#0d0f14" font-weight="700">F 微批6·第2轮</text>
+      <text x="150" y="500" fill="#8b94a3" font-size="9">F7/F8 与 B5-B8 在此后完成</text>
+    </g>
+  </g>
+
+  <!-- ===== pp2 container (offset: F starts 2 slots later; has loss) ===== -->
+  <g transform="translate(760,60)">
+    <rect x="0" y="0" width="300" height="528" rx="10" fill="#0e1a17" stroke="#1abc9c" stroke-width="2"/>
+    <!-- Schedule1F1B, stage 2 of 3 (last, computes loss), n_mbs=4: warmup F1, 1B1F B1 F2 / B2 F3 / B3 F4, cooldown B4 -->
+    <g font-size="10" text-anchor="middle">
+      <rect x="10" y="92" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="108" fill="#0d0f14" font-weight="700">F 微批1</text><text x="150" y="122" fill="#0d0f14" font-size="9">10层 + lm_head + loss</text>
+      <rect x="10" y="136" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="152" fill="#fff" font-weight="700">B 微批1</text><text x="150" y="166" fill="#fff" font-size="9">loss.backward 首发梯度</text>
+      <rect x="10" y="180" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="196" fill="#0d0f14" font-weight="700">F 微批2</text>
+      <rect x="10" y="224" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="240" fill="#fff" font-weight="700">B 微批2</text>
+      <rect x="10" y="268" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="284" fill="#0d0f14" font-weight="700">F 微批3</text>
+      <rect x="10" y="312" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="328" fill="#fff" font-weight="700">B 微批3</text>
+      <rect x="10" y="356" width="280" height="36" rx="5" fill="#1abc9c" opacity=".85"/><text x="150" y="372" fill="#0d0f14" font-weight="700">F 微批4</text>
+      <rect x="10" y="400" width="280" height="36" rx="5" fill="#0e6b58"/><text x="150" y="416" fill="#fff" font-weight="700">B 微批4</text>
+      <line x1="10" y1="440" x2="290" y2="440" stroke="#8b94a3" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <rect x="10" y="444" width="280" height="36" rx="5" fill="#1abc9c" opacity=".6"/><text x="150" y="460" fill="#0d0f14" font-weight="700">F 微批5·第2轮</text>
+      <text x="150" y="500" fill="#8b94a3" font-size="9">F6-F8 与 B5-B8 在此后完成</text>
+    </g>
+  </g>
+
+  <!-- activation flow arrows: pp0->pp1->pp2 (green), at microbatch1 F boundary -->
+  <g stroke="#9be0a3" stroke-width="1.8" fill="none">
+    <path d="M 380 126 L 420 126" marker-end="url(#g6)"/>
+    <path d="M 720 170 L 760 170" marker-end="url(#g6)"/>
+  </g>
+  <text x="400" y="120" fill="#9be0a3" font-size="9">hidden</text>
+  <text x="740" y="164" fill="#9be0a3" font-size="9">hidden</text>
+
+  <!-- grad flow arrows back: pp2->pp1->pp0 (orange dashed), at microbatch1 B boundary -->
+  <g stroke="#f0ad4e" stroke-width="1.8" fill="none" stroke-dasharray="4,3">
+    <path d="M 760 214 L 720 214" marker-end="url(#g6)"/>
+    <path d="M 420 214 L 380 214" marker-end="url(#g6)"/>
+  </g>
+  <text x="740" y="208" fill="#f0ad4e" font-size="9">grad</text>
+  <text x="400" y="208" fill="#f0ad4e" font-size="9">grad</text>
+
+  <!-- legend strip between header and stages -->
+  <g transform="translate(80,0)" font-size="10">
+    <rect x="0" y="-2" width="14" height="12" rx="2" fill="#1abc9c" opacity=".85"/><text x="20" y="8" fill="#c8d0dc">F 前向</text>
+    <rect x="70" y="-2" width="14" height="12" rx="2" fill="#0e6b58"/><text x="90" y="8" fill="#c8d0dc">B 反向</text>
+    <line x1="140" y1="4" x2="160" y2="4" stroke="#9be0a3" stroke-width="2"/><text x="166" y="8" fill="#c8d0dc">activation 下传</text>
+    <line x1="270" y1="4" x2="290" y2="4" stroke="#f0ad4e" stroke-width="2" stroke-dasharray="4,3"/><text x="296" y="8" fill="#c8d0dc">梯度上传</text>
+  </g>
+
+  <!-- per-step comm annotation band at bottom -->
+  <g transform="translate(80,610)">
+    <rect width="980" height="110" rx="8" fill="#0a0c11" stroke="#272d39"/>
+    <text x="14" y="22" fill="#fff" font-weight="700" font-size="12">每个 F/B 格子里发生什么（GPU0 视角，pp0 阶段）</text>
+    <g font-size="11">
+      <text x="14" y="44" fill="#9be0a3"><tspan font-weight="700">F（前向）：</tspan>取数[4,8192] -> CP切[4,2048] -> schedule 切 4 个微批 [1,2048] -> <tspan fill="#e67e22">FSDP all-gather</tspan> 取参数（stage 开头一次）-> embed+norm(SP) -> <tspan fill="#3498db">TP all-gather</tspan>+wqkv -> <tspan fill="#e74c3c">CP all-gather K/V</tspan>+attn -> <tspan fill="#3498db">TP reduce-scatter</tspan>+wo -> ffn(同) -> <tspan fill="#1abc9c">PP 发 hidden 给 GPU64</tspan>（参数保持完整至反向结束）</text>
+      <text x="14" y="66" fill="#9be0a3"><tspan font-weight="700">B（反向）：</tspan>收 pp1 梯度 -> 逐层反向（每条前向通信对偶：<tspan fill="#3498db">TP all-reduce/all-gather</tspan>、<tspan fill="#e74c3c">CP K/V grad reduce</tspan>；参数已 gather，无需 FSDP all-gather） -> <tspan fill="#e67e22">FSDP grad reduce-scatter</tspan> 回 1/32 + reshard -> 梯度加到 .grad</text>
+      <text x="14" y="88" fill="#8b94a3"><tspan font-weight="700">收尾：</tspan>8 个 PP微批（梯度累积微批2 × PP微批4）梯度全累加 -> clip_grad_norm（pp_mesh all-reduce） -> AdamW（FSDP 1/32 分片上更新） -> checkpoint</text>
+      <text x="14" y="104" fill="#8b94a3" font-size="10">注：pp1 比 pp0 晚 1 个时间槽启动 F，pp2 晚 2 个（流水线填充）；反向从 pp2 的 B1 开始逐级回传。每轮 schedule.step 只含 4 个 PP微批，两轮之间排空（‖ 分隔线处）；4 < 2×3-1，存在流水线气泡。</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 6-1：完整优化步总图。3 个 PP 阶段（青框）× 两次 4 微批 1F1B（梯度累积微批2×PP微批4；‖ 分隔线处两轮之间流水线排空）。实青格=第 1 轮 F，浅青格=第 2 轮 F，深青格=反向 B；绿箭头=activation 下传，橙虚线=梯度上传。下方注释带说明每格内的通信。</p>
+
+<h3>图 6-2：GPU0 节点内部完整解剖（一个 PP微批的前向+反向）</h3>
+<p>上图 6-1 只画了 PP微批在阶段间的调度，没体现单 GPU 内部的切分。下面这张图把 <b>GPU0</b>（pp0/b0/cp0/tp0）处理一个 PP微批时的内部流程完全展开：<b>数据怎么分片、TP 怎么切权重、CP/SP 怎么切序列、每步和谁集合通信</b>，全部标出。</p>
+
+<svg viewBox="0 0 1160 1180" font-family="monospace" font-size="11">
+  <defs><marker id="g7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+
+  <!-- ===== GPU0 header ===== -->
+  <g transform="translate(40,10)">
+    <rect width="1080" height="56" rx="10" fill="#0e1219" stroke="#8b94a3" stroke-width="2"/>
+    <text x="20" y="24" fill="#fff" font-weight="700" font-size="15">GPU 0</text>
+    <text x="20" y="42" fill="#8b94a3" font-size="11">pp0 / batch0 / cp0 / tp0　·　持 layers 0-10（11 层）</text>
+    <!-- 4 comm group badges -->
+    <g font-size="10" font-weight="700">
+      <rect x="380" y="14" width="150" height="16" rx="8" fill="#3498db"/><text x="455" y="26" text-anchor="middle" fill="#0d0f14">TP 组：GPU0↔GPU1</text>
+      <rect x="540" y="14" width="180" height="16" rx="8" fill="#e74c3c"/><text x="630" y="26" text-anchor="middle" fill="#0d0f14">CP 组：GPU0↔2↔4↔6</text>
+      <rect x="730" y="14" width="170" height="16" rx="8" fill="#e67e22"/><text x="815" y="26" text-anchor="middle" fill="#0d0f14">FSDP 组：32 块同pp/tp</text>
+      <rect x="910" y="14" width="150" height="16" rx="8" fill="#1abc9c"/><text x="985" y="26" text-anchor="middle" fill="#0d0f14">PP 链：↔GPU64↔128</text>
+      <text x="380" y="46" fill="#8b94a3" font-size="10">SP 复用 TP 组通信（切激活序列）</text>
+    </g>
+  </g>
+
+  <!-- ===== 3 column headers ===== -->
+  <g font-size="11" font-weight="700">
+    <text x="50" y="86" fill="#fff">操作 + 切分维度</text>
+    <text x="430" y="86" fill="#fff">数据/权重 shape 演化</text>
+    <text x="860" y="86" fill="#fff">集合通信（谁↔谁，什么类型）</text>
+  </g>
+
+  <!-- ===== forward steps. Each row: y top, height 56. pitch 62. start y=96 ===== -->
+  <!-- step template: left box(op+dim), mid box(shape), right box(comm) -->
+
+  <!-- 1. 取数据 + CP切序列 -->
+  <g transform="translate(40,96)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="12" y="20" fill="#e74c3c" font-weight="700">① 取数据 + CP 切序列<tspan fill="#8b94a3" font-size="9"> [动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">dataloader 给 [4,8192]（batch4 × seq_len 8192）</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">CP 切序列 8192→2048；schedule 再切 4 个 PP微批</text>
+  </g>
+  <g transform="translate(400,96)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">[4, 8192]</text>
+    <text x="14" y="44" fill="#9be0a3">  -> CP÷4 -> [4, 2048]（cp0 段）</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（1/4 份：全局序列 ÷ CP4；schedule 切成 4×[1,2048] 微批）</text>
+  </g>
+  <g transform="translate(850,96)">
+    <rect width="270" height="56" rx="8" fill="#1a1416" stroke="#e74c3c" stroke-width="2"/>
+    <text x="12" y="24" fill="#e74c3c" font-weight="700">CP all-gather（数据预处理）</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">无（CP 切是逻辑分片，</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">attention 时才 all-gather K/V）</text>
+  </g>
+
+  <!-- 2. FSDP all-gather 取参数 -->
+  <g transform="translate(40,158)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="12" y="20" fill="#e67e22" font-weight="700">② FSDP all-gather 取参数<tspan fill="#8b94a3" font-size="9"> [静]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">参数分片：每层权重持 1/32</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">stage 前向开头拼成完整参数（PP 默认不逐层）</text>
+  </g>
+  <g transform="translate(400,158)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">分片参数（1/32）-> 完整参数（TP 切后）</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">wqkv[3072,4096] wo[4096,2048] w1/w3[7168,4096] w2[4096,7168]</text>
+    <text x="14" y="54" fill="#8b94a3" font-size="10">（原始全量 shape 见第 3 节）</text>
+  </g>
+  <g transform="translate(850,158)">
+    <rect width="270" height="56" rx="8" fill="#2a1d10" stroke="#e67e22" stroke-width="2"/>
+    <text x="12" y="24" fill="#e67e22" font-weight="700">FSDP all-gather</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0 ↔ 31 块同pp/tp</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">环形 all-gather 参数分片</text>
+  </g>
+
+  <!-- 3. embed + SP reduce-scatter -->
+  <g transform="translate(40,220)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="12" y="20" fill="#3498db" font-weight="700">③ tok_embeddings（TP 切 vocab）<tspan fill="#8b94a3" font-size="9"> [静][动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">TP 列并行切词表维 + SP 切序列</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">权重 [128256,4096] -> 每rank [64128,4096]</text>
+  </g>
+  <g transform="translate(400,220)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">tokens [1,2048] -> lookup(半vocab)</text>
+    <text x="14" y="44" fill="#9be0a3">  -> reduce-scatter 到 SP -> [1,1024,4096]</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（1/4 数据段 × 半词表；输出 SP 1/8 份）</text>
+  </g>
+  <g transform="translate(850,220)">
+    <rect width="270" height="56" rx="8" fill="#101f2c" stroke="#3498db" stroke-width="2"/>
+    <text x="12" y="24" fill="#3498db" font-weight="700">TP reduce-scatter</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0 ↔ GPU1（TP 对）</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">求和 partial embed + 切序列 S</text>
+  </g>
+
+  <!-- 4. attention_norm (SP local) -->
+  <g transform="translate(40,282)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+    <text x="12" y="20" fill="#f1c40f" font-weight="700">④ attention_norm（SP 粒度本地）<tspan fill="#8b94a3" font-size="9"> [动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">SP 切序列：S = 8192/(cp·tp) = 1024</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">RMSNorm 权重 [4096] 复制，不切</text>
+  </g>
+  <g transform="translate(400,282)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">[1, 1024, 4096] -> [1, 1024, 4096]</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">（SP 粒度，序列已切，shape 不变）</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（SP 1/8 份：8192 ÷ cp4 ÷ tp2）</text>
+  </g>
+  <g transform="translate(850,282)">
+    <rect width="270" height="56" rx="8" fill="#0e2225" stroke="#f1c40f" stroke-width="2"/>
+    <text x="12" y="24" fill="#f1c40f" font-weight="700">无通信（本地）</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">norm 在 SP 切小序列上算</text>
+  </g>
+
+  <!-- 5. all-gather(TP) 进 wqkv -->
+  <g transform="translate(40,344)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2" stroke-dasharray="4,3"/>
+    <text x="12" y="20" fill="#f1c40f" font-weight="700">⑤ all-gather(TP) 拼回序列<tspan fill="#8b94a3" font-size="9"> [动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">SP->TP：序列 1024 -> 2048</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">进列并行线性前必须全序列</text>
+  </g>
+  <g transform="translate(400,344)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">[1, 1024, 4096] -> [1, 2048, 4096]</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">序列维从 SP 粒度拼回 CP 粒度</text>
+    <text x="14" y="54" fill="#9be0a3" font-size="10">（整份：CP 粒度 2048 全序列）</text>
+  </g>
+  <g transform="translate(850,344)">
+    <rect width="270" height="56" rx="8" fill="#101f2c" stroke="#3498db" stroke-width="2"/>
+    <text x="12" y="24" fill="#3498db" font-weight="700">TP all-gather（SP 通信）</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0 ↔ GPU1</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">沿序列维 all-gather</text>
+  </g>
+
+  <!-- 6. wqkv TP 列并行 -->
+  <g transform="translate(40,406)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="12" y="20" fill="#3498db" font-weight="700">⑥ wqkv（TP 列并行切 heads）<tspan fill="#8b94a3" font-size="9"> [静]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">权重 [6144,4096] -> [3072,4096]</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">切输出维（heads），forward 无通信</text>
+  </g>
+  <g transform="translate(400,406)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">[1,2048,4096] -> [1,2048,3072]</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">-> split: q[1,2048,16,128] k,v[1,2048,4,128]（每rank半头）</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（Q 半份 16/32 头；K/V 半份 4/8 头）</text>
+  </g>
+  <g transform="translate(850,406)">
+    <rect width="270" height="56" rx="8" fill="#0e2225" stroke="#f1c40f" stroke-width="2"/>
+    <text x="12" y="24" fill="#f1c40f" font-weight="700">无通信（本地）</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">列并行各 rank 算自己的 heads</text>
+  </g>
+
+  <!-- 7. attention CP -->
+  <g transform="translate(40,468)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="12" y="20" fill="#e74c3c" font-weight="700">⑦ attention（CP 切序列，Q 局部 K/V 全量）<tspan fill="#8b94a3" font-size="9"> [动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">CP：Q 持本地段，K/V all-gather 全量</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">只算 cp0 段（2048）query 的注意力</text>
+  </g>
+  <g transform="translate(400,468)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">Q 本地 [1,2048,16,128]</text>
+    <text x="14" y="44" fill="#9be0a3">K,V all-gather -> [1,8192,4,128] -> out [1,2048,16,128]</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（K/V 整份 8192；Q 保持 1/4 段 × 半头）</text>
+  </g>
+  <g transform="translate(850,468)">
+    <rect width="270" height="56" rx="8" fill="#1a1416" stroke="#e74c3c" stroke-width="2"/>
+    <text x="12" y="24" fill="#e74c3c" font-weight="700">CP all-gather K/V</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0 ↔ GPU2/4/6</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">4 块互发各自 1/4 序列的 K/V</text>
+  </g>
+
+  <!-- 8. wo TP 行并行 + reduce-scatter -->
+  <g transform="translate(40,530)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="12" y="20" fill="#3498db" font-weight="700">⑧ wo（TP 行并行切输入 + reduce-scatter）<tspan fill="#8b94a3" font-size="9"> [静][动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">权重 [4096,4096] -> [4096,2048]</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">切输入维，partial 输出求和 + 切回 SP</text>
+  </g>
+  <g transform="translate(400,530)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">[1,2048,2048] partial -> reduce-scatter</text>
+    <text x="14" y="44" fill="#9be0a3">  -> [1, 1024, 4096]（回 SP 粒度）</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（partial 求和 → SP 1/8 份）</text>
+  </g>
+  <g transform="translate(850,530)">
+    <rect width="270" height="56" rx="8" fill="#101f2c" stroke="#3498db" stroke-width="2"/>
+    <text x="12" y="24" fill="#3498db" font-weight="700">TP reduce-scatter</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0 ↔ GPU1</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">求和 partial + 切序列 2048->1024</text>
+  </g>
+
+  <!-- 9. ffn (compressed: same TP+SP pattern) -->
+  <g transform="translate(40,592)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="12" y="20" fill="#3498db" font-weight="700">⑨ ffn（同 attn 模式：TP+SP）<tspan fill="#8b94a3" font-size="9"> [静][动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">w1/w3 列并行 [14336,4096]->[7168,4096]</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">w2 行并行 [4096,14336]->[4096,7168] + reduce-scatter</text>
+  </g>
+  <g transform="translate(400,592)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">norm(SP)[1,1024,4096] -> gather[1,2048,4096]</text>
+    <text x="14" y="44" fill="#9be0a3">  -> w1/w3[1,2048,7168] -> SwiGLU -> w2 -> [1,1024,4096]</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（同 ⑥/⑧：半份 ↔ 整份 ↔ SP 1/8 份交替）</text>
+  </g>
+  <g transform="translate(850,592)">
+    <rect width="270" height="56" rx="8" fill="#101f2c" stroke="#3498db" stroke-width="2"/>
+    <text x="12" y="24" fill="#3498db" font-weight="700">TP all-gather + reduce-scatter</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0 ↔ GPU1（两次）</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">同 attn 的进/出通信</text>
+  </g>
+
+  <!-- 10. FSDP reshard -->
+  <g transform="translate(40,654)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="12" y="20" fill="#e67e22" font-weight="700">⑩ FSDP reshard（PP 默认不逐层）<tspan fill="#8b94a3" font-size="9"> [静]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">本 stage 反向结束后，参数回 1/32 分片</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">省显存（激活 shape 不变）</text>
+  </g>
+  <g transform="translate(400,654)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">完整参数 -> 1/32 分片</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">（②/⑩ 仅无 PP 时逐层成对；PP 下为 stage 首尾各一次）</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（1/32 份：每 rank 的持久切片）</text>
+  </g>
+  <g transform="translate(850,654)">
+    <rect width="270" height="56" rx="8" fill="#2a1d10" stroke="#e67e22" stroke-width="2"/>
+    <text x="12" y="24" fill="#e67e22" font-weight="700">FSDP reshard（本地）</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">各 rank 丢弃全量参数</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">只留自己的 1/32 分片</text>
+  </g>
+
+  <!-- layer repeat bracket -->
+  <g transform="translate(40,716)">
+    <rect width="1080" height="34" rx="8" fill="#0e1a17" stroke="#1abc9c" stroke-dasharray="5,3"/>
+    <text x="540" y="22" text-anchor="middle" fill="#1abc9c" font-weight="700">↑ 步骤 ④-⑩ = 1 个 Transformer 层。GPU0 在 pp0 阶段重复 11 次（layers 0-10）　·　每层 4 次 TP 通信 + 1 次 CP；FSDP 仅 stage 首尾各一次（PP 默认不逐层）</text>
+  </g>
+
+  <!-- 11. PP send -->
+  <g transform="translate(40,760)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+    <text x="12" y="20" fill="#1abc9c" font-weight="700">⑪ PP 发送 hidden 给下一阶段<tspan fill="#8b94a3" font-size="9"> [静]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">11 层算完，hidden 发给 GPU64</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">pp0 边界，点对点</text>
+  </g>
+  <g transform="translate(400,760)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">hidden [1, 1024, 4096]（SP 粒度）</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">（DTensor 传局部分片，接收端按 placement 重建，不 gather）</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（SP 1/8 份）</text>
+  </g>
+  <g transform="translate(850,760)">
+    <rect width="270" height="56" rx="8" fill="#0e1a17" stroke="#1abc9c" stroke-width="2"/>
+    <text x="12" y="24" fill="#1abc9c" font-weight="700">PP 点对点 send</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0 -> GPU64（pp1）</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">末阶段 pp2 才算 loss</text>
+  </g>
+
+  <!-- backward band -->
+  <g transform="translate(40,822)">
+    <rect width="1080" height="28" rx="6" fill="#1a160d" stroke="#f0ad4e"/>
+    <text x="540" y="19" text-anchor="middle" fill="#f0ad4e" font-weight="700">▼ 反向（收 pp1 梯度后，逐层对偶前向通信）▼</text>
+  </g>
+
+  <!-- 12. backward comm -->
+  <g transform="translate(40,860)">
+    <rect width="340" height="72" rx="8" fill="#0e1219" stroke="#f0ad4e" stroke-width="2"/>
+    <text x="12" y="20" fill="#f0ad4e" font-weight="700">⑫ 反向：每条前向通信对偶<tspan fill="#8b94a3" font-size="9"> [动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">TP 列并行: grad all-reduce</text>
+    <text x="12" y="52" fill="#9be0a3">TP 行并行: grad all-gather</text>
+    <text x="12" y="66" fill="#9be0a3">CP: K/V grad reduce | FSDP: grad reduce-scatter + reshard</text>
+  </g>
+  <g transform="translate(400,860)">
+    <rect width="430" height="72" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">逐层梯度回流，shape 与前向对称</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">每层反向触发 ~4 次 TP + 1 次 CP；FSDP 为每层 grad reduce-scatter + reshard</text>
+    <text x="14" y="60" fill="#8b94a3" font-size="10">梯度累加到各参数的 .grad（8 个 PP微批都做完后统一更新）</text>
+  </g>
+  <g transform="translate(850,860)">
+    <rect width="270" height="72" rx="8" fill="#1a160d" stroke="#f0ad4e" stroke-width="2"/>
+    <text x="12" y="24" fill="#f0ad4e" font-weight="700">全部通信组反向</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0↔1(TP) / ↔2/4/6(CP)</text>
+    <text x="12" y="56" fill="#c8d0dc" font-size="10">/ 32块(FSDP) / ↔64(PP收grad)</text>
+  </g>
+
+  <!-- 13. FSDP grad reduce-scatter -->
+  <g transform="translate(40,942)">
+    <rect width="340" height="56" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="12" y="20" fill="#e67e22" font-weight="700">⑬ FSDP 梯度 reduce-scatter<tspan fill="#8b94a3" font-size="9"> [动]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">梯度聚合并分片回 1/32</text>
+    <text x="12" y="52" fill="#8b94a3" font-size="10">每 rank 只持自己分片的 grad</text>
+  </g>
+  <g transform="translate(400,942)">
+    <rect width="430" height="56" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">partial grad -> reduce-scatter -> 1/32 grad</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">（与 FSDP all-gather 对偶）</text>
+    <text x="14" y="54" fill="#f0ad4e" font-size="10">（1/32 份：梯度也按参数分片归属）</text>
+  </g>
+  <g transform="translate(850,942)">
+    <rect width="270" height="56" rx="8" fill="#2a1d10" stroke="#e67e22" stroke-width="2"/>
+    <text x="12" y="24" fill="#e67e22" font-weight="700">FSDP reduce-scatter</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">GPU0 ↔ 31 块</text>
+    <text x="12" y="54" fill="#c8d0dc" font-size="10">梯度求和 + 分片</text>
+  </g>
+
+  <!-- 14. clip + optimizer -->
+  <g transform="translate(40,1004)">
+    <rect width="340" height="72" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="12" y="20" fill="#2ecc71" font-weight="700">⑭ 8 PP微批累加 + clip + AdamW<tspan fill="#8b94a3" font-size="9"> [静]</tspan></text>
+    <text x="12" y="38" fill="#9be0a3">8 个 PP微批梯度全加到 .grad</text>
+    <text x="12" y="52" fill="#9be0a3">clip_grad_norm 在 pp_mesh all-reduce</text>
+    <text x="12" y="66" fill="#9be0a3">AdamW 在 FSDP 1/32 分片上更新</text>
+  </g>
+  <g transform="translate(400,1004)">
+    <rect width="430" height="72" rx="8" fill="#0e1219" stroke="#272d39"/>
+    <text x="14" y="24" fill="#9be0a3">梯度累积微批2×PP微批4 = 8 次累加</text>
+    <text x="14" y="44" fill="#8b94a3" font-size="10">每个优化步只做 1 次 optimizer.step（8 微批之后）</text>
+    <text x="14" y="60" fill="#8b94a3" font-size="10">参数更新：每 rank 只更新自己的 1/32 参数</text>
+  </g>
+  <g transform="translate(850,1004)">
+    <rect width="270" height="72" rx="8" fill="#11241a" stroke="#2ecc71" stroke-width="2"/>
+    <text x="12" y="24" fill="#2ecc71" font-weight="700">DP+PP clip / FSDP 更新</text>
+    <text x="12" y="42" fill="#c8d0dc" font-size="10">clip: pp_mesh all-reduce 范数</text>
+    <text x="12" y="56" fill="#c8d0dc" font-size="10">AdamW: 本地 1/32 分片</text>
+    <text x="12" y="68" fill="#c8d0dc" font-size="10">-> checkpoint(DCP)</text>
+  </g>
+
+  <!-- bottom legend -->
+  <g transform="translate(40,1100)" font-size="10">
+    <rect width="1080" height="80" rx="8" fill="#0a0c11" stroke="#272d39"/>
+    <text x="14" y="20" fill="#fff" font-weight="700">切分维度与时机图例</text>
+    <g>
+      <rect x="14" y="30" width="12" height="12" fill="#e74c3c"/><text x="32" y="40" fill="#c8d0dc">CP 切序列（attn Q 局部/K-V 全量）</text>
+      <rect x="240" y="30" width="12" height="12" fill="#f1c40f"/><text x="258" y="40" fill="#c8d0dc">SP 切序列（norm/线性间激活）</text>
+      <rect x="470" y="30" width="12" height="12" fill="#3498db"/><text x="488" y="40" fill="#c8d0dc">TP 切特征/heads/vocab（权重列/行并行）</text>
+      <rect x="760" y="30" width="12" height="12" fill="#e67e22"/><text x="778" y="40" fill="#c8d0dc">FSDP 切参数/梯度（1/32 分片）</text>
+      <rect x="14" y="46" width="12" height="12" fill="#1abc9c"/><text x="32" y="56" fill="#c8d0dc">PP 切层（阶段间点对点）</text>
+      <rect x="240" y="46" width="12" height="12" fill="#2ecc71"/><text x="258" y="56" fill="#c8d0dc">DP 切 batch（8 副本）</text>
+      <text x="14" y="70" fill="#9be0a3" font-weight="700">[静]</text><text x="40" y="70" fill="#c8d0dc">= 初始化时切好、训练中不变（权重 TP/FSDP 分片、PP 层归属）</text>
+      <text x="470" y="70" fill="#f0ad4e" font-weight="700">[动]</text><text x="496" y="70" fill="#c8d0dc">= 每步/每层现切（CP 数据、SP 激活、梯度）</text>
+      <text x="14" y="78" fill="#f0ad4e" font-weight="700">[部分]</text><text x="60" y="78" fill="#c8d0dc">= 该 GPU 只持全局的一部分（1/4 段、1/8 序列、半头、1/32 分片），中栏橙色行标注</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 6-2：GPU0 节点内部完整解剖。左栏=操作+切分维度（<b>[静]</b>=初始化时切好、训练中不变；<b>[动]</b>=每步/每层现切），中栏=shape 演化（<b>橙色行</b>标注该 GPU 持的是整份还是全局的几分之几：1/4 数据段、SP 1/8 序列、半份 heads、FSDP 1/32 分片），右栏=集合通信对象。一层内：SP 切序列(norm) -> TP all-gather(进线性) -> TP 列并行(wqkv) -> CP all-gather K/V(attn) -> TP 行并行+reduce-scatter(wo) -> 同模式 ffn -> FSDP reshard；11 层后 PP 发 hidden；反向对偶；最后 FSDP 分片上 AdamW。</p>
+
+<div class="card">
+<p>单优化步 = 梯度累积微批(2) × PP微批(4) = 8 次 fwd/bwd 微过程。每个 PP微批 shape <code>[1,2048]</code> 起步。下面按 GPU0 视角描述一个 PP微批的完整旅程（其余 7 个 PP微批分两轮 1F1B 交错进行，两轮之间流水线排空）：</p>
+<table>
+<tr><th>阶段</th><th>GPU0（pp0/cp0/tp0）在做什么</th><th>通信</th><th>其他 GPU</th></tr>
+<tr><td>1. 取数据</td><td>dataloader 给 GPU0 一整批 [4,8192]（batch0 副本，local_batch_size=4 × seq_len=8192），CP 切成 [4,2048]，schedule 再切 4 个 PP微批，每个 [1,2048]（cp0 段）</td><td>-</td><td>GPU2/4/6 各拿 cp1/2/3 段；GPU1 拿同 cp0 段（TP 对，数据相同）</td></tr>
+<tr><td>2. FSDP 取参</td><td>从 32 块 FSDP 组 all-gather 出 layers 0-10 的完整参数（stage 开头一次性）</td><td><span class="tag t-fsdp">FSDP</span> all-gather</td><td>同 pp/tp 的 32 块一起凑参数</td></tr>
+<tr><td>3. embed+norm</td><td>本地算 embed（半 vocab）+ RMSNorm，得 [1,1024,4096]</td><td><span class="tag t-sp">SP</span> reduce-scatter</td><td>GPU1 同算（不同 head），结果 reduce-scatter 到各自 SP 段</td></tr>
+<tr><td>4. attn 前向</td><td>all-gather(TP) 拼 Q 序列 → wqkv → attention：Q 本地 [1,2048,16,128]，K/V all-gather(CP) 成 [1,8192,4,128]</td><td><span class="tag t-tp">TP</span> all-gather + <span class="tag t-cp">CP</span> all-gather K/V</td><td>GPU1 同算另 16 头；GPU2/4/6 各算自己 cp 段的 Q</td></tr>
+<tr><td>5. wo+ffn</td><td>wo 行并行 → reduce-scatter(TP) 回 SP；ffn 同理（w1/w3→w2）</td><td><span class="tag t-tp">TP</span> reduce-scatter ×2</td><td>GPU1 配对 reduce-scatter</td></tr>
+<tr><td>6. FSDP 还参</td><td>本 stage 反向结束后，参数回 1/32 分片省显存（PP 默认不逐层 reshard）</td><td><span class="tag t-fsdp">FSDP</span> reshard</td><td>32 块各自 reshard</td></tr>
+<tr><td>7. PP 发送</td><td>11 层算完，hidden [1,1024,4096] 点对点发给 GPU64(pp1)</td><td><span class="tag t-pp">PP</span> p2p</td><td>GPU64 接力算 layers 11-21 → GPU128 算 22-31 + lm_head</td></tr>
+<tr><td>8. loss</td><td>GPU0 不算 loss（非末阶段）；末阶段 pp2 算 ChunkedLoss</td><td><span class="tag t-tp">TP</span>（logits 分块）</td><td>GPU128 算 logits[1,2048,64128] + CE → 标量 loss</td></tr>
+<tr><td>9. 反向</td><td>收 pp1 回传的梯度 → 逐层反向：每条前向通信对偶（TP all-reduce/all-gather、CP K/V grad reduce；参数已 gather 无需 FSDP all-gather），逐层 FSDP grad reduce-scatter 回 1/32</td><td>全部反向对偶</td><td>GPU1/2/4/6 同步反向</td></tr>
+<tr><td>10. 累加+优化</td><td>8 个 PP微批梯度全加到 .grad；clip_grad_norm 在 pp_mesh all-reduce；AdamW 在 FSDP 1/32 分片上更新</td><td><span class="tag t-dp">DP</span>+<span class="tag t-pp">PP</span> clip；<span class="tag t-fsdp">FSDP</span> 更新</td><td>所有 GPU 同步优化</td></tr>
+</table>
+</div>
+
+<div class="note">
+<b>一句话</b>：GPU0 和 GPU1 是 <span class="tag t-tp">TP</span> 对（切 head/特征，频繁 all-gather/reduce-scatter）；和 GPU2/4/6 是 <span class="tag t-cp">CP</span> 对（切序列，attention 内 all-gather K/V）；和 32 块同 pp/tp 的是 <span class="tag t-fsdp">FSDP</span> 组（切参数，all-gather/reshard）；和 GPU64/128 是 <span class="tag t-pp">PP</span> 链（切层，点对点传 hidden/grad）。<b>SP 复用 TP 对的通信</b>。每块 GPU 同时属于 4 个通信组，一层内交错触发 ~4 次 TP + 1 次 CP；FSDP all-gather/reshard 每 stage 首尾各一次（PP 默认不逐层）；阶段边界 1 次 PP。
+</div>
+
+<p class="sub">配色与前三份文档一致。GPU 编号映射基于 <code>parallel_dims.py::build_mesh</code> 的 <code>init_device_mesh(("pp","batch","cp","tp"), (3,8,4,2))</code> 行优先展开。基于 torchtitan main 分支源码。</p>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

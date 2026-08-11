@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TorchTitan 架构图</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --surface: #fff;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --text-dim: #656d76;
+    --boundary: #cf222e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    width: 1280px; height: 720px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 24px 32px 18px;
+  }
+  .header {
+    display: flex; align-items: baseline; gap: 14px; margin-bottom: 10px;
+  }
+  .header h1 { font-size: 24px; font-weight: 700; color: #1f2328; }
+  .header .sub { font-size: 13px; color: var(--text-dim); }
+
+  .main { flex: 1; display: flex; gap: 22px; }
+
+  /* ── 左侧：架构图 ── */
+  .diagram {
+    flex: 0 0 740px;
+    display: flex; flex-direction: column; gap: 0; font-size: 12px;
+  }
+  .layer {
+    display: flex; border-radius: 5px;
+    margin-bottom: 1px; border: 1px solid var(--border);
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  .layer-label {
+    width: 96px; min-width: 96px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 12px; color: #fff;
+    letter-spacing: 1px; padding: 4px 4px;
+    text-align: center; line-height: 1.35;
+    border-radius: 5px 0 0 5px;
+  }
+  .layer-content {
+    flex: 1; padding: 6px 14px; background: var(--surface);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    border-radius: 0 5px 5px 0;
+    justify-content: space-evenly;
+  }
+  /* 有分组的层用 grid 均分两组 */
+  .layer-content.has-groups {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    justify-content: unset;
+  }
+  /* 无分组的层按需用 grid 均分 */
+  .layer-content.grid5 {
+    display: grid;
+    grid-template-columns: repeat(5, auto);
+    justify-items: center;
+    justify-content: center;
+  }
+
+  .box {
+    padding: 3px 10px; border-radius: 4px;
+    font-size: 10.5px; font-weight: 500; color: #fff;
+    white-space: nowrap; flex-shrink: 0;
+  }
+  .box.sm { font-size: 10px; padding: 2px 8px; }
+  .box.hl { font-weight: 700; }
+  .sep { color: #c0c6cc; font-size: 13px; margin: 0 4px; flex-shrink: 0; }
+
+  /* 分组容器 */
+  .group {
+    display: grid; align-items: center; justify-items: center; justify-content: center; gap: 5px;
+    border: 1.5px dashed #d0d7de; border-radius: 6px;
+    padding: 10px 10px 6px 10px;
+    position: relative;
+  }
+  .group.cols2 { grid-template-columns: repeat(2, auto); }
+  .group.cols3 { grid-template-columns: repeat(3, auto); }
+  .group.cols4 { grid-template-columns: repeat(4, auto); }
+  .group-label {
+    position: absolute; top: 0; left: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff; padding: 0 8px;
+    font-size: 10px; font-weight: 600; color: var(--text-dim);
+    white-space: nowrap; line-height: 1.4;
+    z-index: 1;
+  }
+
+  .arrow { text-align: center; color: #b0b8c0; font-size: 11px; line-height: 8px; padding-left: 96px; margin: 0; }
+
+  .boundary {
+    display: flex; align-items: center; gap: 8px; padding-left: 96px; margin: 2px 0;
+  }
+  .boundary .line { flex:1; height:0; border-top:1px dashed var(--boundary); }
+  .boundary .label { font-size: 10px; color: var(--boundary); white-space: nowrap; font-weight: 600; }
+
+  /* ── 右侧：文字说明 ── */
+  .text-panel {
+    flex: 1; display: flex; flex-direction: column; gap: 10px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 15px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.05);
+  }
+  .card h3 { font-size: 14px; margin-bottom: 7px; color: #1f2328; }
+  .card ul { padding-left: 16px; font-size: 11.5px; line-height: 1.65; color: var(--text-dim); }
+  .card ul li { margin-bottom: 1px; }
+  .card ul strong { color: var(--text); }
+  .card .tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; font-weight: 600; margin-right: 4px;
+  }
+  .tag.tt { background: #dae5f5; color: #1a5398; }
+  .tag.pt { background: #f5e6dc; color: #a05030; }
+  .tag.hw { background: #e9eaeb; color: #5a5d63; }
+
+  .footer {
+    margin-top: 6px; font-size: 11px; color: var(--text-dim);
+    display: flex; gap: 18px;
+  }
+body{padding-left:280px}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+
+<div class="header">
+  <h1>TorchTitan 架构总览</h1>
+  <span class="sub">PyTorch 原生 LLM 预训练平台 — 分层架构与模块边界</span>
+</div>
+
+<div class="main">
+
+  <!-- 左侧：架构图 -->
+  <div class="diagram">
+
+    <!-- ===== TorchTitan 层（蓝色系） ===== -->
+    <!-- 用户入口 -->
+    <div class="layer">
+      <div class="layer-label" style="background:#5b9bd5;">用户入口</div>
+      <div class="layer-content">
+        <span class="box hl" style="background:#5b9bd5;">train.py</span>
+        <span class="box sm" style="background:#7db3e3;">run_train.sh</span>
+        <span class="box sm" style="background:#7db3e3;">--module</span>
+        <span class="box sm" style="background:#7db3e3;">--config</span>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <!-- 配置系统 -->
+    <div class="layer">
+      <div class="layer-label" style="background:#4a8ac4;">配置系统</div>
+      <div class="layer-content">
+        <span class="box hl" style="background:#4a8ac4;">ConfigManager</span>
+        <span class="box sm" style="background:#6ea6d6;">Trainer.Config</span>
+        <span class="box sm" style="background:#6ea6d6;">ParallelismConfig</span>
+        <span class="box sm" style="background:#6ea6d6;">CompileConfig</span>
+        <span class="box sm" style="background:#6ea6d6;">Profiler.Config</span>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <!-- 训练引擎 -->
+    <div class="layer">
+      <div class="layer-label" style="background:#3979b3;">训练引擎</div>
+      <div class="layer-content has-groups">
+        <div class="group cols2">
+          <span class="group-label">训练循环</span>
+          <span class="box hl" style="background:#3979b3;">Trainer</span>
+          <span class="box sm" style="background:#5e9acf;">train_step</span>
+          <span class="box sm" style="background:#5e9acf;">forward / backward</span>
+          <span class="box sm" style="background:#5e9acf;">gradient accumulation</span>
+        </div>
+        <div class="group cols4">
+          <span class="group-label">训练子模块</span>
+          <span class="box sm" style="background:#5e9acf;">DataLoader</span>
+          <span class="box sm" style="background:#5e9acf;">Optimizer</span>
+          <span class="box sm" style="background:#5e9acf;">Loss</span>
+          <span class="box sm" style="background:#5e9acf;">LR Scheduler</span>
+          <span class="box sm" style="background:#5e9acf;">CheckpointManager</span>
+          <span class="box sm" style="background:#5e9acf;">MetricsProcessor</span>
+          <span class="box sm" style="background:#5e9acf;">Tokenizer</span>
+          <span class="box sm" style="background:#5e9acf;">Profiler</span>
+        </div>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <!-- 模型定义 -->
+    <div class="layer">
+      <div class="layer-label" style="background:#2868a2;">模型定义</div>
+      <div class="layer-content has-groups">
+        <div class="group cols3">
+          <span class="group-label">模型架构</span>
+          <span class="box" style="background:#4d82b8;">llama3</span>
+          <span class="box" style="background:#4d82b8;">llama4</span>
+          <span class="box" style="background:#4d82b8;">qwen3</span>
+          <span class="box hl" style="background:#2868a2;">deepseek_v3</span>
+          <span class="box" style="background:#4d82b8;">flux</span>
+          <span class="box" style="background:#4d82b8;">gpt_oss</span>
+        </div>
+        <div class="group cols3">
+          <span class="group-label">模型共享组件</span>
+          <span class="box sm" style="background:#4d82b8;">Attention</span>
+          <span class="box sm" style="background:#4d82b8;">MoE</span>
+          <span class="box sm" style="background:#4d82b8;">RoPE</span>
+          <span class="box sm" style="background:#4d82b8;">RMSNorm</span>
+          <span class="box sm" style="background:#4d82b8;">FFN</span>
+          <span class="box sm" style="background:#4d82b8;">Decoder</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 边界线 -->
+    <div class="boundary">
+      <span class="label">&#9650; TorchTitan — 编排 · 策略 · 模型架构</span>
+      <div class="line"></div>
+      <span class="label">&#9660; PyTorch — 原语 · 计算 · 通信</span>
+    </div>
+    <div class="arrow" style="color:var(--boundary);">&#9660;</div>
+
+    <!-- ===== PyTorch 层（暖色系） ===== -->
+    <!-- 分布式并行 -->
+    <div class="layer">
+      <div class="layer-label" style="background:#c4704a;">分布式并行</div>
+      <div class="layer-content grid5">
+        <span class="box hl" style="background:#c4704a;">FSDP2</span>
+        <span class="box" style="background:#d49470;">Tensor Parallel</span>
+        <span class="box" style="background:#d49470;">Pipeline Parallel</span>
+        <span class="box" style="background:#d49470;">Context Parallel</span>
+        <span class="box" style="background:#d49470;">Expert Parallel</span>
+        <span class="box sm" style="background:#d49470;">DeviceMesh</span>
+        <span class="box sm" style="background:#d49470;">DTensor</span>
+        <span class="box sm" style="background:#d49470;">fully_shard</span>
+        <span class="box sm" style="background:#d49470;">all-gather</span>
+        <span class="box sm" style="background:#d49470;">reduce-scatter</span>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <!-- 编译优化 -->
+    <div class="layer">
+      <div class="layer-label" style="background:#b85d3a;">编译优化</div>
+      <div class="layer-content">
+        <span class="box hl" style="background:#b85d3a;">torch.compile</span>
+        <span class="box sm" style="background:#c8785a;">Dynamo</span>
+        <span class="box sm" style="background:#c8785a;">Inductor</span>
+        <span class="box sm" style="background:#c8785a;">AOT Autograd</span>
+        <span class="box sm" style="background:#c8785a;">cudagraphs</span>
+        <span class="box sm" style="background:#c8785a;">FlexAttention</span>
+        <span class="box sm" style="background:#c8785a;">micro_pipeline_tp</span>
+      </div>
+    </div>
+    <div class="arrow">&#9660;</div>
+
+    <!-- 核心框架 -->
+    <div class="layer">
+      <div class="layer-label" style="background:#a05030;">核心框架</div>
+      <div class="layer-content">
+        <span class="box sm" style="background:#a05030;">torch.Tensor</span>
+        <span class="box sm" style="background:#a05030;">autograd</span>
+        <span class="box sm" style="background:#a05030;">nn.Module</span>
+        <span class="box sm" style="background:#a05030;">c10d</span>
+        <span class="box sm" style="background:#a05030;">CUDA Graphs</span>
+        <span class="box sm" style="background:#a05030;">torch.optim</span>
+      </div>
+    </div>
+
+    <div class="arrow">&#9660;</div>
+
+    <!-- ===== 硬件层（灰色系） ===== -->
+    <div class="layer">
+      <div class="layer-label" style="background:#6b7280;">硬件层</div>
+      <div class="layer-content">
+        <span class="box sm" style="background:#8e95a1;">NCCL</span>
+        <span class="box sm" style="background:#8e95a1;">cuDNN</span>
+        <span class="box sm" style="background:#8e95a1;">CUDA</span>
+        <span class="box sm" style="background:#8e95a1;">Triton</span>
+        <span class="sep">|</span>
+        <span class="box sm" style="background:#8e95a1;">H100 / H200 / B200</span>
+        <span class="box sm" style="background:#8e95a1;">MI300X</span>
+        <span class="box sm" style="background:#8e95a1;">NVLink</span>
+        <span class="box sm" style="background:#8e95a1;">InfiniBand</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右侧：文字说明 -->
+  <div class="text-panel">
+    <div class="card">
+      <h3><span class="tag tt">TorchTitan</span> 负责什么</h3>
+      <ul>
+        <li><strong>训练编排</strong> — 训练循环、step 调度、gradient accumulation</li>
+        <li><strong>配置系统</strong> — CLI 解析、config_registry、override 机制</li>
+        <li><strong>模型架构</strong> — Llama、Qwen、DeepSeek、Flux 等模型定义</li>
+        <li><strong>并行策略</strong> — 决定用哪些并行维度、如何组合（调用 PyTorch API）</li>
+        <li><strong>训练子模块</strong> — DataLoader、Optimizer、Checkpoint、Metrics 等</li>
+        <li><strong>激活检查点</strong> — Selective / Full / MemoryBudget AC</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3><span class="tag pt">PyTorch</span> 提供什么</h3>
+      <ul>
+        <li><strong>集合通信</strong> — all-reduce、all-gather、reduce-scatter</li>
+        <li><strong>DeviceMesh</strong> — 多维设备拓扑抽象</li>
+        <li><strong>DTensor</strong> — Shard / Replicate / Partial 分布式张量</li>
+        <li><strong>FSDP2 / TP / PP / CP</strong> — 原生并行实现</li>
+        <li><strong>torch.compile</strong> — Dynamo → Inductor 编译流水线</li>
+        <li><strong>自动微分</strong> — autograd 引擎、CUDA Graphs</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>边界原则</h3>
+      <ul>
+        <li><strong>不直接调用 NCCL</strong> — 所有通信走 <code>torch.distributed</code></li>
+        <li><strong>不写 CUDA kernel</strong> — 依赖 PyTorch + Triton</li>
+        <li><strong>TorchTitan = 策略 + 编排</strong></li>
+        <li><strong>PyTorch = 原语 + 执行</strong></li>
+        <li>唯一硬依赖：<code>torch</code></li>
+      </ul>
+    </div>
+
+    <div class="footer">
+      <span>约 6.9 万行 Python</span>
+      <span>|</span>
+      <span>torchtitan/</span>
+      <span>|</span>
+      <span>github.com/pytorch/torchtitan</span>
+    </div>
+  </div>
+</div>
+
+<script src="common.js"></script>
+</body>
+</html>

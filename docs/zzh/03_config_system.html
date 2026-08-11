@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>03 · 配置系统</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main>
+  <h1>03 · 配置系统</h1>
+  <p class="page-meta">层次：<span class="layer-tag layer-mid">关键技术</span> 目标：理解 <code>--module/--config</code>、tyro CLI 覆盖、<code>Configurable.build()</code>、<code>--override.imports</code> 与 <code>ModelSpec</code>。</p>
+
+  <div class="toc">
+    <b>本页目录</b>
+    <a href="#what">1. 配置从哪来：两种来源与优先级</a>
+    <a href="#manager">2. ConfigManager：加载与合并</a>
+    <a href="#build">3. Configurable.build()：配置 → 对象的递归机制</a>
+    <a href="#cli">4. CLI 覆盖语法 &lt;section&gt;.&lt;key&gt;=val</a>
+    <a href="#override">5. override 机制：无需改 config_registry</a>
+    <a href="#modelspec">6. ModelSpec：把配置绑定成可训练任务</a>
+    <a href="#trainer-config">7. Trainer.Config：顶层容器</a>
+  </div>
+
+  <h2 id="what">1. 配置从哪来：两种来源与优先级</h2>
+  <p>torchtitan 的配置由两层叠加：</p>
+  <table>
+    <tr><th>来源</th><th>含义</th><th>优先级</th></tr>
+    <tr><td><code>config_registry.py</code> 函数</td><td>某模型（如 <code>llama3_8b</code>）返回的 <code>Trainer.Config</code>，含全部默认值</td><td>低（基线）</td></tr>
+    <tr><td>CLI 参数</td><td><code>--module llama3 --config llama3_8b</code> 选函数；<code>--training.steps=10</code> 等覆盖个别字段</td><td>高（覆盖基线）</td></tr>
+  </table>
+  <p>优先级：<b>CLI args &gt; config_registry 函数默认值</b>。代码里写死的是「合理默认」，命令行做的是「针对本次运行的微调」。</p>
+
+  <h2 id="manager">2. ConfigManager：加载与合并</h2>
+  <pre><code><span class="cmt"># config/manager.py 节选</span>
+<span class="kw">class</span> <span class="cls">ConfigManager</span>:
+    <span class="kw">def</span> <span class="fn">parse_args</span>(self, args=None):
+        loaded_config, args = self.<span class="fn">_load_config</span>(args)   <span class="cmt"># 解析 --module/--config</span>
+        config_cls = type(loaded_config)
+        self.config = tyro.<span class="fn">cli</span>(config_cls, args=args,
+                              default=loaded_config, registry=custom_registry)
+        self.<span class="fn">_validate_config</span>()
+        <span class="kw">return</span> self.config</code></pre>
+  <p>关键点：</p>
+  <ul>
+    <li><code>_load_config</code> 先从 args 剥离 <code>--module</code> / <code>--config</code>，再用 importlib 找到 <code>torchtitan.models.&lt;module&gt;.config_registry</code>，调用其中的配置函数（如 <code>llama3_8b()</code>）拿到基线 <code>Trainer.Config</code>。</li>
+    <li>支持「短名」与「完全限定路径」两种 <code>--module</code>（见 <code>_supported_models</code> 集合：<code>deepseek_v3, flux, gpt_oss, llama3, qwen3, qwen3_5</code>）。</li>
+    <li><code>register_tyro_rules</code> 注册了 <code>list[str]</code> 的逗号分隔解析（如 <code>--compile.components=model,loss</code>）。</li>
+    <li>最终用 <code>tyro.cli(..., default=loaded_config)</code> 把 CLI 覆盖 merge 进基线 —— tyro 直接作用在 dataclass 树上的类型安全解析。</li>
+  </ul>
+
+  <h2 id="build">3. Configurable.build()：配置 → 对象的递归机制</h2>
+  <p>这是整个框架「声明式」的核心。每个嵌套配置对象都能 <code>.build()</code> 出对应类实例，且会自动递归构建子配置。</p>
+  <div class="dia col" style="gap:6px">
+    <div class="flow-step"><span class="num">1</span><span class="step-title">声明</span>　类继承 <code>Configurable</code>，内嵌 <code>class Config(Configurable.Config)</code>（kw_only+slots）</div>
+    <div class="flow-step"><span class="num">2</span><span class="step-title">接线</span>　<code>__init_subclass__</code> 把 <code>Config._owner</code> 指向拥有类</div>
+    <div class="flow-step"><span class="num">3</span><span class="step-title">构建</span>　<code>config.build()</code> → <code>self._owner(config=replace(self))</code>，等价于 <code>Owner(config)</code></div>
+    <div class="flow-step"><span class="num">4</span><span class="step-title">递归</span>　Owner.__init__ 里再对子配置 <code>child_config.build()</code>（如 Decoder 对每个 layer_config.build()）</div>
+  </div>
+  <pre><code><span class="cmt"># 模型树的自顶向下构建（decoder.py）</span>
+self.tok_embeddings = config.tok_embeddings.<span class="fn">build</span>()
+self.layers = <span class="cls">ModuleDict</span>()
+<span class="kw">for</span> i, layer_config <span class="kw">in</span> enumerate(config.layers):
+    self.layers[str(i)] = layer_config.<span class="fn">build</span>()   <span class="cmt"># 每个 TransformerBlock 又构建自己的子模块</span>
+self.norm      = config.norm.<span class="fn">build</span>()
+self.lm_head   = config.lm_head.<span class="fn">build</span>()</code></pre>
+  <div class="callout warn">
+    <div class="title">build() 的两种模式</div>
+    <ul>
+      <li>无 kwargs：<code>self._owner(config=replace(self))</code> —— 纯配置驱动。</li>
+      <li>有 kwargs：<code>self._owner(config=replace(self), **kwargs)</code> —— 把运行时对象（tokenizer、dataloader、optimizer 等）传进去。<b>kwargs 不能和 config 字段重名</b>，否则直接报错。</li>
+    </ul>
+  </div>
+
+  <h3>3.1 为什么 Trainer 本身也是 Configurable</h3>
+  <p><code>Trainer(Stateful, Configurable)</code>，所以 <code>train.py</code> 里那句 <code>trainer = config.build()</code> 就是把 <code>Trainer.Config</code> 变成 <code>Trainer</code> 实例。注意 <code>model_spec</code> 字段被 <code>tyro.conf.Suppress</code> 压制，永远由模型注册表在构造前程序化设置（见 §6）。</p>
+
+  <h2 id="cli">4. CLI 覆盖语法 <code>&lt;section&gt;.&lt;key&gt;=val</code></h2>
+  <p>任意嵌套字段都能用「点路径」覆盖：</p>
+  <pre><code><span class="cmt"># 例：把 llama3 debug 模型的步数改为 20、开启编译、TP=2</span>
+MODULE=llama3 CONFIG=llama3_debugmodel ./run_train.sh \
+  --training.steps=20 \
+  --compile.enable \
+  --parallelism.tensor_parallel_degree=2 \
+  --checkpoint.interval=5</code></pre>
+  <div class="callout info">
+    <div class="title">调试配置（无需 GPU）</div>
+    <code>NGPU=32 COMM_MODE=fake_backend ./run_train.sh</code> 只校验配置与网格构建（不建真 NCCL）。
+    <code>NGPU=32 COMM_MODE=local_tensor ./run_train.sh</code> 用 LocalTensor 模拟多卡数值（模型不真正初始化，跳过训练）。
+  </div>
+
+  <h2 id="override">5. override 机制：无需改 config_registry</h2>
+  <p>想替换某个组件（优化器、损失、注意力后端……）而不碰 <code>config_registry</code>？用 <code>--override.imports</code> 列出注册了 <code>@override</code> 工厂的模块，<code>apply_overrides</code> 在 <code>update_from_config</code> 之后、所有组件构建之前把它们换掉。</p>
+  <pre><code><span class="cmt"># trainer.py __init__</span>
+<span class="kw">if</span> config.override.imports:
+    <span class="fn">apply_overrides</span>(config.override, config)</code></pre>
+  <ul>
+    <li>覆盖按 FQN glob 精确 targeting 单个实例（「per-instance targeting」）。</li>
+    <li>能替换任意 <code>Configurable</code>（模型子组件、优化器、损失……）。</li>
+    <li>应用时机：<b>在 <code>update_from_config</code> 之后</b>（它先在非覆盖模块上设好 sharding config），<b>在所有组件 build 之前</b>。</li>
+  </ul>
+  <div class="callout key">
+    <div class="title">traverse() 是 override 能命中深层组件的关键</div>
+    <code>Configurable.Config.traverse(config_cls)</code> 递归遍历 dataclass 树（包括 list 内元素），产出 <code>(fqn, config, parent, field_name)</code>，使 override 能用 FQN 定位到任意嵌套子配置（如 <code>layers.0.attention</code>）。<code>ModelSpec.traverse</code> 则把模型 config 暴露给遍历器，否则会在 Trainer.Config 处停止。
+  </div>
+
+  <h2 id="modelspec">6. ModelSpec：把配置绑定成可训练任务</h2>
+  <p>每个 <code>config_registry</code> 函数返回的 <code>Trainer.Config</code> 里都带一个 <code>model_spec</code>，由 <code>model_registry("8B")</code> 之类的工厂构造：</p>
+  <pre><code><span class="cmt"># models/llama3/config_registry.py</span>
+<span class="kw">def</span> <span class="fn">llama3_8b</span>() -> <span class="cls">Trainer</span>.<span class="cls">Config</span>:
+    model_spec = <span class="fn">model_registry</span>(<span class="str">"8B"</span>)
+    <span class="kw">return</span> <span class="cls">Trainer</span>.<span class="cls">Config</span>(
+        model_spec=model_spec,
+        loss=<span class="cls">ChunkedLossWrapper</span>.<span class="cls">Config</span>(loss_fn=<span class="cls">CrossEntropyLoss</span>.<span class="cls">Config</span>(...)),
+        optimizer=<span class="fn">default_adamw</span>(lr=3e-4),
+        training=<span class="cls">TrainingConfig</span>(seq_len=8192, steps=1000),
+        parallelism=<span class="cls">ParallelismConfig</span>(tensor_parallel_degree=8),  <span class="cmt"># 有的模型</span>
+        ...
+    )</code></pre>
+  <p><code>ModelSpec</code> 把四样东西打包在一起（<code>protocols/model_spec.py</code>）：</p>
+  <table>
+    <tr><th>字段</th><th>作用</th></tr>
+    <tr><td><code>name</code> / <code>flavor</code></td><td>标识模型（如 <code>"llama3"</code> / <code>"8B"</code>）</td></tr>
+    <tr><td><code>model</code></td><td>一个 <code>BaseModel.Config</code>（含所有超参与 sharding 声明）</td></tr>
+    <tr><td><code>parallelize_fn</code></td><td>应用 TP/SP/AC/compile/FSDP 的函数（如 <code>parallelize_llama</code>）</td></tr>
+    <tr><td><code>pipelining_fn</code></td><td>仅 PP 模型需要（<code>pipeline_llm</code>）；否则 <code>None</code></td></tr>
+    <tr><td><code>state_dict_adapter</code></td><td>HF 权重 ↔ torchtitan 权重的互操作适配器</td></tr>
+  </table>
+
+  <h2 id="trainer-config">7. Trainer.Config：顶层容器</h2>
+  <p><code>Trainer.Config</code> 是一个嵌套 dataclass，把训练所需的<b>全部</b>子系统配置收在一处（<code>__post_init__</code> 里做若干交叉校验，如 spmd_types + PP 不允许 typechecking）：</p>
+  <table>
+    <tr><th>字段</th><th>类型默认值</th><th>含义</th></tr>
+    <tr><td><code>model_spec</code></td><td><code>Suppress</code>（程序化设置）</td><td>见 §6</td></tr>
+    <tr><td><code>training</code></td><td><code>TrainingConfig</code></td><td>batch/seq_len/steps/dtype/梯度裁剪</td></tr>
+    <tr><td><code>parallelism</code></td><td><code>ParallelismConfig</code></td><td>各并行度、SPMD 后端、PP 调度</td></tr>
+    <tr><td><code>optimizer</code></td><td><code>OptimizersContainer.Config</code></td><td>参数组 + 优化器类型</td></tr>
+    <tr><td><code>lr_scheduler</code></td><td><code>LRSchedulersContainer.Config</code></td><td>warmup/decay 策略</td></tr>
+    <tr><td><code>loss</code></td><td><code>BaseLoss.Config</code></td><td>损失（默认 CrossEntropy）</td></tr>
+    <tr><td><code>dataloader</code> / <code>tokenizer</code></td><td>—</td><td>数据与分词</td></tr>
+    <tr><td><code>checkpoint</code></td><td><code>CheckpointManager.Config</code></td><td>保存/加载策略</td></tr>
+    <tr><td><code>activation_checkpoint</code></td><td><code>SelectiveAC.Config</code></td><td>全量/选择性/内存预算</td></tr>
+    <tr><td><code>compile</code></td><td><code>CompileConfig</code></td><td>是否编译、编译哪些组件</td></tr>
+    <tr><td><code>comm</code></td><td><code>CommConfig</code></td><td>通信模式/超时/飞行记录</td></tr>
+    <tr><td><code>validator</code> / <code>metrics</code> / <code>debug</code> / <code>override</code></td><td>—</td><td>验证、指标、调试、覆盖</td></tr>
+  </table>
+
+  <div class="callout tip">
+    <div class="title">下一步</div>
+    配置解析清楚了，接下来是「并行是怎么组织的」—— <a href="04_parallelism.html">04 并行技术</a>，重点看 <code>ParallelDims</code> 设备网格与各并行维度的落地。
+  </div>
+</main>
+<script src="common.js"></script>
+</body>
+</html>
