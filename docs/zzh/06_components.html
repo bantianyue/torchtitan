@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>06 · 训练组件</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main>
+  <h1>06 · 训练组件</h1>
+  <p class="page-meta">层次：<span class="layer-tag layer-fine">关键代码</span> 目标：数据、优化器、学习率、损失、检查点、指标的真实代码与关键设计。</p>
+
+  <div class="toc">
+    <b>本页目录</b>
+    <a href="#dataloader">1. 数据加载 Dataloader</a>
+    <a href="#optimizer">2. 优化器容器 OptimizersContainer</a>
+    <a href="#lr">3. 学习率调度 LRSchedulersContainer（WSD）</a>
+    <a href="#loss">4. 损失：CrossEntropy + ChunkedLossWrapper</a>
+    <a href="#checkpoint">5. 检查点 CheckpointManager</a>
+    <a href="#metrics">6. 指标 MetricsProcessor</a>
+  </div>
+
+  <h2 id="dataloader">1. 数据加载 Dataloader</h2>
+  <p><code>BaseDataLoader(Stateful, ABC, Configurable)</code> 要求所有数据加载器实现 <code>state_dict/load_state_dict</code>（为断点续训）。具体实现 <code>ParallelAwareDataloader</code> 继承 <code>torchdata.StatefulDataLoader</code>，知道自己的 <code>dp_rank</code> / <code>dp_world_size</code>。</p>
+  <pre><code><span class="kw">class</span> <span class="cls">ParallelAwareDataloader</span>(<span class="cls">StatefulDataLoader</span>, <span class="cls">BaseDataLoader</span>):
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, dataset, dp_rank, dp_world_size, **kwargs):
+        self.dp_world_size = dp_world_size
+        self.dp_rank = dp_rank
+        self._rank_id = <span class="str">f"dp_rank_{dp_rank}"</span>
+        <span class="kw">super</span>().__init__(dataset, **kwargs)
+
+    <span class="kw">def</span> <span class="fn">state_dict</span>(self):
+        <span class="kw">return</span> { self._rank_id: pickle.<span class="fn">dumps</span>(<span class="kw">super</span>().state_dict()),
+                 <span class="str">"world_size"</span>: self.dp_world_size }</code></pre>
+  <ul>
+    <li>状态按 <code>dp_rank</code> 分片存储，避免跨维度复制。</li>
+    <li>加载时校验 <code>dp_degree</code> 前后一致（<b>不支持 dataloader resharding</b>）。</li>
+    <li>kwargs 合法性校验：<code>num_workers=0</code> 时自动剔除 <code>persistent_workers</code> / <code>prefetch_factor</code>。</li>
+  </ul>
+  <div class="callout info">
+    <div class="title">为什么数据留在 CPU</div>
+    <code>batch_generator</code>（见 02 §3.1）yield 出的 batch 是 CPU 张量，<code>train_step</code> 逐 microbatch 上 GPU。这样梯度累积期间显存更可控，且不浪费 H2D 带宽在还没用到的小批上。
+  </div>
+
+  <h3>1.1 数据流水线:从原始文本到张量批次</h3>
+  <p>以 <code>HuggingFaceTextDataset</code> 为例(<code>hf_datasets/text_datasets.py:73-170</code>):</p>
+  <ol>
+    <li><b>文本编码</b>:<code>_tokenizer.encode(sample_text, add_bos=True, add_eos=True)</code>(<code>:135-137</code>),把原始文本转为 token id 列表。</li>
+    <li><b>流式打包</b>:token 缓冲累加,满 <code>seq_len+1</code> 时截一段(<code>:149-165</code>),<code>input = x[:-1]</code>,<code>label = x[1:]</code>(错位预测)。</li>
+    <li><b>位置编号</b>:每个 token 附带位置编号(per-document 从 0 开始),用于 RoPE(<code>:146</code>)。</li>
+    <li><b>DP 分片</b>:<code>split_dataset_by_node(ds, dp_rank, dp_world_size)</code>(<code>:95</code>),每 rank 只读自己的 1/8。</li>
+    <li><b>batch 打包</b>:<code>StatefulDataLoader</code> 按 <code>batch_size=local_batch_size</code>(<code>:278</code>)打包 → <code>[4, 8192]</code>。</li>
+    <li><b>CP 切序列</b>:<code>trainer.py:668-676</code>在 <code>post_dataloading_process</code> 中切 → <code>[4, 2048]</code>。</li>
+    <li><b>PP 微批切分</b>:<code>pp_schedule.step</code> 内部 <code>_split_inputs</code>(<code>schedules.py:559-576</code>)沿 batch 维切 → <code>4 x [1, 2048]</code>。</li>
+  </ol>
+  <p>数据流全程:文本 → token → [4,8192] → [4,2048](CP) → 4x[1,2048](PP 微批)。</p>
+
+  <h2 id="optimizer">2. 优化器容器 OptimizersContainer</h2>
+  <p>一个 <code>Trainer</code> 可能用多种优化器（比如不同参数组用不同配置，或 PP 下每 rank 多 optimizer）。<code>OptimizersContainer(Optimizer, Stateful, Configurable)</code> 把多个 optimizer 包成一个对象，对外暴露 <code>step()/zero_grad()/state_dict()</code>。</p>
+  <pre><code><span class="cmt"># optimizer.py</span>
+<span class="kw">def</span> <span class="fn">default_adamw</span>(lr=8e-4, **kwargs):
+    <span class="kw">return</span> <span class="cls">OptimizersContainer</span>.<span class="cls">Config</span>(
+        param_groups=[ <span class="cls">ParamGroupConfig</span>(
+            pattern=<span class="str">r".*"</span>,                       <span class="cmt"># 正则匹配 FQN，first-match-wins</span>
+            optimizer_name=<span class="str">"AdamW"</span>,
+            optimizer_kwargs={<span class="str">"lr"</span>: lr, <span class="str">"betas"</span>: (<span class="num">0.9</span>,<span class="num">0.95</span>),
+                             <span class="str">"eps"</span>: 1e-8, <span class="str">"weight_decay"</span>: <span class="num">0.1</span>}) ])</code></pre>
+  <ul>
+    <li><b>参数组</b>：<code>ParamGroupConfig(pattern, optimizer_name, optimizer_kwargs)</code> 用正则按 FQN 分流；同一类型合并进一个 optimizer 实例。</li>
+    <li><b>实现模式</b>：<code>fused / foreach / for-loop / fused_opt_states_bf16</code>；<code>fused_opt_states_bf16</code> 用 pre-hook 把 Adam 状态建为 bf16，走融合 CUDA kernel 的混合精度路径。</li>
+    <li><b>状态扁平化</b>：<code>state_dict()</code> 返回 FQN 键的扁平 dict（用 <code>checkpoint_utils</code>），解决 PP 下多 stage 同 index 参数组碰撞问题。</li>
+  </ul>
+  <div class="callout key">
+    <div class="title">MoE 负载均衡 hook</div>
+    <code>register_moe_load_balancing_hook</code> 在优化器 step 前注册 pre-hook：跨 rank all-reduce 每个专家的 token 计数，按 <code>load_balance_coeff · sign(mean - per_expert)</code> 更新 expert bias，实现 aux-loss-free 负载均衡。
+  </div>
+
+  <h2 id="lr">3. 学习率调度 LRSchedulersContainer（WSD）</h2>
+  <p>同样把多个 <code>LambdaLR</code> 包成容器（每个 optimizer 一个）。调度是 <code>LambdaLR</code> 的纯函数：<code>warmup → stable → decay</code>。</p>
+  <pre><code><span class="kw">def</span> <span class="fn">linear_warmup_stable_decay</span>(current_step, warmup, stable, decay, lr_decay_type, min_lr_factor):
+    <span class="kw">if</span> current_step &lt; warmup:
+        <span class="kw">return</span> current_step / warmup                 <span class="cmt"># 线性 warmup</span>
+    <span class="kw">if</span> current_step &lt; warmup + stable:
+        <span class="kw">return</span> <span class="num">1.0</span>                                   <span class="cmt"># 稳定段</span>
+    progress = (current_step - warmup - stable) / decay
+    <span class="kw">if</span>   lr_decay_type == <span class="str">"linear"</span>: adj = <span class="num">1</span> - progress
+    <span class="kw">elif</span> lr_decay_type == <span class="str">"sqrt"</span>:   adj = <span class="num">1</span> - math.<span class="fn">sqrt</span>(progress)
+    <span class="kw">elif</span> lr_decay_type == <span class="str">"cosine"</span>: adj = <span class="num">0.5</span>*(<span class="num">1</span>+math.<span class="fn">cos</span>(math.pi*progress))
+    <span class="kw">return</span> min_lr_factor + (<span class="num">1</span> - min_lr_factor) * adj   <span class="cmt"># WSD：最底不破 min_lr</span></code></pre>
+  <ul>
+    <li><b>WSD（Warmup-Stable-Decay）</b>：<code>decay_ratio=None</code> 时 decay 紧跟 warmup；设了 <code>decay_ratio</code> 则先稳定一段再衰减（与 <code>total_steps</code> 解耦，方便用更少步调试）。</li>
+    <li><b>检查点极简</b>：只存 <code>last_epoch</code>，加载时各 scheduler 从自己 optimizer 的 <code>base_lrs</code> 重算 lr —— 对混合优化器与 resharding 都正确。</li>
+  </ul>
+
+  <h2 id="loss">4. 损失：CrossEntropy + ChunkedLossWrapper</h2>
+  <p><code>BaseLoss</code> 统一签名 <code>(pred, labels, global_valid_tokens) → (scaled_loss, metrics)</code>，内部 <code>loss = fn(...) / global_valid_tokens</code>（sum 归约再按全局 token 数归一化）。</p>
+
+  <h3>4.1 词表并行交叉熵（loss-parallel CE）</h3>
+  <p><code>cross_entropy_loss</code> 支持 vocab 沿 TP 切分：每个 rank 只持有 <code>V/tp</code> 个类，前向用 3 次 TP all-reduce（max / sumexp / gather）做分布式 log-softmax，反向融合且零额外通信（<code>_LossParallelCrossEntropy</code>）。支持不均匀 vocab 切分与 <code>IGNORE_INDEX</code>。</p>
+  <pre><code><span class="cmt"># loss.py（spmd_types 词表并行）</span>
+<span class="kw">if</span> get_spmd_backend() == <span class="str">"spmd_types"</span> <span class="kw">and</span> spmd_mesh_size(<span class="str">"tp"</span>) &gt; <span class="num">1</span>:
+    <span class="kw">return</span> <span class="cls">_LossParallelCrossEntropy</span>.<span class="fn">apply</span>(pred.flatten(<span class="num">0</span>,<span class="num">1</span>).float(),
+        labels.flatten(<span class="num">0</span>,<span class="num">1</span>), current_spmd_mesh().<span class="fn">get_group</span>(<span class="str">"tp"</span>),
+        global_vocab_size)</code></pre>
+
+  <h3>4.2 分块损失 ChunkedLossWrapper（省显存）</h3>
+  <p>大词表时，<code>[B, L, V]</code> 的 logits 峰值显存巨大。<code>ChunkedLossWrapper</code> 把 hidden states 沿序列维切成 N 段，逐 chunk 跑 <code>lm_head + CE + backward</code>，峰值从 <code>O(B·L·V)</code> 降到 <code>O(B·L/N·V)</code>：</p>
+  <div class="dia col" style="gap:4px">
+    <div class="flow-step"><span class="num">1</span><span class="step-title">模型前向 _skip_lm_head=True</span>　得到 hidden states [B, L, D]</div>
+    <div class="flow-step"><span class="num">2</span><span class="step-title">detach + 切 N 段</span>　每段作为 leaf，准备累积 .grad</div>
+    <div class="flow-step"><span class="num">3</span><span class="step-title">关 lm_head 的 reshard</span>　让权重跨 chunk 保持 unsharded，避免重复 all-gather</div>
+    <div class="flow-step"><span class="num">4</span><span class="step-title">逐 chunk</span>　lm_head(chunk) → loss_fn → backward → 把 chunk grad 汇入 GradAccumulator</div>
+    <div class="flow-step"><span class="num">5</span><span class="step-title">汇回 Decoder</span>　用自定义 autograd Function（_DecoderOutputGradientBackProp）把累积梯度作为 hidden_states 的梯度，autograd 自动穿过 decoder</div>
+  </div>
+  <div class="callout info">
+    <div class="title">为什么用自定义 autograd Function 而不是 hidden_states.backward()</div>
+    <code>_DecoderOutputGradientBackProp.backward</code> 直接返回 <code>accumulated_grad</code> 作为 hidden_states 的梯度，让 autograd 在<b>单次遍历</b>里把梯度传回 decoder，避免「图被反向两次」的错误。
+  </div>
+
+  <h2 id="checkpoint">5. 检查点 CheckpointManager</h2>
+  <p>基于 PyTorch DCP（<code>torch.distributed.checkpoint</code>），统一管理 model / optimizer / lr_scheduler / dataloader / train_state 的保存与加载。</p>
+  <ul>
+    <li><b>ModelWrapper</b>：把多个 model part（PP 下）的 state_dict 扁平合并成一个稳定存储的视图，供 DCP 读写。TP 下自动把分片张量 consolidate 成完整张量。</li>
+    <li><b>保存时机</b>：<code>_should_save</code> = 首步（若开启）/ 间隔命中 / 末步。<code>last_save_model_only</code> 在训练结束时只存模型（可 <code>torch.load(..., weights_only=True)</code> 直接读）。</li>
+    <li><b>异步模式</b>：
+      <table>
+        <tr><th>模式</th><th>行为</th></tr>
+        <tr><td><code>disabled</code></td><td>同步落盘，训练循环阻塞到写完</td></tr>
+        <tr><td><code>async</code></td><td>线程 + <code>async_save</code>；仅 GPU→CPU 搬运阻塞，之后后台写盘</td></tr>
+        <tr><td><code>async_with_pinned_mem</code></td><td>独立进程 + 预分配 pinned 共享内存；训练几乎零阻塞（&lt;1s），但 CPU RAM 占用高</td></tr>
+      </table>
+    </li>
+    <li><b>HF 互操作</b>：<code>initial_load_in_hf</code> / <code>last_save_in_hf</code> 通过 <code>state_dict_adapter</code> 把权重在 torchtitan 原生格式与 HF safetensors 之间转换（含分片合并 <code>consolidate_safetensors_files_on_every_rank</code>）。</li>
+  </ul>
+  <div class="callout warn">
+    <div class="title">PP + 优化器状态碰撞</div>
+    各 PP rank 的 optimizer 用 index-based param_group（rank0 的 group[0] 是 layers.0，rank1 的 group[0] 是 layers.1），直接保存会互相覆盖。解决方式是对 optimizer 做<b>扁平化</b>（FQN 键），保证所有 part 的 state 不冲突。这是 <code>OptimizersContainer.state_dict</code> 返回扁平 dict 的原因。
+  </div>
+  <ul>
+    <li><b>DCP 保存流程</b>:<code>checkpointer.save(step)</code>(<code>trainer.py:899-902</code>)→ <code>_save</code> 收集 model_part/optimizer/scheduler/dataloader/train_state 的 state_dict → <code>distributed.checkpoint.save</code> 写入存储路径。</li>
+    <li><b>DCP 加载流程</b>:<code>checkpointer.load(step)</code>(<code>trainer.py:873</code>)→ <code>_load</code> 从存储路径读 → <code>distributed.checkpoint.load</code> 恢复到各组件。支持从指定 step 恢复(<code>config.checkpoint.load_step</code>)。</li>
+    <li><b>TP 分片合并</b>:<code>state_dict_adapter</code> 在保存时可以 <code>consolidate_safetensors_files_on_every_rank</code> 把 DTensor 分片合并为完整张量,方便 HF 格式加载。</li>
+    <li><b>DCP 限制</b>:不支持 dataloader resharding(<code>dp_degree</code> 前后不一致时报错);optimizer 状态需扁平化(PP 下避免碰撞)。</li>
+  </ul>
+
+  <h2 id="metrics">6. 指标 MetricsProcessor</h2>
+  <ul>
+    <li><b>聚合</b>：仅当 <code>should_log(step)</code> 为真才聚合；跨 DP/CP 用 <code>loss_mesh</code> 做 all-reduce 求 <code>global_avg_loss</code> / <code>global_max_loss</code> / <code>n_tokens_seen</code>。</li>
+    <li><b>MFU</b>：用 <code>get_peak_flops(device)</code> 与 <code>num_flops_per_token</code>（模型 <code>get_nparams_and_flops</code> 算出）估算模型算力利用率。</li>
+    <li><b>输出</b>：stdout（默认）、TensorBoard（<code>enable_tensorboard</code>）、以及结构化 <code>structured_logger</code> 的 Gantt/step_state（用于性能分析）。</li>
+  </ul>
+  <pre><code><span class="cmt"># trainer.py 指标聚合（DP/CP 开启时）</span>
+local_avg_loss = loss * global_valid_tokens / local_valid_tokens
+global_avg_loss, global_max_loss, global_ntokens_seen = (
+    dist_utils.<span class="fn">dist_sum</span>(loss, loss_mesh),
+    dist_utils.<span class="fn">dist_max</span>(local_avg_loss, loss_mesh),
+    dist_utils.<span class="fn">dist_sum</span>(torch.tensor(self.ntokens_seen, ...), loss_mesh),
+)</code></pre>
+
+  <h2 id="validator">7. 验证器 Validator</h2>
+  <p><code>Validator</code> 在训练循环中被周期性调用(<code>trainer.py:905-908</code>),使用与训练相同的 loss 路径(forward-only),不产生梯度。</p>
+  <ul>
+    <li><b>使用训练 loss 函数</b>:<code>ChunkedLossWrapper</code> 在验证时走<code>requires_grad=False</code>分支(<code>loss.py:622</code>),只做 forward 和 loss 计算,不触发 backward 和 GradAccumulator。</li>
+    <li><b>验证频率</b>:<code>validator.freq</code> 配置,在 <code>trainer.py:905-908</code> 检查 <code>should_validate(step)</code>。</li>
+    <li><b>DP/CP 归约</b>:与训练相同,loss 在 <code>loss_mesh</code> 上 all-reduce。</li>
+  </ul>
+
+  <div class="callout tip">
+    <div class="title">下一步</div>
+    组件逐个看过了，最后把这些落到「真实代码走读」—— <a href="07_code_walkthrough.html">07 关键代码走读</a>，逐段注释 <code>Trainer.__init__</code>、<code>parallelize_llama</code>、<code>apply_fsdp_to_decoder</code>、PP 调度与前向反向。
+  </div>
+</main>
+<script src="common.js"></script>
+</body>
+</html>

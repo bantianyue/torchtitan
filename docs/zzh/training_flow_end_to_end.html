@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>端到端训练流程 · 各并行策略如何运用（Llama3-8B）</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    --tp:#3498db; --sp:#f1c40f; --cp:#e74c3c; --pp:#1abc9c;
+    --dp:#2ecc71; --fsdp:#e67e22; --ep:#9b59b6;
+    --bg:#0d0f14; --card:#161a22; --txt:#d7dde6; --dim:#8b94a3; --line:#272d39; --acc:#9be0a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1200px;margin:0 auto;padding:26px 20px 90px}
+  h1{font-size:26px;margin:.2em 0 .1em;color:#fff}
+  h2{font-size:21px;margin:1.6em 0 .4em;padding-bottom:7px;border-bottom:2px solid var(--line);
+    color:#fff;display:flex;align-items:center;gap:10px}
+  .num{color:#0d0f14;width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;
+    justify-content:center;font-size:15px;font-weight:800}
+  h3{font-size:16.5px;margin:1.1em 0 .35em;color:#cdd4df}
+  p{margin:.5em 0}
+  code{background:#0a0c11;border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+    font-family:"JetBrains Mono",Consolas,Menlo,monospace;font-size:13px;color:var(--acc)}
+  .shape{font-family:"JetBrains Mono",Consolas,monospace;font-size:12.5px;color:var(--acc)}
+  .sub{color:var(--dim);font-size:12.5px}
+  svg{display:block;margin:6px auto;max-width:100%;height:auto}
+  .figcap{text-align:center;color:var(--dim);font-size:12px;margin:2px 0 16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:.9em 0}
+  .note{border-left:3px solid var(--tp);padding:7px 13px;background:#11161e;border-radius:0 6px 6px 0;margin:.6em 0}
+  table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#1c212c;color:#eef2f8;font-weight:600}
+  tr:nth-child(even) td{background:#11151c}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;font-weight:700;color:#0d0f14}
+  .t-tp{background:var(--tp)} .t-sp{background:var(--sp)} .t-cp{background:var(--cp)}
+  .t-pp{background:var(--pp)} .t-dp{background:var(--dp)} .t-fsdp{background:var(--fsdp)} .t-ep{background:var(--ep);color:#fff}
+  .pal{display:inline-flex;align-items:center;gap:6px;margin:3px 10px 3px 0;font-size:12.5px}
+  .pal i{width:13px;height:13px;border-radius:3px;display:inline-block}
+  .hero{background:linear-gradient(135deg,#161a22,#0f1620);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:14px 0}
+  ul{margin:.3em 0;padding-left:22px} li{margin:.2em 0}
+  .act{background:#11241a !important;color:#9be0a3 !important}
+  .no{background:#11151c !important;color:#8b94a3 !important}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="wrap">
+
+<h1>端到端训练流程 · 各并行策略如何运用</h1>
+<p class="sub">Llama3-8B · 192 GPU · TP=2 / SP=2 / CP=4 / PP=3 / FSDP=8 / dp_replicate=1。从输入 -> 模型各结构 -> 前向 -> loss -> 反向 -> 更新梯度，每步标出哪些并行在起作用。</p>
+
+<div class="hero">
+<span class="pal"><i style="background:#2ecc71"></i>DP=8（切 batch）</span>
+<span class="pal"><i style="background:#e67e22"></i>FSDP=8（切参数）</span>
+<span class="pal"><i style="background:#3498db"></i>TP=2（切特征/head/vocab）</span>
+<span class="pal"><i style="background:#f1c40f"></i>SP=2（切激活序列）</span>
+<span class="pal"><i style="background:#e74c3c"></i>CP=4（切 attention 序列）</span>
+<span class="pal"><i style="background:#1abc9c"></i>PP=3（切层）</span>
+</div>
+
+<!-- ============ 图1 master (U-shape) ============ -->
+<h2><span class="num" style="background:linear-gradient(135deg,#3498db,#e67e22);color:#fff">1</span>总流程图：从输入到梯度更新（U 形：左列前向往下，右列反向往上，顶部循环回）</h2>
+<svg viewBox="0 0 1160 880" font-family="monospace" font-size="12">
+  <defs><marker id="m1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#8b94a3"/></marker></defs>
+  <!-- column headers -->
+  <text x="305" y="22" text-anchor="middle" fill="#2ecc71" font-weight="700" font-size="14">前向 forward ↓</text>
+  <text x="875" y="22" text-anchor="middle" fill="#f0ad4e" font-weight="700" font-size="14">反向+优化 backward ↑</text>
+
+  <!-- ===== LEFT column forward (top->bottom), x=70 w=470 stride 84 h=56 ===== -->
+  <g transform="translate(70,40)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="14" y="20" fill="#2ecc71" font-weight="700">① 数据加载</text>
+    <text x="14" y="36" fill="#9be0a3" font-size="11">global [64,8192] -> DP÷8 -> 每rank每步 [8,8192]</text>
+    <text x="14" y="50" fill="#9be0a3" font-size="11">  -> 梯度累积微批÷2 -> 每梯度累积微批[4,8192]</text>
+    <rect x="410" y="10" width="34" height="14" rx="3" fill="#2ecc71"/><text x="427" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">DP</text>
+  </g>
+  <line x1="305" y1="96" x2="305" y2="124" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,124)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="14" y="20" fill="#e74c3c" font-weight="700">② CP 预切 + PP 微批</text>
+    <text x="14" y="38" fill="#9be0a3">CP÷4 -> [4,2048] -> ÷PP微批=1 -> 4个PP微批[1,2048]</text>
+    <rect x="380" y="10" width="34" height="14" rx="3" fill="#e74c3c"/><text x="397" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">CP</text>
+    <rect x="418" y="10" width="34" height="14" rx="3" fill="#1abc9c"/><text x="435" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">PP</text>
+  </g>
+  <line x1="305" y1="180" x2="305" y2="208" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,208)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="14" y="20" fill="#e67e22" font-weight="700">③ FSDP all-gather 参数</text>
+    <text x="14" y="38" fill="#9be0a3">每层算之前把 1/8 分片拼成完整参数</text>
+    <rect x="404" y="10" width="40" height="14" rx="3" fill="#e67e22"/><text x="424" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">FSDP</text>
+  </g>
+  <line x1="305" y1="264" x2="305" y2="292" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,292)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="14" y="20" fill="#3498db" font-weight="700">④ tok_embeddings</text>
+    <text x="14" y="38" fill="#9be0a3">[1,2048] -> [1,1024,4096]（切vocab + reduce-scatter到SP）</text>
+    <rect x="380" y="10" width="34" height="14" rx="3" fill="#3498db"/><text x="397" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">TP</text>
+    <rect x="418" y="10" width="34" height="14" rx="3" fill="#f1c40f"/><text x="435" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">SP</text>
+  </g>
+  <line x1="305" y1="348" x2="305" y2="376" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,376)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+    <text x="14" y="20" fill="#1abc9c" font-weight="700">⑤ PP stage0：layers 0-10</text>
+    <text x="14" y="38" fill="#9be0a3">每层 norm+attn+ffn（见放大图②）+ FSDP reshard</text>
+    <g font-size="9" font-weight="700" text-anchor="middle">
+      <rect x="270" y="10" width="34" height="14" rx="3" fill="#1abc9c"/><text x="287" y="21" fill="#0d0f14">PP</text>
+      <rect x="308" y="10" width="34" height="14" rx="3" fill="#3498db"/><text x="325" y="21" fill="#0d0f14">TP</text>
+      <rect x="346" y="10" width="34" height="14" rx="3" fill="#f1c40f"/><text x="363" y="21" fill="#0d0f14">SP</text>
+      <rect x="384" y="10" width="34" height="14" rx="3" fill="#e74c3c"/><text x="401" y="21" fill="#0d0f14">CP</text>
+      <rect x="422" y="10" width="40" height="14" rx="3" fill="#e67e22"/><text x="442" y="21" fill="#0d0f14">FSDP</text>
+    </g>
+  </g>
+  <line x1="305" y1="432" x2="305" y2="460" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,460)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+    <text x="14" y="20" fill="#1abc9c" font-weight="700">⑥ PP stage1：layers 11-21</text>
+    <text x="14" y="38" fill="#9be0a3">p2p 收 hidden -> 同结构算 -> p2p 发 hidden</text>
+    <g font-size="9" font-weight="700" text-anchor="middle">
+      <rect x="270" y="10" width="34" height="14" rx="3" fill="#1abc9c"/><text x="287" y="21" fill="#0d0f14">PP</text>
+      <rect x="308" y="10" width="34" height="14" rx="3" fill="#3498db"/><text x="325" y="21" fill="#0d0f14">TP</text>
+      <rect x="346" y="10" width="34" height="14" rx="3" fill="#f1c40f"/><text x="363" y="21" fill="#0d0f14">SP</text>
+      <rect x="384" y="10" width="34" height="14" rx="3" fill="#e74c3c"/><text x="401" y="21" fill="#0d0f14">CP</text>
+      <rect x="422" y="10" width="40" height="14" rx="3" fill="#e67e22"/><text x="442" y="21" fill="#0d0f14">FSDP</text>
+    </g>
+  </g>
+  <line x1="305" y1="516" x2="305" y2="544" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,544)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+    <text x="14" y="20" fill="#1abc9c" font-weight="700">⑦ PP stage2：layers 22-31（末阶段）</text>
+    <text x="14" y="38" fill="#9be0a3">同结构算，末层持 lm_head</text>
+    <g font-size="9" font-weight="700" text-anchor="middle">
+      <rect x="270" y="10" width="34" height="14" rx="3" fill="#1abc9c"/><text x="287" y="21" fill="#0d0f14">PP</text>
+      <rect x="308" y="10" width="34" height="14" rx="3" fill="#3498db"/><text x="325" y="21" fill="#0d0f14">TP</text>
+      <rect x="346" y="10" width="34" height="14" rx="3" fill="#f1c40f"/><text x="363" y="21" fill="#0d0f14">SP</text>
+      <rect x="384" y="10" width="34" height="14" rx="3" fill="#e74c3c"/><text x="401" y="21" fill="#0d0f14">CP</text>
+      <rect x="422" y="10" width="40" height="14" rx="3" fill="#e67e22"/><text x="442" y="21" fill="#0d0f14">FSDP</text>
+    </g>
+  </g>
+  <line x1="305" y1="600" x2="305" y2="628" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,628)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="14" y="20" fill="#3498db" font-weight="700">⑧ root norm + lm_head</text>
+    <text x="14" y="38" fill="#9be0a3">[1,1024,4096]->gather->[1,2048,4096]->[1,2048,64128]</text>
+    <rect x="380" y="10" width="34" height="14" rx="3" fill="#f1c40f"/><text x="397" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">SP</text>
+    <rect x="418" y="10" width="34" height="14" rx="3" fill="#3498db"/><text x="435" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">TP</text>
+  </g>
+  <line x1="305" y1="684" x2="305" y2="712" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,712)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#9be0a3" stroke-width="2"/>
+    <text x="14" y="20" fill="#c8d0dc" font-weight="700">⑨ ChunkedLoss（CE）</text>
+    <text x="14" y="38" fill="#9be0a3">logits[1,2048,64128]+labels -> 标量 loss</text>
+    <rect x="410" y="10" width="34" height="14" rx="3" fill="#3498db"/><text x="427" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">TP</text>
+  </g>
+  <line x1="305" y1="768" x2="305" y2="796" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(70,796)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="14" y="20" fill="#2ecc71" font-weight="700">⑩ valid_tokens all-reduce</text>
+    <text x="14" y="38" fill="#9be0a3">loss_mesh=dp·cp=32 上求和（loss 除以 global_valid_tokens）</text>
+    <rect x="380" y="10" width="34" height="14" rx="3" fill="#2ecc71"/><text x="397" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">DP</text>
+    <rect x="418" y="10" width="34" height="14" rx="3" fill="#e74c3c"/><text x="435" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">CP</text>
+  </g>
+
+  <!-- ===== connector L10 -> R1 (bottom, loss -> backward) ===== -->
+  <line x1="540" y1="824" x2="640" y2="824" stroke="#f0ad4e" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#m1)"/>
+  <text x="590" y="816" text-anchor="middle" fill="#f0ad4e" font-size="11">loss 标量</text>
+
+  <!-- ===== RIGHT column backward+optim (bottom->top), x=640 w=470 stride 126 h=56 ===== -->
+  <g transform="translate(640,796)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#f0ad4e" stroke-width="2"/>
+    <text x="14" y="20" fill="#f0ad4e" font-weight="700">⑪ loss.backward()</text>
+    <text x="14" y="38" fill="#9be0a3">逐层梯度回流，每条前向通信都有反向对偶</text>
+    <text x="300" y="20" fill="#8b94a3" font-size="10">全部并行反向</text>
+  </g>
+  <line x1="875" y1="796" x2="875" y2="726" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(640,670)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="14" y="20" fill="#3498db" font-weight="700">⑫ TP 梯度通信</text>
+    <text x="14" y="38" fill="#9be0a3">列并行: grad all-reduce | 行并行: grad all-gather</text>
+    <rect x="410" y="10" width="34" height="14" rx="3" fill="#3498db"/><text x="427" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">TP</text>
+  </g>
+  <line x1="875" y1="670" x2="875" y2="600" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(640,544)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+    <text x="14" y="20" fill="#f1c40f" font-weight="700">⑬ SP + CP 反向</text>
+    <text x="14" y="38" fill="#9be0a3">all-gather/reduce-scatter 反向 | K/V grad reduce(CP)</text>
+    <rect x="380" y="10" width="34" height="14" rx="3" fill="#f1c40f"/><text x="397" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">SP</text>
+    <rect x="418" y="10" width="34" height="14" rx="3" fill="#e74c3c"/><text x="435" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">CP</text>
+  </g>
+  <line x1="875" y1="544" x2="875" y2="474" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(640,418)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#1abc9c" stroke-width="2"/>
+    <text x="14" y="20" fill="#1abc9c" font-weight="700">⑭ PP stage 间 grad p2p</text>
+    <text x="14" y="38" fill="#9be0a3">梯度沿 stage 反向传（末->首）</text>
+    <rect x="410" y="10" width="34" height="14" rx="3" fill="#1abc9c"/><text x="427" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">PP</text>
+  </g>
+  <line x1="875" y1="418" x2="875" y2="348" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(640,292)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="14" y="20" fill="#e67e22" font-weight="700">⑮ FSDP 梯度分片</text>
+    <text x="14" y="38" fill="#9be0a3">param all-gather(bwd) + grad reduce-scatter -> 1/8 grad</text>
+    <rect x="404" y="10" width="40" height="14" rx="3" fill="#e67e22"/><text x="424" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">FSDP</text>
+  </g>
+  <line x1="875" y1="292" x2="875" y2="222" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(640,166)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#2ecc71" stroke-width="2"/>
+    <text x="14" y="20" fill="#2ecc71" font-weight="700">⑯ 梯度累加 + clip_grad_norm</text>
+    <text x="14" y="38" fill="#9be0a3">梯度累积微批2×PP微批4=8 | 范数 all-reduce(pp_mesh)</text>
+    <rect x="380" y="10" width="34" height="14" rx="3" fill="#2ecc71"/><text x="397" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">DP</text>
+    <rect x="418" y="10" width="34" height="14" rx="3" fill="#1abc9c"/><text x="435" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">PP</text>
+  </g>
+  <line x1="875" y1="166" x2="875" y2="96" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m1)"/>
+
+  <g transform="translate(640,40)">
+    <rect width="470" height="56" rx="8" fill="#0e1219" stroke="#e67e22" stroke-width="2"/>
+    <text x="14" y="20" fill="#e67e22" font-weight="700">⑰ optimizer.step + 收尾</text>
+    <text x="14" y="38" fill="#9be0a3">AdamW 在 1/8 分片上更新 -> lr -> checkpoint(DCP)</text>
+    <rect x="404" y="10" width="40" height="14" rx="3" fill="#e67e22"/><text x="424" y="21" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">FSDP</text>
+  </g>
+
+  <!-- ===== loop-back R7 -> L1 (top, next optimizer step) ===== -->
+  <line x1="640" y1="68" x2="540" y2="68" stroke="#8b94a3" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#m1)"/>
+  <text x="590" y="60" text-anchor="middle" fill="#8b94a3" font-size="11">下一个优化步 -> ①</text>
+</svg>
+<p class="figcap">图 1：端到端总流程（U 形）。前向 ①-⑩ 沿左列向下，loss 标量从左下接到右下 ⑪ 反向，反向+优化 ⑪-⑰ 沿右列向上，⑰ 优化器经顶部虚线循环回 ① 进入下一个优化步。每框右上角彩色标签 = 该步活跃的并行策略。</p>
+
+<div class="card">
+<h3>逐阶段文字说明</h3>
+<table>
+<tr><th>阶段</th><th>做什么</th><th>活跃并行</th></tr>
+<tr><td>① 数据加载</td><td>global batch 64 按 DP=8 切，每 rank 每步 8 条（÷梯度累积微批=2 -> 每梯度累积微批 4 条）</td><td><span class="tag t-dp">DP</span></td></tr>
+<tr><td>② CP 预切 + PP 微批</td><td>序列按 CP=4 切成 2048；batch 按 PP微批=1 拆 4 个 PP微批</td><td><span class="tag t-cp">CP</span> <span class="tag t-pp">PP</span></td></tr>
+<tr><td>③ FSDP all-gather</td><td>每层算之前把 1/8 参数分片拼成完整参数（短暂全量）</td><td><span class="tag t-fsdp">FSDP</span></td></tr>
+<tr><td>④ tok_embeddings</td><td>token id -> hidden，vocab 按 TP 切，输出 reduce-scatter 到 SP</td><td><span class="tag t-tp">TP</span> <span class="tag t-sp">SP</span></td></tr>
+<tr><td>⑤⑥⑦ 三阶段前向</td><td>每阶段 ~11 层，层内 norm(SP)+attn(TP/SP/CP)+ffn(TP/SP)；算完 FSDP reshard；stage 间 p2p 传 hidden</td><td><span class="tag t-pp">PP</span> <span class="tag t-tp">TP</span> <span class="tag t-sp">SP</span> <span class="tag t-cp">CP</span> <span class="tag t-fsdp">FSDP</span></td></tr>
+<tr><td>⑧ root norm + lm_head</td><td>gather TP 回完整序列，lm_head 切 vocab 出 logits</td><td><span class="tag t-sp">SP</span> <span class="tag t-tp">TP</span></td></tr>
+<tr><td>⑨ ChunkedLoss</td><td>logits(TP 切 vocab) 分块 CE，得标量 loss</td><td><span class="tag t-tp">TP</span></td></tr>
+<tr><td>⑩ valid_tokens all-reduce</td><td>loss_mesh=dp·cp=32 上求有效 token 数，loss 除以它</td><td><span class="tag t-dp">DP</span> <span class="tag t-cp">CP</span></td></tr>
+<tr><td>⑪~⑮ 反向</td><td>每条前向通信反向对偶：TP grad all-reduce/all-gather、SP 反向、CP K/V grad reduce、PP grad p2p、FSDP grad reduce-scatter</td><td>全部反向</td></tr>
+<tr><td>⑯ 累加 + clip</td><td>8 个(梯度累积微批2×PP微批4)梯度加到 .grad；clip_grad_norm 在 pp_mesh 上 all-reduce 范数</td><td><span class="tag t-dp">DP</span> <span class="tag t-pp">PP</span></td></tr>
+<tr><td>⑰ 优化器</td><td>AdamW 在 FSDP 1/8 分片上原地更新；lr 调度；DCP 存 checkpoint</td><td><span class="tag t-fsdp">FSDP</span></td></tr>
+</table>
+<div class="note"><b>两个"微批"别混</b>：<b>梯度累积微批</b>（grad_accum，外层）跨多次 forward/backward 累积梯度以模拟大 global batch，本例 = 2；<b>PP微批</b>（pipeline_parallel_microbatch_size，内层，仅 PP 时）一次 forward/backward 内切 local_batch 填流水线，本例 = 4。单优化步总 fwd/bwd = 梯度累积微批(2) × PP微批(4) = 8，梯度全累加后做 1 次 optimizer.step。</div>
+</div>
+
+<!-- ============ 图2 one-layer zoom ============ -->
+<h2><span class="num" style="background:#9b59b6;color:#fff">2</span>放大看：一个 Transformer 层里 5 种策略怎么交错（含反向）</h2>
+<p>前向每层 = FSDP 取参数 -> [norm(SP) -> all-gather(TP) -> wqkv(TP) -> attn(CP) -> wo(TP) -> ffn(TP)] -> FSDP 还参数。反向（右侧橙箭头，自下而上）每步对偶。</p>
+<svg viewBox="0 0 1160 600" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="m2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#8b94a3"/></marker>
+    <marker id="m2b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#f0ad4e"/></marker>
+  </defs>
+  <!-- FSDP all-gather bracket (top) -->
+  <g transform="translate(150,20)">
+    <rect width="700" height="40" rx="8" fill="#2a1d10" stroke="#e67e22" stroke-width="2" stroke-dasharray="5,3"/>
+    <text x="350" y="26" text-anchor="middle" fill="#e67e22" font-weight="700">FSDP all-gather：1/8 分片 -> 完整参数（forward 前 / backward 前）</text>
+  </g>
+  <line x1="500" y1="60" x2="500" y2="76" stroke="#e67e22" stroke-width="2" marker-end="url(#m2)"/>
+
+  <!-- norm -->
+  <g transform="translate(150,76)">
+    <rect width="700" height="44" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2"/>
+    <text x="16" y="20" fill="#f1c40f" font-weight="700">attention_norm</text>
+    <text x="16" y="36" fill="#9be0a3">in [1,1024,4096] -> out [1,1024,4096]</text>
+    <rect x="620" y="14" width="34" height="14" rx="3" fill="#f1c40f"/><text x="637" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">SP</text>
+  </g>
+  <line x1="500" y1="120" x2="500" y2="152" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m2)"/>
+
+  <!-- all-gather TP -->
+  <g transform="translate(150,152)">
+    <rect width="700" height="44" rx="8" fill="#0e1219" stroke="#f1c40f" stroke-width="2" stroke-dasharray="4,3"/>
+    <text x="16" y="20" fill="#f1c40f" font-weight="700">all-gather(TP)</text>
+    <text x="16" y="36" fill="#9be0a3">[1,1024,4096] -> [1,2048,4096]（序列拼回）</text>
+    <rect x="620" y="14" width="34" height="14" rx="3" fill="#f1c40f"/><text x="637" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">SP</text>
+    <rect x="658" y="14" width="34" height="14" rx="3" fill="#3498db"/><text x="675" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">TP</text>
+  </g>
+  <line x1="500" y1="196" x2="500" y2="228" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m2)"/>
+
+  <!-- wqkv -->
+  <g transform="translate(150,228)">
+    <rect width="700" height="44" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="16" y="20" fill="#3498db" font-weight="700">wqkv 列并行</text>
+    <text x="16" y="36" fill="#9be0a3">[1,2048,4096] -> [1,2048,3072]（无通信）</text>
+    <rect x="620" y="14" width="34" height="14" rx="3" fill="#3498db"/><text x="637" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">TP</text>
+  </g>
+  <line x1="500" y1="272" x2="500" y2="304" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m2)"/>
+
+  <!-- attention -->
+  <g transform="translate(150,304)">
+    <rect width="700" height="44" rx="8" fill="#0e1219" stroke="#e74c3c" stroke-width="2"/>
+    <text x="16" y="20" fill="#e74c3c" font-weight="700">attention</text>
+    <text x="16" y="36" fill="#9be0a3">q[1,2048,16,128] + kv全[1,8192,4,128] -> [1,2048,16,128]</text>
+    <rect x="620" y="14" width="34" height="14" rx="3" fill="#e74c3c"/><text x="637" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">CP</text>
+  </g>
+  <line x1="500" y1="348" x2="500" y2="380" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m2)"/>
+
+  <!-- wo -->
+  <g transform="translate(150,380)">
+    <rect width="700" height="44" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="16" y="20" fill="#3498db" font-weight="700">wo 行并行 + reduce-scatter(TP)</text>
+    <text x="16" y="36" fill="#9be0a3">[1,2048,2048] partial -> [1,1024,4096]</text>
+    <rect x="606" y="14" width="34" height="14" rx="3" fill="#3498db"/><text x="623" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">TP</text>
+    <rect x="644" y="14" width="34" height="14" rx="3" fill="#f1c40f"/><text x="661" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">SP</text>
+  </g>
+  <line x1="500" y1="424" x2="500" y2="456" stroke="#8b94a3" stroke-width="1.5" marker-end="url(#m2)"/>
+
+  <!-- ffn -->
+  <g transform="translate(150,456)">
+    <rect width="700" height="44" rx="8" fill="#0e1219" stroke="#3498db" stroke-width="2"/>
+    <text x="16" y="20" fill="#3498db" font-weight="700">ffn_norm(SP) -> all-gather(TP) -> w1/w3(TP) -> SwiGLU -> w2(TP) -> reduce-scatter</text>
+    <text x="16" y="36" fill="#9be0a3">[1,1024,4096] -> [1,2048,7168] -> [1,1024,4096]</text>
+    <rect x="606" y="14" width="34" height="14" rx="3" fill="#f1c40f"/><text x="623" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">SP</text>
+    <rect x="644" y="14" width="34" height="14" rx="3" fill="#3498db"/><text x="661" y="25" text-anchor="middle" fill="#0d0f14" font-size="9" font-weight="700">TP</text>
+  </g>
+  <line x1="500" y1="500" x2="500" y2="516" stroke="#e67e22" stroke-width="2" marker-end="url(#m2)"/>
+
+  <!-- FSDP reshard bracket (bottom) -->
+  <g transform="translate(150,516)">
+    <rect width="700" height="40" rx="8" fill="#2a1d10" stroke="#e67e22" stroke-width="2" stroke-dasharray="5,3"/>
+    <text x="350" y="26" text-anchor="middle" fill="#e67e22" font-weight="700">FSDP reshard：完整参数 -> 1/8 分片（forward 后省显存）</text>
+  </g>
+
+  <!-- backward arrow (right side, outside boxes, pointing up) -->
+  <line x1="900" y1="536" x2="900" y2="50" stroke="#f0ad4e" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#m2b)"/>
+  <text x="900" y="42" text-anchor="middle" fill="#f0ad4e" font-size="11" font-weight="700">grad 反向流 ↑</text>
+
+  <!-- backward legend text (far right) -->
+  <g transform="translate(930,90)" font-size="10.5" fill="#f0ad4e">
+    <text x="0" y="0" font-weight="700">反向（对偶）</text>
+    <text x="0" y="22">wo/w2 行并行:</text>
+    <text x="0" y="38">  grad all-gather</text>
+    <text x="0" y="60">wqkv/w1/w3 列并行:</text>
+    <text x="0" y="76">  grad all-reduce</text>
+    <text x="0" y="98">all-gather(TP) 反向</text>
+    <text x="0" y="114">  -> reduce-scatter</text>
+    <text x="0" y="136">attention:</text>
+    <text x="0" y="152">  K/V grad reduce(CP)</text>
+    <text x="0" y="174">norm: 无通信</text>
+    <text x="0" y="200">FSDP: param all-gather</text>
+    <text x="0" y="216">  + grad reduce-scatter</text>
+    <text x="0" y="232">  -> 1/8 grad</text>
+  </g>
+</svg>
+<p class="figcap">图 2：单层前向（FSDP 取/还参数包裹 TP/SP/CP 计算）+ 右侧反向对偶通信（自下而上）。每层 4 次 TP/SP 通信，FSDP 两次 all-gather+两次 reshard。</p>
+
+<!-- ============ 图3 phase x parallelism matrix ============ -->
+<h2><span class="num" style="background:linear-gradient(135deg,#2ecc71,#1abc9c);color:#0d0f14">3</span>策略 × 阶段活跃矩阵：哪个阶段哪些策略在干活</h2>
+<p>● = 该阶段该策略活跃。一眼看出：前向每层最忙（5 策略齐上），数据/loss/优化各只用 1-2 个。</p>
+<table style="font-size:13px">
+<tr><th>策略</th><th>①数据</th><th>②CP预切/PP微批</th><th>④嵌入</th><th>⑤-⑦每层前向</th><th>⑧输出头</th><th>⑨loss</th><th>⑩token归约</th><th>⑪-⑮反向</th><th>⑯clip</th><th>⑰优化</th></tr>
+<tr><td><span class="tag t-dp">DP=8</span></td><td class="act">● 切batch</td><td class="no">-</td><td class="no">-</td><td class="no">-</td><td class="no">-</td><td class="no">-</td><td class="act">● all-reduce</td><td class="no">-</td><td class="act">● clip</td><td class="no">-</td></tr>
+<tr><td><span class="tag t-fsdp">FSDP=8</span></td><td class="no">-</td><td class="no">-</td><td class="no">-</td><td class="act">● 取/还参数</td><td class="no">-</td><td class="no">-</td><td class="no">-</td><td class="act">● grad分片</td><td class="no">-</td><td class="act">● 更新1/8</td></tr>
+<tr><td><span class="tag t-tp">TP=2</span></td><td class="no">-</td><td class="no">-</td><td class="act">● 切vocab</td><td class="act">● 切heads/hidden</td><td class="act">● 切vocab</td><td class="act">● logits分块</td><td class="no">-</td><td class="act">● grad归约</td><td class="no">-</td><td class="no">-</td></tr>
+<tr><td><span class="tag t-sp">SP=2</span></td><td class="no">-</td><td class="no">-</td><td class="act">● reduce-scatter</td><td class="act">● 切序列+通信</td><td class="act">● gather</td><td class="no">-</td><td class="no">-</td><td class="act">● 反向通信</td><td class="no">-</td><td class="no">-</td></tr>
+<tr><td><span class="tag t-cp">CP=4</span></td><td class="no">-</td><td class="act">● 切序列</td><td class="no">-</td><td class="act">● attn K/V全量</td><td class="no">-</td><td class="no">-</td><td class="act">● all-reduce</td><td class="act">● K/V grad</td><td class="no">-</td><td class="no">-</td></tr>
+<tr><td><span class="tag t-pp">PP=3</span></td><td class="no">-</td><td class="act">● PP微批</td><td class="no">-</td><td class="act">● stage间p2p</td><td class="no">-</td><td class="no">-</td><td class="no">-</td><td class="act">● grad p2p</td><td class="act">● clip</td><td class="no">-</td></tr>
+</table>
+<p class="figcap">图 3：策略 × 阶段活跃矩阵。前向每层（列⑤-⑦）5 策略同时活跃，是并行最密集处。</p>
+
+<!-- ============ summary ============ -->
+<h2><span class="num" style="background:linear-gradient(135deg,#3498db,#e74c3c);color:#fff">4</span>总结：各策略在前向/loss/反向/优化各干了啥</h2>
+<div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+<div class="card">
+<h3>前向 + loss</h3>
+<ul>
+<li><b>DP</b>：开头把 global batch 切给 8 个副本；末尾在 loss_mesh 上 all-reduce 有效 token。</li>
+<li><b>FSDP</b>：每层算前 all-gather 参数，算后 reshard（包裹计算，不改激活）。</li>
+<li><b>TP</b>：每个线性权重切一半（列并行无通信，行并行 reduce-scatter）；embedding/lm_head 切 vocab；loss 的 logits 也 TP 切。</li>
+<li><b>SP</b>：norm 在切小序列上算，进线性前 all-gather，出 wo/w2 后 reduce-scatter。</li>
+<li><b>CP</b>：attention 内 Q 本地段、K/V all-gather 全量。</li>
+<li><b>PP</b>：32 层分 3 阶段，PP微批逐 stage 流，stage 间 p2p 传 hidden。</li>
+</ul>
+</div>
+<div class="card">
+<h3>反向 + 优化</h3>
+<ul>
+<li><b>TP</b>：列并行 grad all-reduce，行并行 grad all-gather（前向对偶）。</li>
+<li><b>SP</b>：all-gather/reduce-scatter 全部反向。</li>
+<li><b>CP</b>：K/V 梯度 reduce。</li>
+<li><b>PP</b>：梯度沿 stage 反向 p2p（末->首）。</li>
+<li><b>FSDP</b>：bwd 前 all-gather 参数，grad reduce-scatter 回 1/8 分片；AdamW 在分片上更新。</li>
+<li><b>DP</b>：8 个(梯度累积微批2×PP微批4)梯度累加，clip_grad_norm 在 pp_mesh all-reduce 范数。</li>
+</ul>
+</div>
+</div>
+
+<div class="note">
+<b>一句话</b>：前向里 <b>DP 切数据、FSDP 包参数、TP 切特征、SP 切序列(norm间)、CP 切序列(attn)、PP 切层</b>--六种策略各管一个维度，互不冲突；反向把前向每条通信对偶一遍；最后 FSDP 分片上做 AdamW 更新。每层是并行最密集处（5 策略齐上），整个前向约 128 次 TP/SP 通信、8 个(累积2×PP4) × ~258 次/步。
+</div>
+
+<p class="sub">配色与 parallelism_training_flow.html / parallelism_sharding_detail.html 一致。基于 torchtitan main 分支源码（trainer.py::train_step / forward_backward_step、distributed/、models/common/、models/llama3/）。</p>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

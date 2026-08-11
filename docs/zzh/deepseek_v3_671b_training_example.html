@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>用 torchtitan 训练 DeepSeek V3 671B · 用户开发什么 / 调哪些 API</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    --tt-core:#1d4ed8;   /* torchtitan 框架核心 */
+    --ext:#7c3aed;       /* 模型扩展目录(用户开发模式) */
+    --user:#475569;      /* 运行时用户配置/CLI */
+    --fsdp:#c2410c; --tp:#1d4ed8; --pp:#0f766e; --cp:#b91c1c;
+    --bg:#eef1f6; --card:#ffffff; --txt:#1e293b; --dim:#64748b; --line:#cbd5e1;
+    --code-bg:#0f172a; --code-fg:#e2e8f0;
+    --mono:"SF Mono","JetBrains Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1220px;margin:0 auto;padding:26px 28px 90px}
+  h1{font-size:26px;margin:.2em 0 .1em;color:#0f172a}
+  h2{font-size:21px;margin:1.6em 0 .4em;padding-bottom:7px;border-bottom:2px solid var(--line);
+    color:#0f172a;display:flex;align-items:center;gap:10px}
+  .num{color:#fff;width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;
+    justify-content:center;font-size:14px;font-weight:800}
+  h3{font-size:16.5px;margin:1.1em 0 .35em;color:#0f172a}
+  h4{font-size:14.5px;margin:.9em 0 .3em;color:var(--ext)}
+  p{margin:.5em 0}
+  code{background:#e7ecf3;border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+    font-family:var(--mono);font-size:12.5px;color:#b91c1c}
+  .sub{color:var(--dim);font-size:12.5px}
+  svg{display:block;margin:6px auto;max-width:100%;height:auto}
+  .figcap{text-align:center;color:var(--dim);font-size:12px;margin:2px 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:.9em 0}
+  .note{border-left:3px solid var(--tt-core);padding:7px 13px;background:#e7f0fb;border-radius:0 6px 6px 0;margin:.6em 0}
+  .warn{border-left:3px solid #92400e;padding:7px 13px;background:#fef4e2;border-radius:0 6px 6px 0;margin:.6em 0}
+  .key{border-left:3px solid var(--ext);padding:7px 13px;background:#f2ecfb;border-radius:0 6px 6px 0;margin:.6em 0}
+  table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:12.8px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#e2e8f0;color:#0f172a;font-weight:600}
+  tr:nth-child(even) td{background:#f8fafc}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;font-weight:700;color:#0d0f14}
+  .t-core{background:#dbeafe;color:#1d4ed8} .t-ext{background:#f2ecfb;color:#7c3aed}
+  .t-user{background:#e2e8f0;color:#475569}
+  .t-fsdp{background:#fcefe2;color:#c2410c} .t-tp{background:#dbeafe;color:#1d4ed8}
+  .t-pp{background:#dcfce7;color:#0f766e} .t-cp{background:#fce7f3;color:#b91c1c}
+  pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radius:10px;overflow-x:auto;
+    font-family:var(--mono);font-size:12px;line-height:1.5;margin:14px 0;border:1px solid #1e293b}
+  pre code{background:none;border:none;color:inherit;padding:0;font-size:12px}
+  .cmt{color:#64748b} .kw{color:#f472b6} .fn{color:#7dd3fc} .cls{color:#fcd34d}
+  .str{color:#86efac} .nm{color:#fdba74}
+  .toc{background:#f1f5f9;border:1px solid var(--line);border-radius:10px;padding:12px 20px;margin:16px 0}
+  .toc b{display:block;margin-bottom:4px;color:#0f172a}
+  .toc a{display:inline-block;padding:2px 10px 2px 0;color:#1d4ed8}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="wrap">
+
+<h1>用 torchtitan 训练 DeepSeek V3 671B · 用户开发什么 / 调哪些 API</h1>
+<p class="sub">回答两个问题:(1) <code>torchtitan/models/deepseek_v3/</code> 目录算不算"用户开发"?(2) 真实大规模训练 671B 时,哪些是 torchtitan 提供的、哪些要自己写、各自调哪些 API。所有结论对照源码核验,torch 版本 2.12.1+cpu。</p>
+
+<div class="toc">
+<b>目录</b>
+<a href="#answer">0 先回答核心问题</a> ·
+<a href="#split">1 三层代码归属</a> ·
+<a href="#files">2 七个文件各调哪些 API</a> ·
+<a href="#apis">3 torchtitan 提供的接口清单</a> ·
+<a href="#example">4 671B 大规模训练示例</a> ·
+<a href="#matrix">5 你写 vs 框架给 总表</a> ·
+<a href="#lifecycle">6 ModelSpec 生命周期时序</a> ·
+<a href="#usercode">7 用户真正要写的代码/配置</a>
+</div>
+
+<!-- ============ 0 ============ -->
+<h2 id="answer"><span class="num" style="background:#0f172a">0</span>先回答你的核心问题</h2>
+
+<div class="key">
+<b>问:</b><code>torchtitan/models/deepseek_v3/</code> 下的文件,也应该是用户开发的吧?
+<br><br>
+<b>答:对,但要分两个身份看。</b>
+<ol style="margin:.3em 0 .3em 1.3em">
+<li><b>作为"现成支持模型"</b>--它已经在仓库里、在 <code>models/__init__.py</code> 的 <code>_supported_models</code> 名单里(<code>["deepseek_v3","flux","gpt_oss","llama3","qwen3","qwen3_5"]</code>),走完整 CI。<b>你要训练 DeepSeek V3 671B,这个目录你一行都不用改</b>,直接 <code>--module deepseek_v3 --config deepseek_v3_671b</code> 就能用。</li>
+<li><b>作为"添加新模型的模板"</b>--<code>docs/extension.md</code> 和 <code>models/README.md</code> 白纸黑字写着:"要注册一个模型,在 <code>__init__.py</code> 里定义 <code>model_registry(flavor)</code> 返回 <code>ModelSpec</code>,在 <code>config_registry.py</code> 里定义训练配置,参考 <code>torchtitan/models/llama3</code>。" <b>这套七文件结构,正是你为"任何新模型"要照着写的"用户代码"。</b></li>
+</ol>
+所以 <code>deepseek_v3/</code> 同时是"官方维护的成品"和"你开发新模型时的范本"。两者不矛盾:它就是 torchtitan 团队按"用户扩展点"规范自己先实现的一个范例。
+</div>
+
+<svg viewBox="0 0 1180 430" font-family="monospace" font-size="12">
+  <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
+  <text x="590" y="26" text-anchor="middle" fill="#0f172a" font-weight="700" font-size="15">deepseek_v3/ 的双重身份</text>
+
+  <!-- 身份一 -->
+  <rect x="20" y="48" width="560" height="350" rx="12" fill="#eef6ff" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="40" y="76" fill="#1d4ed8" font-weight="700" font-size="15">身份一:现成支持模型</text>
+  <text x="40" y="98" fill="#334155" font-size="11">在 _supported_models 名单里,走 CI</text>
+  <text x="40" y="118" fill="#64748b" font-size="10.5">models/__init__.py</text>
+  <rect x="40" y="134" width="520" height="56" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="52" y="154" fill="#0f172a" font-weight="700" font-size="12">你要做的:一行不改</text>
+  <text x="52" y="172" fill="#334155" font-size="11">MODULE=deepseek_v3 CONFIG=deepseek_v3_671b ./run_train.sh</text>
+  <rect x="40" y="206" width="520" height="172" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="52" y="228" fill="#1d4ed8" font-weight="700" font-size="12">torchtitan 已为你备好</text>
+  <text x="52" y="248" fill="#334155" font-size="11">· 671B 架构(MLA + 256 专家 MoE)</text>
+  <text x="52" y="266" fill="#334155" font-size="11">· parallelize_deepseekv3(切分编排)</text>
+  <text x="52" y="284" fill="#334155" font-size="11">· sharding 声明(colwise/rowwise/replicate)</text>
+  <text x="52" y="302" fill="#334155" font-size="11">· state_dict_adapter(HF 互转)</text>
+  <text x="52" y="320" fill="#334155" font-size="11">· Float8 量化 converter</text>
+  <text x="52" y="338" fill="#334155" font-size="11">· config_registry 里的 deepseek_v3_671b()</text>
+  <text x="52" y="356" fill="#64748b" font-size="10.5">你只需在 CLI 指定并行度 / 节点数</text>
+
+  <!-- 身份二 -->
+  <rect x="600" y="48" width="560" height="350" rx="12" fill="#f5effb" stroke="#7c3aed" stroke-width="2"/>
+  <text x="620" y="76" fill="#7c3aed" font-weight="700" font-size="15">身份二:添加新模型的模板</text>
+  <text x="620" y="98" fill="#334155" font-size="11">docs/extension.md / models/README.md</text>
+  <text x="620" y="118" fill="#64748b" font-size="10.5">"参考 llama3 / deepseek_v3 目录"</text>
+  <rect x="620" y="134" width="520" height="56" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+  <text x="632" y="154" fill="#0f172a" font-weight="700" font-size="12">你要做的:照这七文件写自己的模型目录</text>
+  <text x="632" y="172" fill="#334155" font-size="11">models/your_model/{model,sharding,parallelize,...}.py</text>
+  <rect x="620" y="206" width="520" height="172" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="632" y="228" fill="#7c3aed" font-weight="700" font-size="12">你要照着实现的七件套</text>
+  <text x="632" y="248" fill="#334155" font-size="11">· model.py -- 单卡架构 + 嵌套 Config</text>
+  <text x="632" y="266" fill="#334155" font-size="11">· sharding.py -- 各权重怎么放(TP/SP/EP)</text>
+  <text x="632" y="284" fill="#334155" font-size="11">· parallelize.py -- 切分编排顺序</text>
+  <text x="632" y="302" fill="#334155" font-size="11">· __init__.py -- model_registry() 返回 ModelSpec</text>
+  <text x="632" y="320" fill="#334155" font-size="11">· config_registry.py -- 各尺寸的 Trainer.Config</text>
+  <text x="632" y="338" fill="#334155" font-size="11">· state_dict_adapter.py -- HF 键映射(可选)</text>
+  <text x="632" y="356" fill="#64748b" font-size="10.5">README.md(可选)</text>
+</svg>
+<p class="figcap">图 0-1:deepseek_v3/ 既是"拿来即用"的官方模型,也是"你写新模型"的范本。两条路径同一个目录。</p>
+
+<div class="note"><b>一句话记住:</b>"用户开发"的不是 deepseek_v3 这个目录本身(它已存在),而是<b>这套七文件结构所体现的扩展点契约</b>。训练 671B 时你开发的是<b>配置/命令</b>;训练新模型时你开发的是<b>同样结构的目录</b>。下面分开讲。</div>
+
+<!-- ============ 1 ============ -->
+<h2 id="split"><span class="num" style="background:#1d4ed8">1</span>三层代码归属:谁开发什么</h2>
+
+<p>把"训练一个模型"这件事的代码,按<b>归属</b>分成三栏。这是本页最重要的图--它决定了你该碰哪些文件、不该碰哪些。</p>
+
+<svg viewBox="0 0 1180 560" font-family="monospace" font-size="12">
+  <defs><marker id="ar2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
+  <text x="590" y="26" text-anchor="middle" fill="#0f172a" font-weight="700" font-size="15">训练一个模型:三层代码归属</text>
+
+  <!-- 栏1 torchtitan 核心 -->
+  <rect x="20" y="46" width="370" height="490" rx="12" fill="#eef6ff" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="40" y="74" fill="#1d4ed8" font-weight="700" font-size="15">① torchtitan 核心</text>
+  <text x="40" y="92" fill="#64748b" font-size="10.5">框架,你不改(仓库自带)</text>
+  <g font-size="11">
+    <rect x="40" y="106" width="330" height="118" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="126" fill="#0f172a" font-weight="700">训练循环 & 配置系统</text>
+    <text x="52" y="144" fill="#334155">train.py, trainer.py(Trainer)</text>
+    <text x="52" y="160" fill="#334155">config/(ConfigManager + tyro CLI)</text>
+    <text x="52" y="176" fill="#334155">protocols/(Configurable/Module/</text>
+    <text x="52" y="192" fill="#334155">  ModelSpec/BaseStateDictAdapter)</text>
+    <text x="52" y="210" fill="#64748b">--module --config 解析 + override</text>
+
+    <rect x="40" y="234" width="330" height="118" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="254" fill="#0f172a" font-weight="700">分布式并行基础设施</text>
+    <text x="52" y="272" fill="#334155">distributed/</text>
+    <text x="52" y="288" fill="#334155">  fsdp.py apply_fsdp_to_decoder</text>
+    <text x="52" y="304" fill="#334155">  context_parallel.py apply_cp_to_forward</text>
+    <text x="52" y="320" fill="#334155">  tensor_parallel.py maybe_enable_async_tp</text>
+    <text x="52" y="336" fill="#334155">  pipeline_parallel.py pipeline_llm</text>
+    <text x="52" y="352" fill="#64748b">  parallel_dims.py + compile.py</text>
+
+    <rect x="40" y="362" width="330" height="118" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="382" fill="#0f172a" font-weight="700">训练组件 & 共享模型件</text>
+    <text x="52" y="400" fill="#334155">components/(optimizer/loss/</text>
+    <text x="52" y="416" fill="#334155">  lr_scheduler/checkpoint/metrics/</text>
+    <text x="52" y="432" fill="#334155">  tokenizer/quantization)</text>
+    <text x="52" y="448" fill="#334155">models/common/(attention/feed_forward/</text>
+    <text x="52" y="464" fill="#334155">  moe/rope/rmsnorm/decoder)</text>
+    <text x="52" y="480" fill="#64748b">decoder_sharding.py 共享切分helper</text>
+    <text x="52" y="500" fill="#64748b">hf_datasets/ 数据加载</text>
+  </g>
+
+  <!-- 栏2 模型扩展目录 -->
+  <rect x="405" y="46" width="370" height="490" rx="12" fill="#f5effb" stroke="#7c3aed" stroke-width="2"/>
+  <text x="425" y="74" fill="#7c3aed" font-weight="700" font-size="15">② 模型扩展目录</text>
+  <text x="425" y="92" fill="#64748b" font-size="10.5">扩展点契约,你照着实现</text>
+  <text x="425" y="108" fill="#64748b" font-size="10.5">deepseek_v3/ 是范例之一</text>
+  <g font-size="11">
+    <rect x="425" y="120" width="330" height="324" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="437" y="140" fill="#0f172a" font-weight="700">models/&lt;name&gt;/ 七件套</text>
+    <text x="437" y="160" fill="#7c3aed" font-weight="700">model.py</text><text x="540" y="160" fill="#334155">单卡架构 + 嵌套 Config</text>
+    <text x="437" y="178" fill="#64748b" font-size="10">  继承 Decoder/Module,用 common 组件</text>
+    <text x="437" y="200" fill="#7c3aed" font-weight="700">sharding.py</text><text x="540" y="200" fill="#334155">声明各权重放置</text>
+    <text x="437" y="218" fill="#64748b" font-size="10">  调 colwise_config/rowwise_config 等 helper</text>
+    <text x="437" y="240" fill="#7c3aed" font-weight="700">parallelize.py</text><text x="540" y="240" fill="#334155">切分编排顺序</text>
+    <text x="437" y="258" fill="#64748b" font-size="10">  调 apply_cp/apply_fsdp/apply_compile</text>
+    <text x="437" y="280" fill="#7c3aed" font-weight="700">__init__.py</text><text x="540" y="280" fill="#334155">model_registry() -> ModelSpec</text>
+    <text x="437" y="298" fill="#64748b" font-size="10">  组装 name/model/parallelize_fn/...</text>
+    <text x="437" y="320" fill="#7c3aed" font-weight="700">config_registry.py</text><text x="540" y="320" fill="#334155">各尺寸 Trainer.Config</text>
+    <text x="437" y="338" fill="#64748b" font-size="10">  指定 lr/batch/seq/steps/并行度</text>
+    <text x="437" y="360" fill="#7c3aed" font-weight="700">state_dict_adapter.py</text><text x="540" y="360" fill="#334155">HF 键映射(可选)</text>
+    <text x="437" y="378" fill="#64748b" font-size="10">  继承 MoEStateDictAdapter/BaseStateDictAdapter</text>
+    <text x="437" y="400" fill="#64748b" font-size="10">本目录的 deepseek_v3/ 已实现完毕,</text>
+    <text x="437" y="416" fill="#64748b" font-size="10">训练 671B 时你不动它;训练新模型</text>
+    <text x="437" y="432" fill="#64748b" font-size="10">时你照抄这套结构改名实现。</text>
+    <rect x="425" y="454" width="330" height="70" rx="8" fill="#fef3c7" stroke="#b45309"/>
+    <text x="437" y="474" fill="#b45309" font-weight="700">关键:② 只"调用"①,不"实现"①</text>
+    <text x="437" y="492" fill="#334155" font-size="10.5">parallelize.py 里全是 apply_* 顺序</text>
+    <text x="437" y="508" fill="#334155" font-size="10.5">调用,自己不写通信/调度内核。</text>
+  </g>
+
+  <!-- 栏3 运行时用户配置 -->
+  <rect x="790" y="46" width="370" height="490" rx="12" fill="#eef0f4" stroke="#475569" stroke-width="2"/>
+  <text x="810" y="74" fill="#475569" font-weight="700" font-size="15">③ 运行时用户配置</text>
+  <text x="810" y="92" fill="#64748b" font-size="10.5">你每次跑训练时写的</text>
+  <g font-size="11">
+    <rect x="810" y="106" width="330" height="150" rx="8" fill="#f1f5f9" stroke="#475569"/>
+    <text x="822" y="126" fill="#0f172a" font-weight="700">命令行 / 环境变量</text>
+    <text x="822" y="146" fill="#334155">MODULE=deepseek_v3</text>
+    <text x="822" y="162" fill="#334155">CONFIG=deepseek_v3_671b</text>
+    <text x="822" y="178" fill="#334155">NGPU=8 ./run_train.sh</text>
+    <text x="822" y="198" fill="#334155">--parallelism.tensor_parallel_degree=2</text>
+    <text x="822" y="214" fill="#334155">--parallelism.pipeline_parallel_degree=4</text>
+    <text x="822" y="230" fill="#334155">--parallelism.expert_parallel_degree=2</text>
+    <text x="822" y="248" fill="#64748b" font-size="10.5">(覆盖 config_registry 里的默认值)</text>
+
+    <rect x="810" y="266" width="330" height="118" rx="8" fill="#f1f5f9" stroke="#475569"/>
+    <text x="822" y="286" fill="#0f172a" font-weight="700">外部资源</text>
+    <text x="822" y="306" fill="#334155">· tokenizer(下到 assets/hf/...)</text>
+    <text x="822" y="322" fill="#334155">· 数据集(C4 已预配置,或自备)</text>
+    <text x="822" y="338" fill="#334155">· 多节点环境(slurm / torchrun)</text>
+    <text x="822" y="354" fill="#334155">· GPU / 网络(EFA/IB)</text>
+    <text x="822" y="372" fill="#64748b" font-size="10.5">NCCL / 节点拓扑环境变量</text>
+
+    <rect x="810" y="394" width="330" height="130" rx="8" fill="#fef4e2" stroke="#92400e"/>
+    <text x="822" y="414" fill="#92400e" font-weight="700">可选:实验级扩展</text>
+    <text x="822" y="434" fill="#334155">experiments/your_folder/</text>
+    <text x="822" y="450" fill="#334155">· 子类化 Trainer.Config 加字段</text>
+    <text x="822" y="466" fill="#334155">· override 机制(不改代码替换组件)</text>
+    <text x="822" y="482" fill="#334155">· 自定义 loss/optimizer/data loader</text>
+    <text x="822" y="500" fill="#64748b" font-size="10.5">实验代码不进 core,只进 experiments</text>
+    <text x="822" y="516" fill="#64748b" font-size="10.5">仍复用①的 config 与分布式基础设施</text>
+  </g>
+
+  <!-- arrows -->
+  <path d="M 395 290 L 405 290" stroke="#64748b" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="372" y="284" fill="#64748b" font-size="9.5">import</text>
+  <path d="M 780 290 L 790 290" stroke="#64748b" stroke-width="2" marker-end="url(#ar2)"/>
+  <text x="748" y="284" fill="#64748b" font-size="9.5">选择/覆盖</text>
+</svg>
+<p class="figcap">图 1-1:三层归属。① torchtitan 核心(框架,不改) -> ② 模型扩展目录(扩展点契约,deepseek_v3/ 是范例) -> ③ 运行时配置(你每次写)。箭头方向 = 依赖方向:② 只调①,③ 只选/覆盖②。</p>
+
+<div class="warn"><b>核心原则(来自 CLAUDE.md):</b>"Don't leak experiments into core"--别为实验需求改 ①。① 的并行/组件是<b>模型无关</b>的;模型相关的东西(架构、哪个权重切哪维、HF 键名)放 ②;一次性配置放 ③。</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="files"><span class="num" style="background:#7c3aed">2</span>deepseek_v3/ 七个文件各调哪些 torchtitan API</h2>
+
+<p>这是本页的"干货"。逐文件列出<b>它从 torchtitan import 了什么、调了什么</b>,你就能看出:所谓"用户开发"其实大量是<b>调用框架 API</b>,真正模型相关的只有架构本身和切分声明。</p>
+
+<table>
+<tr><th>文件</th><th>职责</th><th>从 torchtitan 调用的 API</th><th>性质</th></tr>
+<tr>
+<td><code>model.py</code></td>
+<td>单卡架构:MLA attention + MoE block + 模型类</td>
+<td>继承 <code>Decoder</code>/<code>TransformerBlock</code>/<code>Module</code>(protocols/module);用 <code>models/common/</code> 的 <code>BaseAttention</code>,<code>FlexAttention</code>,<code>Linear</code>,<code>RMSNorm</code>,<code>RoPE</code>;<code>get_moe_model_nparams_and_flops</code>(models/utils);<code>get_spmd_backend</code>(distributed/utils);<code>spmd_types</code> 的 <code>spmd.local()</code>/<code>spmd.assert_type</code>。在 <code>Config.update_from_config()</code> 里调本目录 <code>set_deepseek_v3_sharding_config()</code>。</td>
+<td><span class="tag t-ext">模型相关</span></td>
+</tr>
+<tr>
+<td><code>sharding.py</code></td>
+<td>声明每个权重怎么放(colwise/rowwise/replicate)</td>
+<td><code>ShardingConfig</code>(protocols/sharding);共享 helper <code>colwise_config</code>/<code>rowwise_config</code>/<code>norm_config</code>/<code>dense_param_placement</code>/<code>set_decoder_sharding_config</code>/<code>set_dense_ffn_sharding</code>/<code>set_gqa_inner_attention_local_map</code>(models/common/decoder_sharding);<code>set_moe_sharding_config</code>(models/common/moe_sharding)。</td>
+<td><span class="tag t-ext">模型相关</span></td>
+</tr>
+<tr>
+<td><code>parallelize.py</code></td>
+<td>切分编排:决定先 CP 还是先 parallelize、何时 FSDP/compile</td>
+<td><b>全是顺序调用</b>:<code>validate_config</code>/<code>model.parallelize(parallel_dims)</code>;CP <code>apply_cp_to_forward</code>(distributed/context_parallel);TP <code>maybe_enable_async_tp</code>(distributed/tensor_parallel);AC <code>ac_config.build().apply(model)</code>;compile <code>apply_compile</code>(distributed/compile);mesh <code>resolve_fsdp_mesh</code>/<code>resolve_sparse_fsdp_mesh</code> 或 <code>parallel_dims.get_mesh()</code>;FSDP <code>apply_fsdp_to_decoder</code>(distributed/fsdp)。</td>
+<td><span class="tag t-ext">编排</span> <span class="tag t-core">纯调①</span></td>
+</tr>
+<tr>
+<td><code>__init__.py</code></td>
+<td><code>model_registry(flavor)</code> 组装 ModelSpec + 定义各尺寸架构数</td>
+<td>返回 <code>ModelSpec</code>(protocols/model_spec)字段:<code>name/flavor/model/parallelize_fn=parallelize_deepseekv3</code>/<code>pipelining_fn=<b>pipeline_llm</b></code>(<b>torchtitan 通用,非本目录写</b>)/<code>post_optimizer_build_fn=register_moe_load_balancing_hook</code>/<code>state_dict_adapter=DeepSeekV3StateDictAdapter</code>。用 <code>Float8LinearConverter/Float8GroupedExpertsConverter</code>(components/quantization)。</td>
+<td><span class="tag t-ext">组装</span> <span class="tag t-core">借①组件</span></td>
+</tr>
+<tr>
+<td><code>config_registry.py</code></td>
+<td><code>deepseek_v3_671b()</code> 等返回 <code>Trainer.Config</code></td>
+<td>用 <code>Trainer.Config</code>(trainer);组件 <code>default_adamw</code>/<code>CrossEntropyLoss</code>/<code>ChunkedLossWrapper</code>/<code>LRSchedulersContainer</code>/<code>MetricsProcessor</code>/<code>CheckpointManager.Config</code>(components);<code>SelectiveAC</code>(distributed/activation_checkpoint);<code>HuggingFaceTextDataLoader</code>(hf_datasets);<code>TrainingConfig/ParallelismConfig/CompileConfig</code>(config);<code>decoder_vocab_size</code>(models/common/config_utils)。</td>
+<td><span class="tag t-user">纯配置</span></td>
+</tr>
+<tr>
+<td><code>state_dict_adapter.py</code></td>
+<td>torchtitan 权重名 &lt;-&gt; HF 权重名映射</td>
+<td>继承 <code>MoEStateDictAdapter</code>(models/utils)-&gt;<code>BaseStateDictAdapter</code>(protocols/state_dict_adapter);用 <code>DTensor</code>(torch.distributed.tensor)、<code>HuggingFaceStorageReader</code>。仅一张 <code>from_hf_map</code> 字典。</td>
+<td><span class="tag t-ext">模型相关</span> <span class="tag t-core">可选</span></td>
+</tr>
+<tr>
+<td><code>README.md</code></td>
+<td>tokenizer/权重下载说明</td>
+<td>无 API 调用,纯文档。</td>
+<td><span class="tag t-user">文档</span></td>
+</tr>
+</table>
+
+<div class="key"><b>读表得出的结论:</b>
+<ul style="margin:.2em 0 .2em 1.2em">
+<li><b>真正"模型相关"的只有三件</b>:<code>model.py</code>(架构,但用 common 组件搭)、<code>sharding.py</code>(哪个权重 colwise/rowwise,但用共享 helper)、<code>state_dict_adapter.py</code>(HF 键名表)。其余都是<b>组装和顺序调用</b>。</li>
+<li><b><code>parallelize.py</code> 一行业务逻辑都没有</b>--它就是"CP -> parallelize -> async_tp -> AC -> compile -> FSDP"的调用顺序,这些 <code>apply_*</code> 全在 ①。</li>
+<li><b>PP 不是本目录写的</b>:<code>pipelining_fn=pipeline_llm</code> 来自 <code>torchtitan/distributed/pipeline_parallel.py</code>,是<b>模型无关</b>的通用函数。换任何模型都用它。</li>
+<li><b><code>config_registry.py</code> 是纯数据</b>:一组数字(lr/batch/seq/steps/并行度),没有任何逻辑,完全可被 CLI 覆盖。</li>
+</ul>
+</div>
+
+<svg viewBox="0 0 1180 470" font-family="monospace" font-size="11">
+  <defs><marker id="ar3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
+  <rect x="20" y="10" width="1140" height="450" rx="12" fill="#f8fafc" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="590" y="32" text-anchor="middle" fill="#7c3aed" font-weight="700" font-size="13">parallelize_deepseekv3:七步顺序调用(全部是 ① 的 API)</text>
+
+  <g font-size="10">
+    <!-- step 1 -->
+    <rect x="40" y="56" width="980" height="48" rx="8" fill="#f0fdf4" stroke="#15803d"/>
+    <text x="52" y="76" fill="#15803d" font-weight="700">1. (full_dtensor/spmd_types) validate_config(parallel_dims, model) + model.parallelize(parallel_dims)</text>
+    <text x="52" y="92" fill="#334155">否则(default):若 CP 开 -> apply_cp_to_forward(...) 包装 attention.forward;若 TP/EP 开 -> model.parallelize(parallel_dims)</text>
+    <!-- step 2 -->
+    <rect x="40" y="112" width="980" height="40" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="132" fill="#1d4ed8" font-weight="700">2. 若 TP 开 -> maybe_enable_async_tp(parallelism, compile_config, parallel_dims.get_mesh("tp"))</text>
+    <!-- step 3 -->
+    <rect x="40" y="160" width="980" height="40" rx="8" fill="#fef3c7" stroke="#b45309"/>
+    <text x="52" y="180" fill="#b45309" font-weight="700">3. 若 AC 配 -> ac_config.build(dump_folder=...).apply(model)(选择性激活检查点)</text>
+    <!-- step 4 -->
+    <rect x="40" y="208" width="980" height="40" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="52" y="228" fill="#7c3aed" font-weight="700">4. 若 compile 开且含 "model" -> apply_compile(model, compile_config)</text>
+    <!-- step 5 -->
+    <rect x="40" y="256" width="980" height="48" rx="8" fill="#e7f0fb" stroke="#1d4ed8"/>
+    <text x="52" y="276" fill="#1d4ed8" font-weight="700">5. 取 mesh:full_dtensor/spmd_types -> resolve_fsdp_mesh / resolve_sparse_fsdp_mesh;default -> parallel_dims.get_mesh(...)</text>
+    <text x="52" y="292" fill="#334155">EP>1 时 edp_mesh = get_optional_mesh(["dp_replicate","efsdp"] 或 ["efsdp"])</text>
+    <!-- step 6 -->
+    <rect x="40" y="312" width="980" height="56" rx="8" fill="#fcefe2" stroke="#c2410c"/>
+    <text x="52" y="332" fill="#c2410c" font-weight="700">6. apply_fsdp_to_decoder(model, dp_mesh, param_dtype=..., reduce_dtype=..., pp_enabled=..., ep_degree=..., edp_mesh=..., ...)</text>
+    <text x="52" y="350" fill="#334155">内部用 shard_placement_fn 把专家参数分到 edp_mesh、其余分到 dp_mesh</text>
+    <!-- step 7 -->
+    <rect x="40" y="376" width="980" height="56" rx="8" fill="#dcfce7" stroke="#0f766e"/>
+    <text x="52" y="396" fill="#0f766e" font-weight="700">7. (PP,由 ① 的 pipeline_llm 在 train.py 里编排,不在本函数)</text>
+    <text x="52" y="414" fill="#334155">pipeline_llm 切 stage -> 逐 stage 调本 parallelize_fn -> 建 Interleaved1F1B schedule</text>
+    <text x="52" y="430" fill="#64748b" font-size="9.5">即:每个 PP stage 各自把这 6 步跑一遍</text>
+  </g>
+</svg>
+<p class="figcap">图 2-1:parallelize_deepseekv3 的调用顺序(源码 parallelize.py 逐行核对)。注意 PP(第 7 步)不在本函数里--它由 ① 的 pipeline_llm 驱动,对每个 stage 调本函数一次。</p>
+
+<!-- ============ 3 ============ -->
+<h2 id="apis"><span class="num" style="background:#1d4ed8">3</span>torchtitan 提供给模型作者的接口清单</h2>
+
+<p>把第 2 节里出现过的 ① 的 API 汇总,按"模型作者会用到"分类。这些是<b>你写模型目录时直接 import 的稳定接口</b>--它们才是"用户开发"的真正靠山。</p>
+
+<table>
+<tr><th>分类</th><th>接口 / 符号</th><th>所在文件</th><th>用途</th></tr>
+<tr><td rowspan="3"><b>协议基类</b></td><td><code>Module</code> / <code>BaseModel</code></td><td>protocols/module.py</td><td>所有模型模块基类,提供 <code>parallelize()</code>/<code>init_states()</code>/<code>Config</code> 体系</td></tr>
+<tr><td><code>Decoder</code>, <code>TransformerBlock</code></td><td>models/common/decoder.py</td><td>decoder 架构骨架,DeepSeekV3Model 继承它</td></tr>
+<tr><td><code>ModelSpec</code>, <code>BaseStateDictAdapter</code></td><td>protocols/model_spec.py, state_dict_adapter.py</td><td>ModelSpec 七字段契约;adapter 基类</td></tr>
+<tr><td rowspan="5"><b>声明式切分</b></td><td><code>ShardingConfig</code></td><td>protocols/sharding.py</td><td>声明 state/in/out 放置,驱动 <code>parallelize()</code></td></tr>
+<tr><td><code>colwise_config</code> / <code>rowwise_config</code></td><td>models/common/decoder_sharding.py</td><td>标准列/行并行切分方案</td></tr>
+<tr><td><code>norm_config</code>,<code>dense_param_placement</code>,<code>dense_activation_placement</code></td><td>同上</td><td>norm 权重、dense 参数/激活放置</td></tr>
+<tr><td><code>set_decoder_sharding_config</code>,<code>set_dense_ffn_sharding</code>,<code>set_gqa_inner_attention_local_map</code></td><td>同上</td><td>decoder/dense-FFN/GQA 的切分 helper</td></tr>
+<tr><td><code>set_moe_sharding_config</code></td><td>models/common/moe_sharding.py</td><td>MoE(router/shared/routed experts)切分</td></tr>
+<tr><td rowspan="6"><b>并行编排<br>(parallelize.py 调)</b></td><td><code>apply_cp_to_forward</code></td><td>distributed/context_parallel.py</td><td>CP:包装 attention.forward</td></tr>
+<tr><td><code>model.parallelize(parallel_dims)</code></td><td>protocols/module.py</td><td>递归施加 ShardingConfig(声明式)</td></tr>
+<tr><td><code>maybe_enable_async_tp</code></td><td>distributed/tensor_parallel.py</td><td>async TP 开关</td></tr>
+<tr><td><code>apply_compile</code></td><td>distributed/compile.py</td><td>torch.compile 包装</td></tr>
+<tr><td><code>apply_fsdp_to_decoder</code></td><td>distributed/fsdp.py</td><td>FSDP/HSDP + 专家 mesh 分流</td></tr>
+<tr><td><code>pipeline_llm</code></td><td>distributed/pipeline_parallel.py</td><td><b>模型无关</b>的 PP 编排(作 pipelining_fn)</td></tr>
+<tr><td rowspan="3"><b>mesh / 维度</b></td><td><code>ParallelDims</code>, <code>get_mesh</code>/<code>get_optional_mesh</code></td><td>distributed/parallel_dims.py</td><td>按名取 submesh</td></tr>
+<tr><td><code>resolve_fsdp_mesh</code>/<code>resolve_sparse_fsdp_mesh</code>,<code>validate_config</code></td><td>distributed/full_dtensor.py</td><td>full_dtensor/spmd_types 路径的 mesh 解析</td></tr>
+<tr><td><code>MeshAxisName</code>(DP/FSDP/TP/CP/PP/EP/EFSDP)</td><td>distributed/parallel_dims.py</td><td>mesh 轴名常量</td></tr>
+<tr><td rowspan="5"><b>训练组件</b></td><td><code>default_adamw</code>,<code>register_moe_load_balancing_hook</code></td><td>components/optimizer.py</td><td>优化器 + MoE 负载均衡 hook</td></tr>
+<tr><td><code>CrossEntropyLoss</code>,<code>ChunkedLossWrapper</code></td><td>components/loss.py</td><td>损失函数</td></tr>
+<tr><td><code>LRSchedulersContainer</code>,<code>MetricsProcessor</code>,<code>CheckpointManager</code></td><td>components/</td><td>调度器/指标/checkpoint</td></tr>
+<tr><td><code>Float8LinearConverter</code>,<code>Float8GroupedExpertsConverter</code></td><td>components/quantization/</td><td>Float8 量化 converter</td></tr>
+<tr><td><code>HuggingFaceTextDataLoader</code>,<code>SelectiveAC</code></td><td>hf_datasets/, distributed/activation_checkpoint.py</td><td>数据加载 + 选择性 AC</td></tr>
+<tr><td rowspan="2"><b>配置</b></td><td><code>Trainer.Config</code>, <code>Trainer</code></td><td>trainer.py</td><td>配置树根 + 训练生命周期</td></tr>
+<tr><td><code>TrainingConfig</code>,<code>ParallelismConfig</code>,<code>CompileConfig</code></td><td>config/configs.py</td><td>配置子段</td></tr>
+</table>
+
+<div class="note"><b>这张表就是"用户开发的边界"。</b>你写新模型目录时,从左边分类里 import 即可;<b>左表没有的,才是你要自己实现的</b>(架构 + 切分声明 + HF 键映射)。</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="example"><span class="num" style="background:#0f766e">4</span>671B 真实大规模训练示例</h2>
+
+<h3>4.1 671B 模型规模(config_registry 里已定义)</h3>
+<table>
+<tr><th>项</th><th>值</th><th>来源</th></tr>
+<tr><td>dim / 层数</td><td>7168 / 61(dense 3 + MoE 58)</td><td>__init__.py <code>_671b()</code></td></tr>
+<tr><td>vocab / heads</td><td>129280 / 128</td><td>同上</td></tr>
+<tr><td>专家数 / top-k / router</td><td>256 / 8 / sigmoid</td><td>同上</td></tr>
+<tr><td>q_lora / kv_lora(MLA)</td><td>1536 / 512</td><td>同上</td></tr>
+<tr><td>默认训练</td><td>seq_len=4096, local_batch=4, steps=10000, lr=2.2e-4, warmup=2000</td><td>config_registry.py <code>deepseek_v3_671b()</code></td></tr>
+<tr><td>config 里已固定的并行</td><td><b>EP=2</b>, schedule=<b>Interleaved1F1B</b>, Float8 量化, FlexAttention, C4</td><td>同上</td></tr>
+<tr><td><b>config 里留给你填的</b></td><td><b>TP / PP degree / CP / dp_shard(均默认 1)</b></td><td>需 CLI 覆盖</td></tr>
+</table>
+
+<div class="warn"><b>必须知道的坑:</b>671B config 选了 <b>Interleaved1F1B</b> schedule,但<b>没设</b> <code>pipeline_parallel_degree</code>(默认 1)。而 Interleaved1F1B 是 looped schedule,<b>要求 pp_degree &gt; 1</b>(见 configs.py 文档)。所以你<b>必须</b>在 CLI 显式给 <code>--parallelism.pipeline_parallel_degree</code>,否则跑不起来。</div>
+
+<h3>4.2 mesh 拆分(以 256 GPU 为例,可按公式缩放)</h3>
+
+<svg viewBox="0 0 1180 520" font-family="monospace" font-size="12">
+  <defs><marker id="ar4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
+  <rect x="20" y="10" width="1140" height="500" rx="12" fill="#f8fafc" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="590" y="32" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="13">671B 的并行维度乘积 = world_size(parallel_dims.py 校验式)</text>
+
+  <!-- 约束式 -->
+  <g transform="translate(40,52)">
+    <rect width="1100" height="120" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="16" y="24" fill="#0f172a" font-weight="700" font-size="13">硬约束(源码核对)</text>
+    <text x="16" y="48" fill="#c2410c" font-weight="700" font-size="12">world = dp_replicate * dp_shard * cp * tp * pp   (必须 == GPU 总数)</text>
+    <text x="16" y="70" fill="#c2410c" font-weight="700" font-size="12">fsdp  = dp_shard * cp</text>
+    <text x="16" y="92" fill="#c2410c" font-weight="700" font-size="12">efsdp = dp_shard * cp * tp // ep      (EP 借 FSDP+TP 的 rank: dp_shard*cp*tp == efsdp*ep)</text>
+    <text x="16" y="112" fill="#64748b" font-size="11">dp_shard = -1 表示自动取余下 rank;SP 约束:seq_len 需被 tp*2*cp 整除</text>
+  </g>
+
+  <!-- 选定的并行度 -->
+  <g transform="translate(40,188)">
+    <rect width="1100" height="120" rx="8" fill="#dcfce7" stroke="#0f766e"/>
+    <text x="16" y="24" fill="#0f766e" font-weight="700" font-size="13">选定:256 GPU(可换更大规模,满足上式即可)</text>
+    <g font-size="12">
+      <text x="16" y="48" fill="#0f172a">dp_replicate=1  tp=2  cp=1  pp=4  ep=2</text>
+      <text x="16" y="70" fill="#334155">dp_shard = -1 -> 256 / (1*1*2*4) = 32  (自动)</text>
+      <text x="16" y="92" fill="#334155">fsdp  = 32*1 = 32        efsdp = 32*1*2 // 2 = 32</text>
+      <text x="16" y="112" fill="#15803d" font-weight="700">校验:1*32*1*2*4 = 256 ✓   efsdp*ep = 64 = dp_shard*cp*tp ✓</text>
+    </g>
+  </g>
+
+  <!-- mesh 形状 -->
+  <g transform="translate(40,324)">
+    <rect width="1100" height="160" rx="8" fill="#eef6ff" stroke="#1d4ed8"/>
+    <text x="16" y="24" fill="#1d4ed8" font-weight="700" font-size="13">展开成的 device mesh(world_mesh 一维 -> unflatten)</text>
+    <g font-size="11">
+      <text x="16" y="48" fill="#334155">dense 区:["pp"(4), "dp_replicate"(1), "fsdp"(32), "tp"(2)]  -- 普通参数在这切</text>
+      <text x="16" y="68" fill="#334155">sparse 区:["pp"(4), "dp_replicate"(1), "efsdp"(32), "ep"(2)]  -- 专家参数在这切</text>
+      <text x="16" y="88" fill="#334155">dataloader:["pp"(4), "batch"(32), "cp"(1), "tp"(2)]  -- batch = dp_replicate*dp_shard</text>
+      <text x="16" y="108" fill="#334155">loss:["loss"](32) = batch*cp,跨它做梯度 all-reduce</text>
+      <text x="16" y="130" fill="#64748b">PP 用 Interleaved1F1B:4 个物理 pipeline rank,每 rank 的虚拟 stage 数由层数自动推断(可 --parallelism.pipeline_parallel_layers_per_stage 显式给)</text>
+      <text x="16" y="148" fill="#64748b">实际 671B 全量训练规模远大于 256(DeepSeek 原版用 2048 卡);此为可运行的说明性配置。</text>
+    </g>
+  </g>
+</svg>
+<p class="figcap">图 4-1:671B 的 mesh 拆分。所有数字来自 parallel_dims.py 的校验式,本配置已通过 dp_shard 自动推导与 EP 约束校验。</p>
+
+<h3>4.3 启动命令</h3>
+
+<p><b>单节点调试(8 卡,先验证流程,用更小并行度):</b></p>
+<pre><code><span class="cmt"># 用 debugmodel(小模型)先跑通 671B 的代码路径,不占真实显存</span>
+MODULE=deepseek_v3 CONFIG=deepseek_v3_debugmodel NGPU=8 ./run_train.sh
+
+<span class="cmt"># 或无 GPU 验证 671B config 能解析(meta + fake backend,不分配显存/不初始化 NCCL)</span>
+NGPU=8 COMM_MODE=fake_backend \
+MODULE=deepseek_v3 CONFIG=deepseek_v3_671b ./run_train.sh</code></pre>
+
+<p><b>多节点大规模训练(256 GPU = 32 节点 × 8 卡,按图 4-1 的并行度):</b></p>
+<pre><code><span class="cmt"># 参照仓库 multinode_trainer.slurm 的 srun torchrun --nnodes 模式</span>
+srun torchrun \
+  --nnodes 32 --nproc_per_node 8 \
+  --rdzv_backend c10d --rdzv_endpoint="$HEAD_NODE_IP:0" \
+  -m torchtitan.train \
+    --module deepseek_v3 --config deepseek_v3_671b \
+    --parallelism.tensor_parallel_degree=2 \
+    --parallelism.pipeline_parallel_degree=4 \
+    --parallelism.context_parallel_degree=1 \
+    --parallelism.expert_parallel_degree=2 \
+    --parallelism.data_parallel_shard_degree=-1 \
+    --parallelism.data_parallel_replicate_degree=1
+
+<span class="cmt">单节点同样并行度:直接 ./run_train.sh,末尾追加这些 --parallelism.* 即可,NGPU=本节点卡数。</span>
+<span class="cmt">EP=2 / Interleaved1F1B / Float8 已在 config 里,CLI 不重写即继承。</span></code></pre>
+
+<h3>4.4 运行前要准备的外部资源(③ 运行时层)</h3>
+<table>
+<tr><th>资源</th><th>说明</th><th>命令</th></tr>
+<tr><td>tokenizer</td><td>671B config 用 <code>./assets/hf/DeepSeek-V3.1-Base</code>(config_registry.py:184)</td><td><code>python scripts/download_hf_assets.py --repo_id deepseek-ai/DeepSeek-V3.1-Base --assets tokenizer --hf_token=...</code></td></tr>
+<tr><td>数据集</td><td>默认 <code>dataset="c4"</code>,已预配置 144M 条</td><td>无需额外操作;自备数据见 docs/datasets.md</td></tr>
+<tr><td>依赖</td><td>PyTorch nightly + <code>spmd_types</code>(parallel_dims.py 直接 import)</td><td><code>pip install -r requirements.txt</code>(仓库已带 uv.lock)</td></tr>
+<tr><td>多节点环境</td><td>NCCL/EFA 环境变量、节点拓扑</td><td>见 multinode_trainer.slurm 的 NCCL_* / FI_* 配置</td></tr>
+</table>
+
+<!-- ============ 5 ============ -->
+<h2 id="matrix"><span class="num" style="background:#475569">5</span>"你写 vs 框架给"总表</h2>
+
+<p>把全篇收成一张表:训练 DeepSeek V3 671B,每一件事归谁。</p>
+
+<table>
+<tr><th>事项</th><th>谁负责</th><th>具体</th></tr>
+<tr><td>训练循环 / config 解析 / CLI</td><td><span class="tag t-core">① torchtitan</span></td><td>train.py, trainer.py, config/</td></tr>
+<tr><td>FSDP / TP / CP / PP 机制</td><td><span class="tag t-core">① torchtitan</span></td><td>distributed/ 的 apply_* + pipeline_llm</td></tr>
+<tr><td>优化器 / 损失 / 调度器 / checkpoint</td><td><span class="tag t-core">① torchtitan</span></td><td>components/</td></tr>
+<tr><td>共享模型件(attention/MoE/RoPE/...)</td><td><span class="tag t-core">① torchtitan</span></td><td>models/common/</td></tr>
+<tr><td>671B 架构(MLA + 256 专家)</td><td><span class="tag t-ext">② deepseek_v3/</span>(已成品)</td><td>model.py -- 你训练 671B 不改;训练新模型则照写</td></tr>
+<tr><td>各权重切分声明</td><td><span class="tag t-ext">② deepseek_v3/</span></td><td>sharding.py -- 调①的 colwise/rowwise_config</td></tr>
+<tr><td>切分编排顺序</td><td><span class="tag t-ext">② deepseek_v3/</span></td><td>parallelize.py -- 纯调①的 apply_*</td></tr>
+<tr><td>ModelSpec 组装</td><td><span class="tag t-ext">② deepseek_v3/</span></td><td>__init__.py -- 借①的 pipeline_llm 等组件</td></tr>
+<tr><td>671B 训练超参</td><td><span class="tag t-ext">② deepseek_v3/</span></td><td>config_registry.py deepseek_v3_671b() -- 可被③覆盖</td></tr>
+<tr><td>HF 权重互转</td><td><span class="tag t-ext">② deepseek_v3/</span></td><td>state_dict_adapter.py -- 一张键映射表</td></tr>
+<tr><td>选模型 / 选尺寸</td><td><span class="tag t-user">③ 你</span></td><td>--module deepseek_v3 --config deepseek_v3_671b</td></tr>
+<tr><td>指定并行度(TP/PP/CP/EP)</td><td><span class="tag t-user">③ 你</span></td><td>--parallelism.* (671B 必须给 pp_degree)</td></tr>
+<tr><td>多节点启动</td><td><span class="tag t-user">③ 你</span></td><td>torchrun --nnodes / srun</td></tr>
+<tr><td>tokenizer / 数据集</td><td><span class="tag t-user">③ 你</span></td><td>下到 assets/hf/,C4 已预配置</td></tr>
+<tr><td>实验性扩展(不改 core)</td><td><span class="tag t-user">③ 你</span></td><td>experiments/your_folder/ + override 机制</td></tr>
+</table>
+
+<div class="key">
+<b>最终结论:</b>
+<ul style="margin:.2em 0 .2em 1.2em">
+<li><b>训练现成的 671B:你只做 ③</b>--写命令(选 module/config、给并行度、配多节点、备 tokenizer/数据)。deepseek_v3/ 目录(②)和 torchtitan 核心(①)都不用碰。</li>
+<li><b>训练一个新模型:你做 ② + ③</b>--照 deepseek_v3/ 的七文件结构写自己的目录(其中 parallelize.py/config_registry.py 大量是调①的 API,真正要写的只有架构和切分声明),再加 ③ 的命令。</li>
+<li><b>② 永远只调①,不实现①</b>--所以"用户开发"的本质是"按 ModelSpec 七字段契约组装 + 调用框架的 apply_* / 共享组件",而非从零造分布式训练轮子。</li>
+</ul>
+</div>
+
+<!-- ============ 6 ============ -->
+<h2 id="lifecycle"><span class="num" style="background:#0f766e">6</span>ModelSpec 生命周期:② 如何被 ① 消费</h2>
+
+<p>前面讲清了"② 的七字段 ModelSpec"和"① 提供的 API"。这一节把二者接起来:训练启动时,<code>Trainer</code> 到底怎么一步步把 ② 的 <code>ModelSpec</code> 变成可训练的并行模型。这条链路里<b>你写的部分(②)只是被调用的几个回调和一张 Config</b>,主流程全是 ① 在驱动。</p>
+
+<svg viewBox="0 0 1180 880" font-family="monospace" font-size="11">
+  <defs>
+    <marker id="arl" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker>
+    <marker id="arl2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#7c3aed"/></marker>
+  </defs>
+  <rect x="20" y="10" width="1140" height="860" rx="12" fill="#f8fafc" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="590" y="32" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="13">Trainer.__init__ 消费 ModelSpec 的时序(trainer.py:220-520 逐行核对)</text>
+
+  <!-- 三列泳道头 -->
+  <text x="80" y="58" fill="#1d4ed8" font-weight="700" font-size="12">① Trainer(框架)</text>
+  <text x="560" y="58" fill="#7c3aed" font-weight="700" font-size="12">② ModelSpec(模型目录)</text>
+  <text x="950" y="58" fill="#475569" font-weight="700" font-size="12">③ 你的输入</text>
+  <line x1="40" y1="66" x2="1140" y2="66" stroke="#cbd5e1"/>
+
+  <!-- step 1: 解析 config -->
+  <g font-size="10">
+    <rect x="40" y="78" width="480" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="98" fill="#1d4ed8" font-weight="700">1. ConfigManager 解析 CLI + override</text>
+    <text x="52" y="114" fill="#334155">config_registry["deepseek_v3_671b"]() 返回 Trainer.Config;model_spec 已塞入</text>
+    <path d="M 940 100 L 520 100" stroke="#64748b" stroke-width="1.5" marker-end="url(#arl)"/>
+    <rect x="940" y="82" width="200" height="36" rx="8" fill="#e2e8f0" stroke="#475569"/>
+    <text x="952" y="100" fill="#334155">--module --config +</text>
+    <text x="952" y="113" fill="#334155">--parallelism.* CLI</text>
+  </g>
+
+  <!-- step 2: build mesh -->
+  <g font-size="10">
+    <rect x="40" y="134" width="480" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="154" fill="#1d4ed8" font-weight="700">2. ParallelDims.from_config + build_mesh</text>
+    <text x="52" y="170" fill="#334155">校验 dp*cp*tp*pp==world;unflatten 出 dense/sparse/dataloader/loss mesh</text>
+  </g>
+
+  <!-- step 3: model_config.build -->
+  <g font-size="10">
+    <rect x="40" y="190" width="480" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="210" fill="#1d4ed8" font-weight="700">3. model_config = model_spec.model; model_config.build()(meta device)</text>
+    <text x="52" y="226" fill="#334155">build() 递归,update_from_config() 内调 set_deepseek_v3_sharding_config</text>
+    <path d="M 520 212 L 540 212" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arl2)"/>
+    <rect x="540" y="190" width="380" height="44" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="552" y="210" fill="#7c3aed" font-weight="700">② 提供:model_spec.model = DeepSeekV3Model.Config</text>
+    <text x="552" y="226" fill="#334155">含架构 + sharding_config(声明式放置)</text>
+  </g>
+
+  <!-- step 4: PP branch -->
+  <g font-size="10">
+    <rect x="40" y="246" width="480" height="120" rx="8" fill="#dcfce7" stroke="#0f766e"/>
+    <text x="52" y="266" fill="#0f766e" font-weight="700">4. 若 PP 开:调 model_spec.pipelining_fn(...)</text>
+    <text x="52" y="282" fill="#334155">= pipeline_llm(① 的通用函数,非②写)</text>
+    <text x="52" y="300" fill="#334155">  -> _generate_llm_fqn_per_model_part 按 FQN 切 stage</text>
+    <text x="52" y="316" fill="#334155">  -> _pipeline_module_split;逐 stage 调 parallelize_fn</text>
+    <text x="52" y="334" fill="#334155">  -> 建 Interleaved1F1B schedule;get_mesh_cb 重建 DTensor</text>
+    <text x="52" y="352" fill="#64748b">  返回 (pp_schedule, model_parts, has_first, has_last)</text>
+    <path d="M 520 300 L 540 300" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arl2)"/>
+    <rect x="540" y="278" width="380" height="56" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="552" y="298" fill="#7c3aed" font-weight="700">② 提供:pipelining_fn=pipeline_llm</text>
+    <text x="552" y="314" fill="#334155">+ parallelize_fn=parallelize_deepseekv3</text>
+    <text x="552" y="328" fill="#64748b">(pipeline_llm 实为①的,②只是引用)</text>
+  </g>
+
+  <!-- step 4b: non-PP branch -->
+  <g font-size="10">
+    <rect x="40" y="376" width="480" height="56" rx="8" fill="#dcfce7" stroke="#0f766e"/>
+    <text x="52" y="396" fill="#0f766e" font-weight="700">4'. 若 PP 关:调 model_spec.parallelize_fn(model, ...)</text>
+    <text x="52" y="414" fill="#334155">= parallelize_deepseekv3,直接跑 6 步编排(图 2-1)</text>
+    <text x="52" y="428" fill="#64748b">跳过 split_module,单 process group</text>
+  </g>
+
+  <!-- step 5: parallelize_fn 内部 6 步 -->
+  <g font-size="10">
+    <rect x="40" y="442" width="480" height="80" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="52" y="462" fill="#7c3aed" font-weight="700">5. parallelize_deepseekv3 内部(被①回调)</text>
+    <text x="52" y="478" fill="#334155">apply_cp_to_forward -> model.parallelize(parallel_dims)</text>
+    <text x="52" y="494" fill="#334155">-> maybe_enable_async_tp -> AC.build().apply</text>
+    <text x="52" y="510" fill="#334155">-> apply_compile -> apply_fsdp_to_decoder</text>
+    <text x="52" y="524" fill="#64748b">每个 PP stage 各跑一遍这 6 步</text>
+    <path d="M 520 482 L 540 482" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arl2)"/>
+    <rect x="540" y="460" width="380" height="56" rx="8" fill="#fef3c7" stroke="#b45309"/>
+    <text x="552" y="480" fill="#b45309" font-weight="700">这 6 步全是调①的 apply_*</text>
+    <text x="552" y="496" fill="#334155">② 自己不实现任何通信/调度</text>
+    <text x="552" y="510" fill="#64748b">sharding_config 在 step3 已填好</text>
+  </g>
+
+  <!-- step 6: init weights -->
+  <g font-size="10">
+    <rect x="40" y="532" width="480" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="552" fill="#1d4ed8" font-weight="700">6. model_parts.to_empty(device);init_weights(buffer_device)</text>
+    <text x="52" y="568" fill="#334155">meta -> 真实显存;param_init 系统按 Config 递归初始化(含 depth_scaled)</text>
+  </g>
+
+  <!-- step 7: optimizer -->
+  <g font-size="10">
+    <rect x="40" y="588" width="480" height="44" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="608" fill="#1d4ed8" font-weight="700">7. 建 optimizer(config.optimizer, model_parts.parameters())</text>
+    <text x="52" y="624" fill="#334155">default_adamw 已在 ② 的 config_registry 里指定</text>
+  </g>
+
+  <!-- step 8: post_optimizer_build_fn -->
+  <g font-size="10">
+    <rect x="40" y="644" width="480" height="56" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="664" fill="#1d4ed8" font-weight="700">8. 若有:调 model_spec.post_optimizer_build_fn(...)</text>
+    <text x="52" y="682" fill="#334155">= register_moe_load_balancing_hook(① 的组件,给 router 加 loss)</text>
+    <text x="52" y="696" fill="#64748b">必须在 optimizer 建好之后(hook 要访问 optimizer state)</text>
+    <path d="M 520 672 L 540 672" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arl2)"/>
+    <rect x="540" y="650" width="380" height="44" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="552" y="670" fill="#7c3aed" font-weight="700">② 提供:post_optimizer_build_fn</text>
+    <text x="552" y="686" fill="#334155">= register_moe_load_balancing_hook</text>
+  </g>
+
+  <!-- step 9: state_dict_adapter -->
+  <g font-size="10">
+    <rect x="40" y="712" width="480" height="56" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
+    <text x="52" y="732" fill="#1d4ed8" font-weight="700">9. 建 state_dict_adapter = model_spec.state_dict_adapter(model_config, hf_assets_path)</text>
+    <text x="52" y="750" fill="#334155">供 CheckpointManager 存/取 HF 格式(含 DTensor 分片)</text>
+    <text x="52" y="764" fill="#64748b">只在需要 checkpoint 互转时用</text>
+    <path d="M 520 740 L 540 740" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arl2)"/>
+    <rect x="540" y="718" width="380" height="44" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="552" y="738" fill="#7c3aed" font-weight="700">② 提供:state_dict_adapter 类</text>
+    <text x="552" y="754" fill="#334155">= DeepSeekV3StateDictAdapter(一张 from_hf_map)</text>
+  </g>
+
+  <!-- step 10: train loop -->
+  <g font-size="10">
+    <rect x="40" y="780" width="480" height="56" rx="8" fill="#fef4e2" stroke="#92400e"/>
+    <text x="52" y="800" fill="#92400e" font-weight="700">10. 进入 train loop:pp_schedule.step / forward_backward</text>
+    <text x="52" y="816" fill="#334155">每步:schedule 推微批过 stage;各 apply_* 的 hook 在运行时插通信</text>
+    <text x="52" y="832" fill="#64748b">② 在此阶段不再被调用 -- 纯运行时</text>
+  </g>
+
+  <!-- 右下角:② 在哪几步被调用 -->
+  <g transform="translate(540,780)">
+    <rect width="380" height="56" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
+    <text x="12" y="20" fill="#7c3aed" font-weight="700" font-size="11">② 被调用的总共只有 4 处</text>
+    <text x="12" y="36" fill="#334155" font-size="10.5">step3(model) / step4(pipelining+parallelize)</text>
+    <text x="12" y="50" fill="#334155" font-size="10.5">step8(post_opt) / step9(adapter)。其余全是①。</text>
+  </g>
+</svg>
+<p class="figcap">图 6-1:ModelSpec 生命周期。左列是 ① Trainer 驱动的主流程(trainer.py:220-520),右列是 ② ModelSpec 七字段被消费的 4 个点。绿色=PP 分支,蓝=通用步骤,紫框=② 的回调点。最右列 ③ 只在 step1 提供输入。</p>
+
+<div class="key">
+<b>时序图看出的真相:</b>
+<ul style="margin:.2em 0 .2em 1.2em">
+<li><b>主流程是 ① 在驱动</b>:10 步里 8 步是 ① 的 <code>Trainer.__init__</code> 在自己跑(config 解析、建 mesh、建 optimizer、初始化权重、进 train loop)。</li>
+<li><b>② 被回调只有 4 处</b>:step3 <code>model</code> 喂给 build、step4 <code>pipelining_fn</code>+<code>parallelize_fn</code> 做切分、step8 <code>post_optimizer_build_fn</code> 挂 MoE hook、step9 <code>state_dict_adapter</code> 建 HF 互转。这正好对应 <code>ModelSpec</code> 的七个字段。</li>
+<li><b>② 的 parallelize_fn 自己又被拆成 6 个 apply_*</b>(图 2-1),所以"用户开发"到最底层仍是调 ①。</li>
+<li><b>PP 分支与非 PP 分支的区别</b>:PP 多走 <code>pipeline_llm</code> 切 stage + 建 schedule,且对每个 stage 各调一次 <code>parallelize_fn</code>;非 PP 直接调一次 <code>parallelize_fn</code>。671B 用 Interleaved1F1B,走 PP 分支。</li>
+<li><b>③ 只在最开头露面</b>:提供 <code>--module/--config/--parallelism.*</code> 与 tokenizer/数据,之后整个训练都不再需要你介入。</li>
+</ul>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="usercode"><span class="num" style="background:#b45309">7</span>用户真正要写的代码/配置(可直接复制)</h2>
+
+<p>前面全是"谁写什么"的说明。这一节把<b>用户实际落笔写的东西</b>原样给出来,按"从简到繁"三档:① 一行命令跑现成的 671B;② 自定义一个训练配置(不改 core);③ 不改源码换组件(override)。所有代码对照源码核验,改个路径即可用。</p>
+
+<h3>7.1 第一档:直接跑现成的 671B(你只写命令)</h3>
+<p>现成的 <code>deepseek_v3_671b</code> 配置已在仓库里,你<b>一行 Python 都不写</b>,只准备命令和外部资源。</p>
+
+<p><b>7.1a 下载 tokenizer(671B 用 DeepSeek-V3.1-Base,config_registry.py:184 指定的路径):</b></p>
+<pre><code><span class="cmt"># 仓库自带 scripts/download_hf_assets.py,下到 config 里写的 ./assets/hf/DeepSeek-V3.1-Base</span>
+python scripts/download_hf_assets.py \
+    --repo_id deepseek-ai/DeepSeek-V3.1-Base \
+    --assets tokenizer \
+    --hf_token hf_xxxxxxxxxxxxxxxxxxxx
+
+<span class="cmt"># 数据集不用准备:C4 已预配置(144M 条),config_registry.py:187 dataset="c4"</span></code></pre>
+
+<p><b>7.1b 多节点启动(256 GPU = 32 节点 × 8 卡,mesh 见图 4-1):</b></p>
+<pre><code><span class="cmt"># 在每个节点上(或经 slurm 的 srun),参照仓库 multinode_trainer.slurm</span>
+export NCCL_DEBUG=WARN
+export NCCL_SOCKET_IFNAME="eth0,en,eth,em,bond"
+export PYTORCH_ALLOC_CONF="expandable_segments:True"
+
+torchrun \
+    --nnodes 32 --nproc_per_node 8 \
+    --rdzv_backend c10d --rdzv_endpoint="$HEAD_NODE_IP:0" \
+    -m torchtitan.train \
+        --module deepseek_v3 --config deepseek_v3_671b \
+        --parallelism.tensor_parallel_degree=2 \
+        --parallelism.pipeline_parallel_degree=4 \
+        --parallelism.context_parallel_degree=1 \
+        --parallelism.expert_parallel_degree=2 \
+        --parallelism.data_parallel_shard_degree=-1 \
+        --parallelism.data_parallel_replicate_degree=1
+
+<span class="cmt"># 单节点调试:直接 ./run_train.sh,末尾追加上面的 --parallelism.* 即可,NGPU=本节点卡数。
+# 无 GPU 先验证 config 能解析(不分配显存、不初始化 NCCL):
+#   NGPU=8 COMM_MODE=fake_backend MODULE=deepseek_v3 CONFIG=deepseek_v3_671b ./run_train.sh</span></code></pre>
+
+<p><b>7.1c slurm 批处理脚本(基于仓库 multinode_trainer.slurm 改 MODEL/CONFIG/并行度):</b></p>
+<pre><code><span class="cmt"># multinode_trainer.slurm 节选 -- 你只需改下面三处 + 并行度</span>
+#SBATCH --job-name=dsv3_671b
+#SBATCH --ntasks=32
+#SBATCH --nodes=32
+#SBATCH --gpus-per-task=8
+#SBATCH --cpus-per-task=96
+#SBATCH --partition=train
+
+nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+head_node_ip=$(srun --nodes=1 --ntasks=1 -w "${nodes[0]}" hostname --ip-address)
+export NCCL_DEBUG=WARN
+export NCCL_SOCKET_IFNAME="eth0,en,eth,em,bond"
+export NCCL_BUFFSIZE=2097152
+
+MODULE=deepseek_v3
+CONFIG=deepseek_v3_671b
+
+srun torchrun --nnodes 32 --nproc_per_node 8 \
+    --rdzv_backend c10d --rdzv_endpoint="$head_node_ip:0" \
+    -m torchtitan.train --module $MODULE --config $CONFIG \
+    --parallelism.tensor_parallel_degree=2 \
+    --parallelism.pipeline_parallel_degree=4 \
+    --parallelism.expert_parallel_degree=2 \
+    --parallelism.data_parallel_shard_degree=-1</code></pre>
+
+<h3>7.2 第二档:自定义一个 671B 训练配置(不改 core)</h3>
+<p>现成的 <code>deepseek_v3_671b</code> 是 lr=2.2e-4 / warmup=2000 / EP=2 / Interleaved1F1B。若你要改 lr、warmup、并行度组合、checkpoint 频率等,有两种做法:<b>(A) 直接 CLI 覆盖单次值</b>(最轻);<b>(B) 写一个自己的 config_registry 函数固化下来</b>(团队复用)。下面给 B 的完整文件。</p>
+
+<p><b>7.2a 最轻:CLI 直接覆盖(不写任何文件)</b></p>
+<pre><code><span class="cmt"># 只覆盖你想改的字段,其余继承 deepseek_v3_671b 的默认值</span>
+torchrun --nproc_per_node 8 -m torchtitan.train \
+    --module deepseek_v3 --config deepseek_v3_671b \
+    --parallelism.tensor_parallel_degree=4 \
+    --parallelism.pipeline_parallel_degree=8 \
+    --parallelism.expert_parallel_degree=4 \
+    --parallelism.data_parallel_shard_degree=-1 \
+    --optimizer.args.lr=1.5e-4 \
+    --lr_scheduler.warmup_steps=5000 \
+    --training.steps=50000 \
+    --checkpoint.interval=1000</code></pre>
+
+<p><b>7.2b 固化:写自己的 config_registry(放进 experiments/)</b></p>
+<p>对照源码核验的注册机制(<code>config/manager.py:105-141</code>):<code>--module</code> 既接受短名(需加入 <code>_supported_experiments</code> 名单),也接受<b>完整模块路径</b>(无需改任何名单)。所以你只要把文件放对位置,<b>不改 core 任何文件</b>。</p>
+
+<pre><code><span class="cmt"># 文件:torchtrainer/experiments/my_dsv3/__init__.py</span>
+<span class="cmt"># 复用 deepseek_v3 的 model_registry(架构/切分/adapter 都现成),只换训练超参</span>
+<span class="kw">from</span> torchtitan.models.deepseek_v3 <span class="kw">import</span> model_registry <span class="kw">as</span> _dsv3_registry
+
+<span class="kw">def</span> <span class="fn">model_registry</span>(flavor, **kwargs):
+    <span class="kw">return</span> _dsv3_registry(flavor, **kwargs)</code></pre>
+
+<pre><code><span class="cmt"># 文件:torchtrainer/experiments/my_dsv3/config_registry.py</span>
+<span class="kw">from</span> torchtitan.components.checkpoint <span class="kw">import</span> CheckpointManager
+<span class="kw">from</span> torchtitan.components.loss <span class="kw">import</span> ChunkedLossWrapper, CrossEntropyLoss
+<span class="kw">from</span> torchtitan.components.lr_scheduler <span class="kw">import</span> LRSchedulersContainer
+<span class="kw">from</span> torchtitan.components.metrics <span class="kw">import</span> MetricsProcessor
+<span class="kw">from</span> torchtitan.components.optimizer <span class="kw">import</span> default_adamw
+<span class="kw">from</span> torchtitan.components.quantization <span class="kw">import</span> (
+    Float8GroupedExpertsConverter,
+    Float8LinearConverter,
+)
+<span class="kw">from</span> torchtitan.config <span class="kw">import</span> CompileConfig, ParallelismConfig, TrainingConfig
+<span class="kw">from</span> torchtitan.distributed.activation_checkpoint <span class="kw">import</span> SelectiveAC
+<span class="kw">from</span> torchtitan.hf_datasets.text_datasets <span class="kw">import</span> HuggingFaceTextDataLoader
+<span class="kw">from</span> torchtitan.models.common.config_utils <span class="kw">import</span> decoder_vocab_size
+<span class="kw">from</span> torchtitan.trainer <span class="kw">import</span> Trainer
+
+<span class="kw">from</span> . <span class="kw">import</span> model_registry
+
+
+<span class="kw">def</span> <span class="fn">my_671b</span>() -> Trainer.Config:
+    <span class="cmt"># 与官方 deepseek_v3_671b 同样的 671B 架构 + Float8,只改训练超参</span>
+    compile_config = CompileConfig(enable=True, components=[<span class="str">"loss"</span>])
+    model_compile_enabled = (
+        compile_config.enable <span class="kw">and</span> <span class="str">"model"</span> <span class="kw">in</span> compile_config.components
+    )
+    model_spec = model_registry(
+        <span class="str">"671B"</span>,
+        attn_backend=<span class="str">"flex"</span>,
+        converters=[
+            Float8LinearConverter.Config(
+                filter_fqns=[<span class="str">"output"</span>, <span class="str">"router.gate"</span>],
+                model_compile_enabled=model_compile_enabled,
+            ),
+            Float8GroupedExpertsConverter.Config(
+                model_compile_enabled=model_compile_enabled
+            ),
+        ],
+    )
+    <span class="kw">return</span> Trainer.Config(
+        loss=ChunkedLossWrapper.Config(
+            loss_fn=CrossEntropyLoss.Config(
+                global_vocab_size=decoder_vocab_size(model_spec),
+            ),
+        ),
+        hf_assets_path=<span class="str">"./assets/hf/DeepSeek-V3.1-Base"</span>,
+        model_spec=model_spec,
+        dataloader=HuggingFaceTextDataLoader.Config(dataset=<span class="str">"c4"</span>),
+        optimizer=default_adamw(lr=<span class="num">1.5e-4</span>),          <span class="cmt"># 改了 lr</span>
+        lr_scheduler=LRSchedulersContainer.Config(
+            warmup_steps=<span class="num">5000</span>,                    <span class="cmt"># 改了 warmup</span>
+            decay_ratio=<span class="num">0.8</span>,
+            decay_type=<span class="str">"cosine"</span>,
+            min_lr_factor=<span class="num">0.1</span>,
+        ),
+        training=TrainingConfig(
+            local_batch_size=<span class="num">4</span>,
+            seq_len=<span class="num">4096</span>,
+            steps=<span class="num">50000</span>,                         <span class="cmt"># 改了 steps</span>
+        ),
+        parallelism=ParallelismConfig(
+            pipeline_parallel_schedule=<span class="str">"Interleaved1F1B"</span>,
+            expert_parallel_degree=<span class="num">4</span>,            <span class="cmt"># 改了 EP</span>
+        ),
+        checkpoint=CheckpointManager.Config(interval=<span class="num">1000</span>),  <span class="cmt"># 改了 ckpt 频率</span>
+        activation_checkpoint=SelectiveAC.Config(),
+        compile=compile_config,
+    )</code></pre>
+
+<p><b>7.2c 跑起来(用完整模块路径,无需改任何名单):</b></p>
+<pre><code><span class="cmt"># --module 用完整路径,ConfigManager 直接 importlib.import_module 解析(manager.py:125-141)</span>
+<span class="cmt"># 不用动 torchtitan/experiments/__init__.py 的 _supported_experiments 名单</span>
+torchrun --nnodes 32 --nproc_per_node 8 \
+    -m torchtitan.train \
+    --module torchtitan.experiments.my_dsv3 --config my_671b \
+    --parallelism.tensor_parallel_degree=4 \
+    --parallelism.pipeline_parallel_degree=8 \
+    --parallelism.data_parallel_shard_degree=-1</code></pre>
+
+<div class="note"><b>注册方式对照源码:</b>短名(如 <code>--module my_dsv3</code>)需要把 <code>"my_dsv3"</code> 加进 <code>_supported_experiments</code>(manager.py:99,105);完整路径(如 <code>--module torchtitan.experiments.my_dsv3</code>)走 manager.py:125-141 的 fallback 分支,<b>不需要改任何名单</b>。想用短名再改那一行;不想碰 core 就用完整路径。</div>
+
+<h3>7.3 第三档:不改源码换组件(override 机制)</h3>
+<p>假设你想把 671B 的 SwiGLU 换成融合版(仓库已自带 <code>torchtitan/overrides/fused_swiglu.py</code>),<b>不改任何 config_registry、不重写模型</b>。这是 override 机制的标准用法:在 config 里加一个 import 即可。</p>
+
+<p><b>7.3a 已自带 override:一行启用</b></p>
+<pre><code><span class="cmt"># deepseek_v3 的 minimal_async_ep 变体就是这么做的(config_registry.py:76 enable_fused_swiglu)</span>
+<span class="cmt"># 等价于在 CLI 加 --override.imports torchtitan.overrides.fused_swiglu</span>
+torchrun --nproc_per_node 8 -m torchtitan.train \
+    --module deepseek_v3 --config deepseek_v3_671b \
+    --override.imports torchtitan.overrides.fused_swiglu \
+    --parallelism.tensor_parallel_degree=2 --parallelism.pipeline_parallel_degree=4 \
+    --parallelism.expert_parallel_degree=2 --parallelism.data_parallel_shard_degree=-1</code></pre>
+
+<p><b>7.3b 写自己的 override 模块(替换任意 Configurable,以换 optimizer 为例)</b></p>
+<p>对照源码核验的 override 写法(<code>overrides/fused_swiglu.py:483</code> 的 <code>@override</code> + <code>derive</code>):<code>@override(name, target=被替换的Config, description=)</code> 装饰一个工厂函数,返回新 Config。下面给一个最小的"换 optimizer"骨架。</p>
+<pre><code><span class="cmt"># 文件:torchtitan/experiments/my_dsv3/overrides.py</span>
+<span class="kw">from</span> torchtitan.components.optimizer <span class="kw">import</span> OptimizersContainer
+<span class="kw">from</span> torchtitan.config <span class="kw">import</span> override
+
+<span class="cmt"># 假设你写了个带 weight decay 调优的 AdamW 容器</span>
+<span class="kw">class</span> <span class="cls">MyAdamW</span>(OptimizersContainer):
+    <span class="kw">class</span> <span class="cls">Config</span>(OptimizersContainer.Config):
+        weight_decay: <span class="cls">float</span> = <span class="num">0.1</span>
+
+<span class="kw">@override</span>(
+    <span class="str">"my_adamw"</span>,                          <span class="cmt"># 名字,用于 --override.apply</span>
+    target=OptimizersContainer.Config,      <span class="cmt"># 被替换的目标 Config</span>
+    description=<span class="str">"AdamW with tuned weight decay"</span>,
+)
+<span class="kw">def</span> <span class="fn">my_adamw</span>(cfg: OptimizersContainer.Config) -> MyAdamW.Config:
+    <span class="kw">from</span> torchtitan.config <span class="kw">import</span> derive
+    <span class="kw">return</span> derive(cfg, MyAdamW.Config, weight_decay=<span class="num">0.1</span>)
+
+<span class="cmt"># 用:
+#   --override.imports torchtitan.experiments.my_dsv3.overrides
+#   --override.apply optimizer=my_adamw      (按 FQN glob 精确指定时再细化)</span></code></pre>
+
+<div class="warn"><b>override vs config_registry 的区别:</b>config_registry 是<b>建一个新配置</b>(改超参/并行度);override 是<b>把某个组件类换掉</b>(换 optimizer/loss/attention 实现),不动 config 逻辑。两者可叠加:你的 <code>my_671b</code> 配置 + <code>--override.imports fused_swiglu</code> 同时用。</div>
+
+<h3>7.4 你写的东西汇总(对照前三档)</h3>
+<table>
+<tr><th>档位</th><th>你写的文件</th><th>改不改 core</th><th>调用方式</th></tr>
+<tr><td>① 跑现成 671B</td><td>无(只写命令 + slurm + 下 tokenizer)</td><td>不改</td><td><code>--module deepseek_v3 --config deepseek_v3_671b</code></td></tr>
+<tr><td>② 自定义配置</td><td><code>experiments/my_dsv3/{__init__,config_registry}.py</code></td><td>不改(用完整路径 module)</td><td><code>--module torchtitan.experiments.my_dsv3 --config my_671b</code></td></tr>
+<tr><td>③ 换组件</td><td><code>experiments/my_dsv3/overrides.py</code> 一个 <code>@override</code> 函数</td><td>不改</td><td><code>--override.imports ... --override.apply ...</code></td></tr>
+<tr><td>加新模型</td><td>七件套(见第 2 节)</td><td>不改(放 models/ 或 experiments/)</td><td>同②的注册方式</td></tr>
+</table>
+
+<div class="key"><b>关键认清:</b>"用户开发"不等于"从零造轮子"。哪怕第三档的 override,你写的也只是一个 <code>@override</code> 装饰的工厂函数 + <code>derive()</code>,真正干活的是 ① 的 <code>Configurable</code> 体系。真正的"模型相关代码"只有第 2 节那三件(model/sharding/state_dict_adapter)--而训练 671B 时这三件都已现成,你属于第①档,只写命令。</div>
+
+<p class="sub">源码索引:① 核心 <code>torchtitan/{train,trainer}.py</code> + <code>torchtitan/config/</code> + <code>torchtitan/protocols/</code> + <code>torchtitan/distributed/</code> + <code>torchtitan/components/</code> + <code>torchtitan/models/common/</code>。② 模型目录 <code>torchtitan/models/deepseek_v3/{model,sharding,parallelize,state_dict_adapter,__init__,config_registry}.py</code>。③ 运行时 <code>run_train.sh</code> / <code>multinode_trainer.slurm</code> + CLI。扩展规范见 <code>docs/extension.md</code> 与 <code>torchtitan/models/README.md</code>。本页时序对照 <code>trainer.py:220-520</code>,config 发现对照 <code>config/manager.py:100-141</code>,override 对照 <code>overrides/fused_swiglu.py:483</code>。</p>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

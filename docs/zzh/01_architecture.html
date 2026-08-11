@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>01 · 整体架构</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main>
+  <h1>01 · 整体架构</h1>
+  <p class="page-meta">层次：<span class="layer-tag layer-coarse">架构 · 粗</span> 目标：建立「代码在哪儿、谁负责什么、彼此如何衔接」的心智地图。</p>
+
+  <div class="toc">
+    <b>本页目录</b>
+    <a href="#big-picture">1. 跨文件的大图</a>
+    <a href="#layers">2. 分层设计</a>
+    <a href="#dir-map">3. 目录地图</a>
+    <a href="#core-abstractions">4. 核心抽象及其关系</a>
+    <a href="#request-flow">5. 一次启动的请求流</a>
+  </div>
+
+  <h2 id="big-picture">1. 跨文件的大图</h2>
+  <p>torchtitan 的入口极简，但职责清晰分层：</p>
+  <div class="dia col">
+    <div class="dia">
+      <div class="box"><b>train.py</b><small>main()<br>解析配置 → 建 Trainer<br>→ train()</small></div>
+      <div class="arrow">→</div>
+      <div class="box purple"><b>Trainer</b><small>trainer.py<br>拥有全生命周期</small></div>
+    </div>
+    <div class="dia">
+      <div class="box accent"><b>config/</b><small>ConfigManager, Configurable<br>override, configs</small></div>
+      <div class="box green"><b>models/</b><small>llama3 等<br>model/sharding/parallelize<br>config_registry</small></div>
+      <div class="box"><b>distributed/</b><small>fsdp, tensor_parallel<br>pipeline_parallel, context_parallel<br>activation_checkpoint, compile<br>parallel_dims</small></div>
+    </div>
+    <div class="dia">
+      <div class="box"><b>components/</b><small>dataloader, optimizer<br>lr_scheduler, loss<br>checkpoint, metrics, tokenizer</small></div>
+      <div class="box amber"><b>protocols/</b><small>Module, BaseModel<br>ModelSpec, sharding</small></div>
+      <div class="box"><b>observability/</b><small>structured_logger<br>gantt / step_state</small></div>
+    </div>
+  </div>
+  <div class="callout key">
+    <div class="title">核心原则（来自 CLAUDE.md）</div>
+    1) PyTorch 原生，核心不依赖非 PyTorch 库；2) 先查根因再打补丁；3) 复用优于复制，跨模型统一组件；
+    4) 实验不污染核心；5) 保护已收敛的代码路径；6) 改动共享代码要审计所有调用点；7) 不写「以防万一」的防御性检查。
+  </div>
+
+  <h2 id="layers">2. 分层设计</h2>
+  <p>从下到上，代码按「协议 → 配置 → 实现 → 编排」分层：</p>
+  <table>
+    <tr><th>层</th><th>位置</th><th>职责</th><th>关键文件</th></tr>
+    <tr><td>① 协议层</td><td><code>protocols/</code></td><td>定义 <code>Module</code>=nn.Module+Configurable、<code>BaseModel</code>、<code>ModelSpec</code>、<code>ShardingConfig</code> 等「契约」</td><td>module.py, model.py, model_spec.py, sharding.py</td></tr>
+    <tr><td>② 配置层</td><td><code>config/</code></td><td>把任意嵌套 dataclass 变成可构建、可 CLI 覆盖的配置树</td><td>configurable.py, manager.py, override.py, configs.py</td></tr>
+    <tr><td>③ 模型层</td><td><code>models/</code></td><td>单设备架构 + 声明式切分 + 并行化函数 + 配置注册</td><td>llama3/{model,sharding,parallelize,config_registry}.py</td></tr>
+    <tr><td>④ 分布式层</td><td><code>distributed/</code></td><td>把声明式切分落为 DTensor / FSDP / 各种并行与编译</td><td>fsdp.py, tensor_parallel.py, pipeline_parallel.py, context_parallel.py, activation_checkpoint.py, compile.py, parallel_dims.py</td></tr>
+    <tr><td>⑤ 组件层</td><td><code>components/</code></td><td>数据、优化器、学习率、损失、检查点、指标、分词（多为 Configurable）</td><td>dataloader.py, optimizer.py, lr_scheduler.py, loss.py, checkpoint.py, metrics.py</td></tr>
+    <tr><td>⑥ 编排层</td><td><code>trainer.py</code></td><td>把以上全部组装进一次训练生命周期</td><td>trainer.py, train.py</td></tr>
+    <tr><td>⑦ 实验层</td><td><code>experiments/</code></td><td>RL、TorchFT、graph_trainer 等，可宽松但仍需 lint</td><td>experiments/{rl,torchft,graph_trainer}/</td></tr>
+  </table>
+
+  <h2 id="dir-map">3. 目录地图</h2>
+  <pre><code><span class="cmt"># 顶层</span>
+train.py            <span class="cmt"># 入口 main()：解析配置、建 Trainer、train() 或存种子检查点</span>
+trainer.py          <span class="cmt"># Trainer(Configurable, Stateful)：生命周期拥有者</span>
+run_train.sh        <span class="cmt"># 启动脚本（MODULE/CONFIG/NCLUSTER/NGPU 等环境变量）</span>
+
+<span class="cmt"># 核心包</span>
+torchtitan/
+├── config/         <span class="cmt"># 配置系统：Configurable 基类、ConfigManager、override、公共 configs</span>
+├── protocols/      <span class="cmt"># 协议：Module、BaseModel、ModelSpec、ShardingConfig</span>
+├── models/         <span class="cmt"># 各模型：llama3/qwen3/qwen3_5/deepseek_v3/gpt_oss/flux + common/ 共享组件</span>
+│   └── common/     <span class="cmt"># attention、feed_forward、decoder、moe、rope、rmsnorm、embedding、param_init</span>
+├── distributed/    <span class="cmt"># 分布式：fsdp、tensor_parallel、pipeline_parallel、context_parallel、</span>
+│                   <span class="cmt">#   activation_checkpoint、compile、parallel_dims、full_dtensor、spmd_types、</span>
+│                   <span class="cmt">#   deepep(EP)、minimal_async_ep(异步 EP)</span>
+├── components/     <span class="cmt"># 训练组件：dataloader、optimizer、lr_scheduler、loss、checkpoint、metrics、</span>
+│                   <span class="cmt">#   tokenizer、validate、quantization(float8/mx)</span>
+├── hf_datasets/    <span class="cmt"># HuggingFace 数据集：文本、多模态、交错</span>
+├── observability/  <span class="cmt"># 结构化日志（Gantt/step_state）</span>
+├── tools/          <span class="cmt"># 日志、profiler、工具函数</span>
+├── overrides/      <span class="cmt"># 可插拔的覆盖实现（fused_swiglu、helion_rope）</span>
+└── experiments/    <span class="cmt"># rl / torchft / graph_trainer / transformers_modeling_backend</span></code></pre>
+
+  <h3>3.1 实验层(experiments/)概览</h3>
+  <p>实验层使用更宽松的标准,但必须 lint。不修改核心代码来适配实验需求——实验通过 <code>--override.imports</code> 机制或独立配置注入,不与核心耦合。</p>
+  <table>
+    <tr><th>实验目录</th><th>用途</th><th>核心文件</th></tr>
+    <tr><td><code>experiments/rl/</code></td><td>强化学习训练(PPO、GRPO):actor/generator/trainer、vLLM 包装、搜索 R1</td><td><code>rl/actors/</code>、<code>rl/models/</code>、<code>rl/examples/</code></td></tr>
+    <tr><td><code>experiments/torchft/</code></td><td>TorchFT 容错训练集成</td><td><code>torchft/trainer.py</code>、<code>torchft/llama3/</code></td></tr>
+    <tr><td><code>experiments/graph_trainer/</code></td><td>图训练器(autoparallel、DSD、trace 模块)</td><td><code>graph_trainer/llama3/</code>、<code>graph_trainer/deepseek_v3/</code></td></tr>
+    <tr><td><code>experiments/forge/</code></td><td>Forge 引擎集成</td><td><code>forge/engine.py</code>、<code>forge/example_train.py</code></td></tr>
+    <tr><td><code>experiments/transformers_modeling_backend/</code></td><td>HF transformers 模型后端(非 torchtitan 原生模型)</td><td><code>parallelize.py</code>、<code>pipeline.py</code></td></tr>
+  </table>
+  <p>核心原则:<b>实验不污染核心</b>——<code>train.py</code> 和 <code>trainer.py</code> 中没有 <code>if experiment_x:</code> 分支。实验通过配置系统注入,与核心代码正交。</p>
+
+  <h2 id="core-abstractions">4. 核心抽象及其关系</h2>
+  <p>理解这五个抽象，就理解了 torchtitan 的骨架：</p>
+
+  <h3>4.1 Configurable —— 一切皆「配置 + 构建」</h3>
+  <ul>
+    <li>每个可构建类继承 <code>Configurable</code>（nn.Module 组件则继承 <code>Module</code>）。</li>
+    <li>它内嵌一个 <code>class Config(Configurable.Config)</code>，<b>必须用</b> <code>@dataclass(kw_only=True, slots=True)</code>。</li>
+    <li><code>config.build()</code> 经由 <code>__init_subclass__</code> 自动找回到拥有类（<code>_owner</code>），等价于 <code>Owner(config=config)</code>。</li>
+    <li>带运行时对象的组件（tokenizer/dataloader/optimizer）通过 <code>build(**kwargs)</code> 把外部对象传进去。</li>
+  </ul>
+  <pre><code><span class="cmt"># configurable.py 节选</span>
+<span class="kw">class</span> <span class="cls">Configurable</span>:
+    <span class="kw">class</span> <span class="cls">Config</span>:
+        <span class="kw">def</span> <span class="fn">build</span>(self, **kwargs):
+            <span class="kw">if</span> <span class="kw">not</span> kwargs:
+                <span class="kw">return</span> self._owner(config=replace(self))
+            <span class="kw">return</span> self._owner(config=replace(self), **kwargs)
+
+    <span class="kw">def</span> <span class="fn">__init_subclass__</span>(cls, **kwargs):
+        <span class="cmt"># 强制 Config 用 kw_only + slots，并把 _owner 指向 cls</span>
+        config_cls._owner = cls</code></pre>
+
+  <h3>4.2 Module —— nn.Module + Configurable</h3>
+  <p><code>Module(nn.Module, Configurable)</code> 是所有可并行组件的基类。它带来两件事：</p>
+  <ul>
+    <li><code>init_states()</code>：递归初始化子模块参数 + buffer；权重共享（如 lm_head/tok_embeddings）在 <code>Decoder.init_states</code> 里先重新绑定再初始化。</li>
+    <li><code>parallelize(parallel_dims)</code>：读取本模块的 <code>sharding_config</code>，<b>分发状态（参数/buffer 变 DTensor）</b>，并把 <code>forward</code> 包成「重切分输入 → [可选 local_map] → forward → 重切分输出」。</li>
+  </ul>
+  <pre><code><span class="cmt"># protocols/module.py</span>
+<span class="kw">class</span> <span class="cls">Module</span>(nn.Module, Configurable):
+    <span class="kw">def</span> <span class="fn">parallelize</span>(<span class="self">self</span>, parallel_dims):
+        <span class="kw">for</span> child <span class="kw">in</span> <span class="self">self</span>.children():        <span class="cmt"># 1. 递归子模块</span>
+            child.parallelize(parallel_dims)
+        <span class="kw">if</span> <span class="self">self</span>._sharding_config <span class="kw">is None</span>: <span class="kw">return</span>
+        <span class="self">self</span>._distribute_states(parallel_dims)        <span class="cmt"># 2. 参数/buffer -> DTensor(按 state_shardings)</span>
+        fn = <span class="self">self</span>._maybe_wrap_with_local_region(<span class="self">self</span>.forward, parallel_dims)  <span class="cmt"># 3. 包 forward</span>
+        <span class="kw">def</span> <span class="fn">forward_with_redistribution</span>(*args, **kwargs):
+            args, kwargs = <span class="self">self</span>._redistribute_inputs(parallel_dims, args, kwargs)   <span class="cmt"># 进 forward 前 redistribute(插通信)</span>
+            outputs = fn(*args, **kwargs)
+            <span class="kw">return</span> <span class="self">self</span>._redistribute_outputs(parallel_dims, outputs)      <span class="cmt"># 出 forward 后 redistribute</span>
+        <span class="self">self</span>.forward = forward_with_redistribution</code></pre>
+
+  <h3>4.3 ShardingConfig / SpmdLayout —— 声明式切分</h3>
+  <p>在每个模块 <code>Config</code> 上挂一个 <code>sharding_config</code>，用 <code>SpmdLayout</code>（按 mesh <code>axis</code> 名标注 <code>Shard/Replicate/Partial</code>）声明：状态怎么分、输入/输出怎么重切分、是否用 <code>local_map</code>。运行时 <code>Module.parallelize()</code> 把这些声明解析成真正的 DTensor placement。详见 <a href="05_model_system.html#sharding">05 模型系统 §声明式切分</a>。</p>
+  <pre><code><span class="cmt"># protocols/sharding.py</span>
+<span class="dec">@dataclass</span>
+<span class="kw">class</span> <span class="cls">ShardingConfig</span>:
+    state_shardings: <span class="cls">dict</span>[<span class="cls">str</span>, SpmdLayout]    <span class="cmt"># 权重/buffer 放置:{name: {TP: S(0)}}</span>
+    in_src_shardings: <span class="cls">dict</span> | <span class="kw">None</span>          <span class="cmt"># 入参当前放置</span>
+    in_dst_shardings: <span class="cls">dict</span> | <span class="kw">None</span>          <span class="cmt"># 入参目标放置(进 forward 前 redistribute 到此)</span>
+    out_src_shardings: SpmdLayout | <span class="kw">None</span>   <span class="cmt"># 出参当前放置</span>
+    out_dst_shardings: SpmdLayout | <span class="kw">None</span>   <span class="cmt"># 出参目标放置(出 forward 后 redistribute)</span>
+    local_map: LocalMapConfig | <span class="kw">None</span>        <span class="cmt"># 是否包本地计算区(local_map)</span>
+
+<span class="cmt"># SpmdLayout = 按 mesh axis 名标注放置:</span>
+SpmdLayout({TP: spmd.S(0)})                              <span class="cmt"># 权重在 TP 轴切第 0 维(列并行)</span>
+SpmdLayout({DP: spmd.R, EFSDP: spmd.R, EP: spmd.S(0)})  <span class="cmt"># 专家权重:DP/EFSDP 复制,EP 切专家维</span></code></pre>
+
+  <h3>4.4 ModelSpec —— 把「架构 + 该用的并行/流水函数」打包</h3>
+  <p>每个 config_registry 返回一个 <code>ModelSpec</code>，包含已选好的：</p>
+  <pre><code><span class="cls">ModelSpec</span>(
+    name=..., flavor=...,
+    model=model_config,            <span class="cmt"># 一个 BaseModel.Config</span>
+    parallelize_fn=parallelize_llama,   <span class="cmt"># 应用并行/AC/compile/FSDP</span>
+    pipelining_fn=pipeline_llm <span class="kw">or</span> None, <span class="cmt"># 仅 PP 模型需要</span>
+    post_optimizer_build_fn=None,
+    state_dict_adapter=...,        <span class="cmt"># HF 权重互操作</span>
+)</code></pre>
+
+  <h3>4.5 ParallelDims —— 设备网格的真相来源</h3>
+  <p>从 <code>ParallelismConfig</code> + <code>world_size</code> 构造，描述 <code>dp_replicate × dp_shard × cp × tp × pp × ep</code> 各维度，并由此 <code>build_mesh()</code> 出命名网格（<code>pp/batch/loss/dp_replicate/fsdp/cp/tp/ep/efsdp</code>）。所有并行代码都通过 <code>parallel_dims.get_mesh("tp")</code> 之类拿到自己那张子网格。</p>
+  <pre><code><span class="cmt"># distributed/parallel_dims.py</span>
+<span class="kw">class</span> <span class="cls">ParallelDims</span>:
+    dp_replicate: <span class="cls">int</span>; dp_shard: <span class="cls">int</span>; cp: <span class="cls">int</span>; tp: <span class="cls">int</span>; pp: <span class="cls">int</span>; ep: <span class="cls">int</span>; world_size: <span class="cls">int</span>
+
+    <span class="kw">def</span> <span class="fn">build_mesh</span>(<span class="self">self</span>):            <span class="cmt"># fsdp=dp_shard*cp;efsdp=dp_shard*cp*tp//ep</span>
+        ...                          <span class="cmt"># 构命名网格 pp/batch/loss/dp_replicate/fsdp/cp/tp/ep/efsdp</span>
+    <span class="kw">def</span> <span class="fn">get_mesh</span>(<span class="self">self</span>, dims):       <span class="cmt"># get_mesh("tp") / get_mesh(["dp_replicate","fsdp"])</span>
+        ...
+    <span class="dec">@classmethod</span>
+    <span class="kw">def</span> <span class="fn">from_config</span>(cls, parallelism_config, world_size): ...  <span class="cmt"># ParallelismConfig -> ParallelDims</span>
+
+<span class="cmt"># CLI -> 网格的桥:--parallelism.tensor_parallel_degree=2</span>
+<span class="cmt">#   => ParallelismConfig(tp=2) => ParallelDims(tp=2) => build_mesh() => get_mesh("tp")</span></code></pre>
+
+  <h3>4.6 Trainer -- 训练循环的拥有者</h3>
+  <p><code>Trainer</code> 本身也是个 <code>Configurable</code>（<code>trainer.py:58</code>），它的 <code>Config</code> 是所有组件 config 的<b>公共容器</b>，把模型/并行/训练部件三套 config 挂在不同字段，自己负责零整生命周期：建网格、<code>update_from_config</code>、<code>apply_overrides</code>、meta 建模、施加并行、初始化权重、建 optimizer/lr/dataloader、跑 <code>train_step</code> 循环、存 checkpoint。它<b>不实现</b>训练部件，只编排。</p>
+  <pre><code><span class="cmt"># trainer.py</span>
+<span class="kw">class</span> <span class="cls">Trainer</span>(Stateful, Configurable):          <span class="cmt"># 自己也是 Configurable</span>
+    <span class="dec">@dataclass</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Configurable.Config):
+        model_spec: ModelSpec            <span class="cmt"># 组件①②:模型定义 + 并行函数</span>
+        parallelism: ParallelismConfig    <span class="cmt"># 组件②:并行编排参数</span>
+        loss: ...; optimizer: ...; lr_scheduler: ...  <span class="cmt"># 组件③:训练部件(都是 Configurable)</span>
+        dataloader: ...; training: ...; checkpoint: ...; debug: ...
+
+    <span class="kw">def</span> <span class="fn">train_step</span>(<span class="self">self</span>, data_iterator):
+        <span class="self">self</span>.optimizers.zero_grad()
+        ...                          <span class="cmt"># 预取 + 统计 valid tokens</span>
+        <span class="kw">for</span> microbatch <span class="kw">in</span> microbatches:
+            loss = <span class="self">self</span>.forward_backward_step(...)   <span class="cmt"># 前向 + 反向(PP 走 schedule.step)</span>
+        dist_utils.clip_grad_norm_(...)            <span class="cmt"># clip</span>
+        <span class="self">self</span>.optimizers.step()               <span class="cmt"># 在本地分片上更新</span>
+        <span class="self">self</span>.lr_schedulers.step()</code></pre>
+
+  <h3>4.7 Component -- 可插拔的训练部件</h3>
+  <p><code>components/</code> 下的 loss / optimizer / lr_scheduler / dataloader / checkpoint / metrics / tokenizer <b>都是 <code>Configurable</code></b>（如 <code>OptimizersContainer(Optimizer, Stateful, Configurable)</code>，<code>optimizer.py:78</code>）。它们通过 <code>Trainer.Config</code> 的字段装配，可被 <code>--override.imports</code> 的 <code>@override</code> 工厂按 FQN 替换，不改 core。这是 torchtitan「可扩展」的另一根支柱：训练部件和模型组件一样可插拔。</p>
+  <pre><code><span class="cmt"># components/optimizer.py</span>
+<span class="kw">class</span> <span class="cls">OptimizersContainer</span>(Optimizer, Stateful, Configurable, Generic[T]):
+    <span class="dec">@dataclass</span>
+    <span class="kw">class</span> <span class="cls">Config</span>(Configurable.Config): ...
+
+<span class="kw">def</span> <span class="fn">default_adamw</span>(lr=<span class="num">8e-4</span>, **kwargs) -> OptimizersContainer.Config:  <span class="cmt"># config_registry 里:optimizer=default_adamw(lr=2.2e-4)</span>
+    <span class="kw">return</span> OptimizersContainer.Config(lr=lr, ...)
+
+<span class="cmt"># config_registry 装配:Trainer.Config(optimizer=default_adamw(lr=2.2e-4), ...)</span>
+<span class="cmt"># --override.imports my_override 可把 default_adamw 换成自定义 Optimizer,core 不动</span></code></pre>
+
+  <div class="callout info">
+    <div class="title">七个抽象如何串起来</div>
+    <code>config_registry()</code> 返回 <code>ModelSpec</code>（含 <code>model.Config</code> 与若干 callables）→ <code>Trainer</code> 用 <code>model_config.build()</code> 在 meta 设备造出 <code>Module</code> 树 → 通过 <code>model_spec.parallelize_fn</code> 调用 <code>Module.parallelize()</code>，把每个模块的 <code>ShardingConfig</code> 落为 DTensor → <code>ParallelDims</code> 提供这一切所需的设备网格 → 训练循环里 <code>Trainer</code> 编排 <code>Component</code>（loss/optimizer/...）跑 <code>train_step</code>，部件同样 <code>Configurable</code> 可插拔。
+  </div>
+
+  <h2 id="request-flow">5. 一次启动的请求流</h2>
+  <p>把上面的抽象放进真实调用链：</p>
+  <pre><code><span class="cmt"># train.py</span>
+config_manager = <span class="cls">ConfigManager</span>()
+config = config_manager.<span class="fn">parse_args</span>()      <span class="cmt"># tyro：--module/--config + &lt;section&gt;.&lt;key&gt;=val</span>
+trainer = config.<span class="fn">build</span>()                    <span class="cmt"># Trainer.Config.build() → Trainer(config)</span>
+trainer.<span class="fn">train</span>()                            <span class="cmt"># 训练循环（或先存种子检查点）</span>
+
+<span class="cmt"># Trainer.__init__ 内部（详见 02 训练流程）</span>
+init_distributed() → ParallelDims.from_config(...)
+config.update_from_config(...)            <span class="cmt"># 把训练配置灌进模型 config</span>
+apply_overrides(...)                      <span class="cmt"># --override.imports 插拔组件</span>
+model = model_config.build()             <span class="cmt"># meta 设备</span>
+model.parallelize_fn(...)                <span class="cmt"># 并行 + AC + compile + FSDP</span>
+model.init_weights(...)                  <span class="cmt"># 在真设备初始化权重</span>
+build optimizer / lr / dataloader / checker / metrics</code></pre>
+
+  <div class="callout tip">
+    <div class="title">下一步</div>
+    已经看清骨架，接下来看 <a href="02_training_flow.html">02 训练流程</a>：先给「一次训练的完整时序」，再逐段下钻到每个细化流程。
+  </div>
+</main>
+<script src="common.js"></script>
+</body>
+</html>

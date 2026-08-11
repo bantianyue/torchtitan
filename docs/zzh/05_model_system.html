@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>05 · 模型系统</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="sidebar"></div>
+<main>
+  <h1>05 · 模型系统</h1>
+  <p class="page-meta">层次：<span class="layer-tag layer-fine">关键代码</span> 目标：看 Decoder/TransformerBlock、llama3 模型、声明式 <code>ShardingConfig</code>、<code>Module.parallelize()</code> 与 config_registry 的真实代码。</p>
+
+  <div class="toc">
+    <b>本页目录</b>
+    <a href="#decoder">1. Decoder / TransformerBlock：共享骨架</a>
+    <a href="#llama3">2. llama3 模型：单设备架构</a>
+    <a href="#sharding">3. 声明式切分 ShardingConfig ⭐</a>
+    <a href="#parallelize">4. Module.parallelize()：声明 → DTensor</a>
+    <a href="#registry">5. config_registry：把一切打包成 ModelSpec</a>
+    <a href="#common">6. common/ 共享组件</a>
+  </div>
+
+  <h2 id="decoder">1. Decoder / TransformerBlock：共享骨架</h2>
+  <p>所有自回归 decoder-only 模型继承 <code>Decoder(BaseModel)</code>（<code>models/common/decoder.py</code>），它提供统一的 <code>__init__</code> / <code>forward</code> / <code>init_states</code> / <code>get_attention_masks</code>。每个 transformer block 继承 <code>TransformerBlock(Module)</code>。</p>
+  <pre><code><span class="kw">class</span> <span class="cls">Decoder</span>(<span class="cls">BaseModel</span>):
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, config):
+        self.tok_embeddings = config.tok_embeddings.<span class="fn">build</span>()
+        self.layers = <span class="cls">ModuleDict</span>()
+        <span class="kw">for</span> i, layer_config <span class="kw">in</span> enumerate(config.layers):
+            self.layers[str(i)] = layer_config.<span class="fn">build</span>()
+        self.norm   = config.norm.<span class="fn">build</span>()
+        self.lm_head = config.lm_head.<span class="fn">build</span>()
+        <span class="kw">if</span> self.enable_weight_tying:
+            self.tok_embeddings.weight = self.lm_head.weight   <span class="cmt"># 权重共享</span>
+
+    <span class="kw">def</span> <span class="fn">forward</span>(self, tokens, positions=None, attention_masks=None):
+        h = self.tok_embeddings(tokens)
+        <span class="kw">for</span> layer <span class="kw">in</span> self.layers.values():
+            h = layer(h, attention_masks, positions)
+        h = self.norm(h)
+        <span class="kw">if</span> self._skip_lm_head:   <span class="cmt"># ChunkedLossWrapper 用：lm_head 在 loss 里逐 chunk 做</span>
+            <span class="kw">return</span> h
+        <span class="kw">return</span> self.lm_head(h)</code></pre>
+  <div class="callout info">
+    <div class="title">为什么 lm_head 可以在 forward 之外做</div>
+    当使用 <code>ChunkedLossWrapper</code>（大词表省显存），<code>_skip_lm_head=True</code> 让 Decoder 返回 hidden states，由 loss 函数把序列切成 N 段、逐 chunk 跑 <code>lm_head + CE + backward</code>，再用自定义 autograd Function 把梯度汇回 Decoder。详见 06 §损失。
+  </div>
+
+  <h3>1.1 TransformerBlock 的 forward 约定</h3>
+  <p>llama3 的 block（<code>models/llama3/model.py</code>）最简洁：</p>
+  <pre><code><span class="kw">def</span> <span class="fn">forward</span>(self, x, attention_masks, positions=None):
+    h = x + self.attention(self.attention_norm(x), attention_masks, positions)
+    out = h + self.feed_forward(self.ffn_norm(h))
+    <span class="kw">return</span> out</code></pre>
+  <p><code>Decoder.Config</code> 要求每个 block 有 <code>attention</code>、<code>feed_forward</code>（或 <code>moe</code>）、两个 norm。所有模型 Variant（llama3/qwen3/deepseek_v3/gpt_oss/flux）都遵循此骨架，差异只在子模块配置。</p>
+
+  <h2 id="llama3">2. llama3 模型：单设备架构</h2>
+  <p>llama3 的 <code>model.py</code> 极薄 —— 真正的架构在 <code>models/common/</code> 共享组件里，<code>Llama3Model</code> 只声明超参与两个关键钩子：</p>
+  <pre><code><span class="kw">class</span> <span class="cls">Llama3Model</span>(<span class="cls">Decoder</span>):
+    <span class="kw">class</span> <span class="cls">Config</span>(<span class="cls">Decoder</span>.<span class="cls">Config</span>):
+        dim: <span class="kw">int</span> = <span class="num">4096</span>
+        vocab_size: <span class="kw">int</span> = <span class="num">128256</span>
+
+        <span class="kw">def</span> <span class="fn">update_from_config</span>(self, *, config, **kwargs):
+            <span class="cls">Decoder</span>.<span class="cls">Config</span>.<span class="fn">update_from_config</span>(self, config=config)
+            parallelism = config.parallelism
+            <span class="cmt"># 生成每个子模块的 sharding_config</span>
+            <span class="kw">from</span> torchtitan.models.llama3.sharding <span class="kw">import</span> set_llama3_sharding_config
+            <span class="fn">set_llama3_sharding_config</span>(self, enable_sp=parallelism.enable_sequence_parallel)
+
+        <span class="kw">def</span> <span class="fn">get_nparams_and_flops</span>(self, model, seq_len):
+            <span class="kw">return</span> <span class="fn">get_dense_model_nparams_and_flops</span>(...)</code></pre>
+  <p>注意：<code>update_from_config</code> 同时承担「把训练配置（seq_len/并行度）灌进模型」和「生成声明式 sharding 配置」两件事。后者就是下一节的核心。</p>
+
+  <h2 id="sharding">3. 声明式切分 ShardingConfig ⭐</h2>
+  <p>这是 torchtitan 最新、最值得理解的设计：切分不再写在 <code>parallelize_fn</code> 的命令式代码里，而是作为每个模块 <code>Config</code> 上的 <code>sharding_config</code> 数据声明（<code>protocols/sharding.py</code>）。</p>
+  <pre><code><span class="kw">class</span> <span class="cls">ShardingConfig</span>:
+    state_shardings:  <span class="kw">dict</span>[<span class="kw">str</span>, <span class="cls">SpmdLayout</span>]          <span class="cmt"># 参数/buffer 怎么分（按名字）</span>
+    in_src_shardings: <span class="kw">dict</span>[<span class="kw">str</span>, <span class="cls">SpmdLayout</span>] | <span class="kw">None</span>  <span class="cmt"># 输入源 placement</span>
+    in_dst_shardings: <span class="kw">dict</span>[<span class="kw">str</span>, <span class="cls">SpmdLayout</span>] | <span class="kw">None</span>  <span class="cmt"># 输入重切分目标</span>
+    out_src_shardings: <span class="cls">SpmdLayout</span> | <span class="kw">tuple</span> | <span class="kw">None</span>   <span class="cmt"># 输出源 placement</span>
+    out_dst_shardings: <span class="cls">SpmdLayout</span> | <span class="kw">None</span>       <span class="cmt"># 输出重切分目标</span>
+    local_map: <span class="cls">LocalMapConfig</span> | <span class="kw">None</span>             <span class="cmt"># 是否用 local_map 包 forward</span></code></pre>
+  <p><code>SpmdLayout</code> 用 mesh <code>axis</code> 名标注每个张量维的 placement（<code>spmd.S / R / V / P / I</code>）。例：colwise 线性权重 <code>{TP: Shard(0)}</code>；attention 输出 reduce-scatter 到 <code>{TP: Shard(1)}</code>（SP）；MoE 包装输出 <code>{TP: Partial()}</code>。</p>
+
+  <h3>3.1 llama3 的切分声明（sharding.py）</h3>
+  <pre><code><span class="kw">def</span> <span class="fn">set_llama3_sharding_config</span>(config, *, enable_sp):
+    <span class="fn">set_decoder_sharding_config</span>(config, enable_sp=enable_sp)   <span class="cmt"># tok_emb/norm/lm_head</span>
+    <span class="kw">for</span> layer_cfg <span class="kw">in</span> config.layers:
+        <span class="fn">_set_llama3_layer_sharding</span>(layer_cfg, enable_sp=enable_sp)
+
+<span class="kw">def</span> <span class="fn">_set_llama3_layer_sharding</span>(layer_cfg, *, enable_sp):
+    norm = <span class="fn">norm_config</span>(enable_sp=enable_sp)              <span class="cmt"># SP: Shard(1) 激活; 否则 Replicate</span>
+    layer_cfg.attention_norm.sharding_config = norm
+    layer_cfg.ffn_norm.sharding_config      = norm
+    <span class="fn">set_gqa_attention_sharding</span>(layer_cfg.attention, enable_sp=enable_sp)
+    <span class="fn">set_gqa_inner_attention_local_map</span>(layer_cfg.attention.inner_attention)
+    <span class="fn">set_dense_ffn_sharding</span>(layer_cfg.feed_forward, enable_sp=enable_sp)</code></pre>
+  <div class="callout key">
+    <div class="title">声明与运行时解耦</div>
+    <code>enable_sp</code> 控制 SP 是否开启，但<b>所有 placement 声明都无条件写入</b>。真正生效哪些，取决于运行时 <code>Module.parallelize()</code> 拿到的 <code>parallel_dims</code>：未被启用的 mesh 轴（如 TP=1）的声明在并行化时被跳过。这意味着同一份模型代码能适配任意并行组合。
+  </div>
+
+  <h2 id="parallelize">4. Module.parallelize()：声明 → DTensor</h2>
+  <p><code>Module.parallelize(parallel_dims)</code>（<code>protocols/module.py</code>）是声明式切分的落地引擎。它递归处理每个子模块：</p>
+  <div class="dia col" style="gap:4px">
+    <div class="flow-step"><span class="num">1</span><span class="step-title">递归</span>　先并行化所有 Module 子节点（穿过非 Module 包装器如 CheckpointWrapper）</div>
+    <div class="flow-step"><span class="num">2</span><span class="step-title">分发状态</span>　_distribute_states：按 state_shardings 把每个 param/buffer 变 DTensor（distribute_tensor / spmd_distribute_tensor）</div>
+    <div class="flow-step"><span class="num">3</span><span class="step-title">缓存 forward 签名</span>　_cache_pos_arg_names：记录 forward 的位置参数名，供重切分用</div>
+    <div class="flow-step"><span class="num">4</span><span class="step-title">包 forward</span>　若有 local_map 则包一层局部张量计算区；否则直接 forward</div>
+    <div class="flow-step"><span class="num">5</span><span class="step-title">重切分包裹</span>　self.forward = forward_with_redistribution：<br>args,kwargs = _redistribute_inputs(...) → fn(...) → _redistribute_outputs(...)</div>
+  </div>
+  <pre><code><span class="cmt"># module.py（节选）</span>
+<span class="kw">def</span> <span class="fn">parallelize</span>(self, parallel_dims):
+    self._parallelized = <span class="kw">True</span>
+    <span class="cmt"># 1) 递归子模块</span>
+    <span class="cmt"># 2) 分发状态</span>
+    self._distribute_states(parallel_dims)
+    self._cache_pos_arg_names()
+    fn = self._maybe_wrap_with_local_region(self.forward, parallel_dims)
+    <span class="kw">def</span> <span class="fn">forward_with_redistribution</span>(*args, **kwargs):
+        args, kwargs = self._redistribute_inputs(parallel_dims, args, kwargs)
+        outputs = fn(*args, **kwargs)
+        <span class="kw">return</span> self._redistribute_outputs(parallel_dims, outputs)
+    self.forward = forward_with_redistribution</code></pre>
+  <div class="callout warn">
+    <div class="title">每个 Module 只能 parallelize 一次</div>
+    <code>parallelize()</code> 开头检查 <code>self._parallelized</code>，重复调用会抛 <code>ValueError</code>。这是防止 DTensor placement 被重复应用导致静默错误。
+  </div>
+
+  <h3>4.1 状态分发如何按 mesh 解析</h3>
+  <p><code>_distribute_states</code> 对每个参数：</p>
+  <ul>
+    <li>从 <code>state_shardings[name]</code> 取 <code>SpmdLayout</code>；</li>
+    <li><code>axes = layout.axes()</code> 得到涉及的 mesh 轴 → <code>resolve_mesh(axes)</code> 得到子网格；</li>
+    <li><code>resolve_placements(layout, mesh)</code> 按 mesh 轴的<b>顺序</b>把 SpmdLayout 解析成 <code>tuple[Placement]</code>（每个启用轴都要声明，缺一个就报错）；</li>
+    <li>size-1 轴上的 <code>Shard/Partial</code> 会被归一为 <code>Replicate</code>（操作等价，但 DTensor 的 view/reshape 严格模式会区分）。</li>
+  </ul>
+
+  <h2 id="registry">5. config_registry：把一切打包成 ModelSpec</h2>
+  <p>以 <code>llama3_8b</code> 为例，它把「模型超参 + 并行函数 + 损失 + 优化器 + 数据」全部组装进一个 <code>Trainer.Config</code>：</p>
+  <pre><code><span class="kw">def</span> <span class="fn">llama3_8b</span>():
+    model_spec = <span class="fn">model_registry</span>(<span class="str">"8B"</span>)      <span class="cmt"># 返回含 parallelize_fn=pipeline_llm? 等的 ModelSpec</span>
+    <span class="kw">return</span> <span class="cls">Trainer</span>.<span class="cls">Config</span>(
+        model_spec=model_spec,
+        loss=<span class="cls">ChunkedLossWrapper</span>.<span class="cls">Config</span>(loss_fn=<span class="cls">CrossEntropyLoss</span>.<span class="cls">Config</span>(...)),
+        optimizer=<span class="fn">default_adamw</span>(lr=3e-4),
+        training=<span class="cls">TrainingConfig</span>(local_batch_size=1, seq_len=8192, steps=1000),
+        dataloader=<span class="cls">HuggingFaceTextDataLoader</span>.<span class="cls">Config</span>(dataset=<span class="str">"c4"</span>),
+        parallelism=<span class="cls">ParallelismConfig</span>(tensor_parallel_degree=8),
+        ...
+    )</code></pre>
+  <p>对应到模型文件夹的标准结构（<code>models/llama3/</code>）：</p>
+  <table>
+    <tr><th>文件</th><th>职责</th></tr>
+    <tr><td><code>config_registry.py</code></td><td>注册各尺寸/超参的 <code>Trainer.Config</code></td></tr>
+    <tr><td><code>model.py</code></td><td>单设备架构 + 嵌套 <code>Config</code>（超参）</td></tr>
+    <tr><td><code>sharding.py</code></td><td><code>set_&lt;model&gt;_sharding_config</code>：填充声明式切分</td></tr>
+    <tr><td><code>parallelize.py</code></td><td><code>parallelize_&lt;model&gt;</code>：应用 TP/AC/compile/FSDP（调用 <code>Module.parallelize</code> + <code>apply_fsdp_to_decoder</code>）</td></tr>
+    <tr><td><code>state_dict_adapter.py</code></td><td>HF 权重 ↔ torchtitan 权重互操作</td></tr>
+    <tr><td><code>__init__.py</code></td><td><code>model_registry</code> 注册表</td></tr>
+  </table>
+
+  <h2 id="common">6. common/ 共享组件</h2>
+  <p>为避免每个模型各写一份注意力/FFN/RoPE，共享实现集中在 <code>models/common/</code>，并遵循「模型无关代码放对位置」的规则：</p>
+  <table>
+    <tr><th>文件</th><th>内容</th></tr>
+    <tr><td><code>attention.py</code></td><td>AttentionMasksType、FlexAttention、VarlenAttention、SDPA、创建 mask</td></tr>
+    <tr><td><code>feed_forward.py</code></td><td>FeedForward（稠密 MLP）</td></tr>
+    <tr><td><code>decoder.py</code> / <code>decoder_sharding.py</code></td><td>Decoder 基类 + 其声明式切分辅助函数</td></tr>
+    <tr><td><code>moe.py</code> / <code>moe_sharding.py</code></td><td>MoE 路由与专家、MoE 切分</td></tr>
+    <tr><td><code>rope.py</code></td><td>旋转位置编码</td></tr>
+    <tr><td><code>rmsnorm.py</code></td><td>RMSNorm</td></tr>
+    <tr><td><code>embedding.py</code></td><td>词嵌入</td></tr>
+    <tr><td><code>param_init.py</code></td><td>权重初始化（init_states 自动递归调用）</td></tr>
+    <tr><td><code>token_dispatcher.py</code></td><td>MoE token 分发（DeepEP / HybridEP）</td></tr>
+  </table>
+  <div class="callout tip">
+    <div class="title">下一步</div>
+    模型「分什么」清楚了，再看「训练时每个组件怎么配合」—— <a href="06_components.html">06 训练组件</a>：数据、优化器、LR、损失、检查点、指标的真实代码。
+  </div>
+</main>
+<script src="common.js"></script>
+</body>
+</html>
