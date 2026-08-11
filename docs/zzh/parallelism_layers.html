@@ -629,30 +629,30 @@ fully_shard(transformer_block,
   </g>
 
   <!-- pre_backward -> backward 计算(换行箭头:右上 -> 左下) -->
-  <path d="M 1026 180 L 1026 196 L 165 196 L 165 204" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar2)"/>
-  <text x="585" y="192" text-anchor="middle" fill="#64748b" font-size="10">进入反向:pre_backward 后逐层 autograd.backward</text>
+  <path d="M 1026 180 L 1026 210 L 165 210 L 165 234" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar2)"/>
+  <text x="585" y="206" text-anchor="middle" fill="#64748b" font-size="10">进入反向:pre_backward 后逐层 autograd.backward</text>
 
   <!-- backward + post backward -->
   <g font-size="10">
-    <g transform="translate(40,210)">
+    <g transform="translate(40,240)">
       <rect width="250" height="80" rx="8" fill="#dcfce7" stroke="#15803d"/>
       <text x="125" y="18" text-anchor="middle" fill="#15803d" font-weight="700">backward 计算</text>
       <text x="125" y="36" text-anchor="middle" fill="#334155">逐层 autograd.backward</text>
       <text x="125" y="52" text-anchor="middle" fill="#334155">产生完整参数的 .grad</text>
       <text x="125" y="68" text-anchor="middle" fill="#64748b">(每层 backward 完触发)</text>
     </g>
-    <path d="M 290 250 L 320 250" stroke="#64748b" stroke-width="2" marker-end="url(#ar2)"/>
+    <path d="M 290 280 L 320 280" stroke="#64748b" stroke-width="2" marker-end="url(#ar2)"/>
 
-    <g transform="translate(324,210)">
+    <g transform="translate(324,240)">
       <rect width="280" height="80" rx="8" fill="#fcefe2" stroke="#c2410c"/>
       <text x="140" y="18" text-anchor="middle" fill="#c2410c" font-weight="700">post_backward:517(FSDPParamGroup)</text>
       <text x="140" y="36" text-anchor="middle" fill="#334155">foreach_reduce:524</text>
       <text x="140" y="52" text-anchor="middle" fill="#334155">reduce-scatter 梯度回 1/N</text>
       <text x="140" y="68" text-anchor="middle" fill="#64748b">HSDP 再 all-reduce 跨 replica</text>
     </g>
-    <path d="M 604 250 L 634 250" stroke="#64748b" stroke-width="2" marker-end="url(#ar2)"/>
+    <path d="M 604 280 L 634 280" stroke="#64748b" stroke-width="2" marker-end="url(#ar2)"/>
 
-    <g transform="translate(638,210)">
+    <g transform="translate(638,240)">
       <rect width="240" height="80" rx="8" fill="#fcefe2" stroke="#c2410c"/>
       <text x="120" y="18" text-anchor="middle" fill="#c2410c" font-weight="700">reshard 参数</text>
       <text x="120" y="36" text-anchor="middle" fill="#334155">释放完整参数</text>
