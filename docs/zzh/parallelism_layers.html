@@ -274,11 +274,9 @@
 
   <!-- ===== 0 用户层 ===== -->
   <rect x="20" y="42" width="1150" height="172" rx="12" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
-  <text x="30" y="66" fill="#475569" font-weight="700" font-size="14">0 用户侧: 用哪些,并行度</text>
-
   <!-- 总 -->
   <rect x="20" y="54" width="230" height="148" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
-  <text x="30" y="74" fill="#475569" font-weight="700" font-size="11">总</text>
+  <text x="30" y="74" fill="#475569" font-weight="700" font-size="12">0. 用户侧: 用哪些,并行度</text>
   <text x="30" y="92" fill="#334155" font-size="9.5">决定启用哪些并行策略</text>
   <text x="30" y="106" fill="#334155" font-size="9.5">(TP / PP / CP / EP / DP)</text>
   <text x="30" y="120" fill="#334155" font-size="9.5">及各自并行度</text>
@@ -332,11 +330,9 @@
 
   <!-- ===== 1 TorchTitan ===== -->
   <rect x="20" y="246" width="1150" height="172" rx="12" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
-  <text x="30" y="270" fill="#15803d" font-weight="700" font-size="14">① TorchTitan: 切什么</text>
-
   <!-- 总 -->
   <rect x="20" y="258" width="230" height="148" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
-  <text x="30" y="278" fill="#475569" font-weight="700" font-size="11">总</text>
+  <text x="30" y="278" fill="#15803d" font-weight="700" font-size="12">1. TorchTitan: 切什么</text>
   <text x="30" y="296" fill="#334155" font-size="9.5">声明每个参数/激活怎么放</text>
   <text x="30" y="310" fill="#334155" font-size="9.5">(Shard/Replicate/Partial</text>
   <text x="30" y="324" fill="#334155" font-size="9.5">在哪个 mesh 轴)</text>
@@ -357,7 +353,7 @@
   <!-- TP -->
   <rect x="495" y="258" width="215" height="148" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
   <text x="603" y="278" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
-  <text x="505" y="296" fill="#334155" font-size="9.5">ShardingConfig 声明:</text>
+  <text x="505" y="296" fill="#334155" font-size="9.5">核心:声明权重放哪维</text>
   <text x="505" y="310" fill="#334155" font-size="9.5">wkv_b/wq_b=Shard(0) 列并行</text>
   <text x="505" y="324" fill="#334155" font-size="9.5">wo=Shard(1) 行并行</text>
   <text x="505" y="338" fill="#334155" font-size="9.5">wkv_a/wq_a=Replicate</text>
@@ -366,7 +362,7 @@
   <!-- PP -->
   <rect x="720" y="258" width="215" height="148" rx="8" fill="#dcfce7" stroke="#0f766e"/>
   <text x="828" y="278" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
-  <text x="730" y="296" fill="#334155" font-size="9.5">pipeline_llm 按 FQN 切段</text>
+  <text x="730" y="296" fill="#334155" font-size="9.5">核心:按 FQN 切层分段</text>
   <text x="730" y="310" fill="#334155" font-size="9.5">_generate_llm_fqn_per_</text>
   <text x="730" y="324" fill="#334155" font-size="9.5">model_part + _split_module</text>
   <text x="730" y="338" fill="#334155" font-size="9.5">逐 stage 调 parallelize_fn</text>
@@ -375,7 +371,7 @@
   <!-- CP -->
   <rect x="945" y="258" width="215" height="148" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
   <text x="1053" y="278" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
-  <text x="955" y="296" fill="#334155" font-size="9.5">apply_cp_to_forward</text>
+  <text x="955" y="296" fill="#334155" font-size="9.5">核心:包 attention + 切 seq</text>
   <text x="955" y="310" fill="#334155" font-size="9.5">(必须早于 parallelize)</text>
   <text x="955" y="324" fill="#334155" font-size="9.5">替换 attention.forward</text>
   <text x="955" y="338" fill="#334155" font-size="9.5">为 CP 版;cp_shard 切 seq</text>
@@ -386,11 +382,9 @@
 
   <!-- ===== 2 PyTorch ===== -->
   <rect x="20" y="450" width="1150" height="172" rx="12" fill="#e7ecf3" stroke="#1d4ed8" stroke-width="2"/>
-  <text x="30" y="474" fill="#1d4ed8" font-weight="700" font-size="14">② PyTorch: 插通信+编译</text>
-
   <!-- 总 -->
   <rect x="20" y="462" width="230" height="148" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
-  <text x="30" y="482" fill="#475569" font-weight="700" font-size="11">总</text>
+  <text x="30" y="482" fill="#1d4ed8" font-weight="700" font-size="12">2. PyTorch: 插通信+编译</text>
   <text x="30" y="500" fill="#334155" font-size="9.5">运行时插入通信</text>
   <text x="30" y="514" fill="#334155" font-size="9.5">(前向/反向 hook、</text>
   <text x="30" y="528" fill="#334155" font-size="9.5">DTensor.redistribute、</text>
@@ -412,8 +406,8 @@
   <!-- TP -->
   <rect x="495" y="462" width="215" height="148" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
   <text x="603" y="482" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
-  <text x="505" y="500" fill="#334155" font-size="9.5">Colwise/Rowwise 注册 hook</text>
-  <text x="505" y="514" fill="#334155" font-size="9.5">边界对激活 redistribute:</text>
+  <text x="505" y="500" fill="#334155" font-size="9.5">核心:层边界插通信</text>
+  <text x="505" y="514" fill="#334155" font-size="9.5">对激活 redistribute:</text>
   <text x="505" y="528" fill="#334155" font-size="9.5">出列并行 -&gt; reduce-scatter</text>
   <text x="505" y="542" fill="#334155" font-size="9.5">出行并行 -&gt; all-reduce</text>
   <text x="505" y="558" fill="#64748b" font-size="9">(开 SP 时入列前 A-G 序列)</text>
@@ -421,7 +415,7 @@
   <!-- PP -->
   <rect x="720" y="462" width="215" height="148" rx="8" fill="#dcfce7" stroke="#0f766e"/>
   <text x="828" y="482" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
-  <text x="730" y="500" fill="#334155" font-size="9.5">Schedule1F1B 推微批过 stage</text>
+  <text x="730" y="500" fill="#334155" font-size="9.5">核心:schedule 驱动微批+p2p</text>
   <text x="730" y="514" fill="#334155" font-size="9.5">warmup/稳态/cooldown</text>
   <text x="730" y="528" fill="#334155" font-size="9.5">stage 间 isend/irecv 传</text>
   <text x="730" y="542" fill="#334155" font-size="9.5">hidden(前向)与梯度(反向)</text>
@@ -430,8 +424,8 @@
   <!-- CP -->
   <rect x="945" y="462" width="215" height="148" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
   <text x="1053" y="482" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
-  <text x="955" y="500" fill="#334155" font-size="9.5">flex_cp_allgather 跨 cp_mesh</text>
-  <text x="955" y="514" fill="#334155" font-size="9.5">收全量 K/V</text>
+  <text x="955" y="500" fill="#334155" font-size="9.5">核心:attention 内收全量 K/V</text>
+  <text x="955" y="514" fill="#334155" font-size="9.5">flex_cp_allgather 跨 cp_mesh</text>
   <text x="955" y="528" fill="#334155" font-size="9.5">本地 Q 段对全量 K/V 计算</text>
   <text x="955" y="542" fill="#334155" font-size="9.5">反向 K/V reduce-scatter</text>
   <text x="955" y="558" fill="#64748b" font-size="9">SDPA 分支走 ring attention</text>
@@ -441,11 +435,9 @@
 
   <!-- ===== 3 CUDA&NCCL ===== -->
   <rect x="20" y="654" width="1150" height="172" rx="12" fill="#f2ecfb" stroke="#7c3aed" stroke-width="2"/>
-  <text x="30" y="678" fill="#7c3aed" font-weight="700" font-size="14">③ CUDA&NCCL: 怎么执行通信</text>
-
   <!-- 总 -->
   <rect x="20" y="666" width="230" height="148" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
-  <text x="30" y="686" fill="#475569" font-weight="700" font-size="11">总</text>
+  <text x="30" y="686" fill="#7c3aed" font-weight="700" font-size="12">3. CUDA&NCCL: 怎么执行通信</text>
   <text x="30" y="704" fill="#334155" font-size="9.5">实现 GPU 收发数据</text>
   <text x="30" y="718" fill="#334155" font-size="9.5">执行 NCCL 内核</text>
   <text x="30" y="732" fill="#334155" font-size="9.5">实现通信与计算重叠</text>
@@ -464,24 +456,23 @@
   <!-- TP -->
   <rect x="495" y="666" width="215" height="148" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
   <text x="603" y="686" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="12">TP</text>
-  <text x="505" y="704" fill="#334155" font-size="9.5">ncclAllGather /</text>
-  <text x="505" y="718" fill="#334155" font-size="9.5">ncclReduceScatter 同 FSDP 路径</text>
+  <text x="505" y="704" fill="#334155" font-size="9.5">核心:启动集合内核执行</text>
+  <text x="505" y="718" fill="#334155" font-size="9.5">ncclAllGather / ncclReduceScatter</text>
   <text x="505" y="732" fill="#334155" font-size="9.5">async TP 融合由 ② Inductor 做</text>
   <text x="505" y="746" fill="#334155" font-size="9.5">③ 只启动内核执行</text>
 
   <!-- PP -->
   <rect x="720" y="666" width="215" height="148" rx="8" fill="#dcfce7" stroke="#0f766e"/>
   <text x="828" y="686" text-anchor="middle" fill="#0f766e" font-weight="700" font-size="12">PP</text>
-  <text x="730" y="704" fill="#334155" font-size="9.5">点对点(非集合):ncclSend /</text>
-  <text x="730" y="718" fill="#334155" font-size="9.5">ncclRecv</text>
-  <text x="730" y="732" fill="#334155" font-size="9.5">批量 ncclGroupStart/End</text>
+  <text x="730" y="704" fill="#334155" font-size="9.5">核心:点对点 ncclSend/Recv</text>
+  <text x="730" y="718" fill="#334155" font-size="9.5">批量 ncclGroupStart/End</text>
   <text x="730" y="746" fill="#64748b" font-size="9">②③ 都无 Inductor 融合</text>
   <text x="730" y="760" fill="#64748b" font-size="9">(p2p 已与计算重叠)</text>
 
   <!-- CP -->
   <rect x="945" y="666" width="215" height="148" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
   <text x="1053" y="686" text-anchor="middle" fill="#b91c1c" font-weight="700" font-size="12">CP</text>
-  <text x="955" y="704" fill="#334155" font-size="9.5">同 FSDP/TP 路径:</text>
+  <text x="955" y="704" fill="#334155" font-size="9.5">核心:同 FSDP/TP 集合内核</text>
   <text x="955" y="718" fill="#334155" font-size="9.5">_c10d_functional -&gt;</text>
   <text x="955" y="732" fill="#334155" font-size="9.5">ProcessGroupNCCL -&gt;</text>
   <text x="955" y="746" fill="#7c3aed" font-size="9.5">ncclAllGather /</text>
