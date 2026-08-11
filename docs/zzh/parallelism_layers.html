@@ -628,6 +628,10 @@ fully_shard(transformer_block,
     </g>
   </g>
 
+  <!-- pre_backward -> backward 计算(换行箭头:右上 -> 左下) -->
+  <path d="M 1026 180 L 1026 196 L 165 196 L 165 204" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#ar2)"/>
+  <text x="585" y="192" text-anchor="middle" fill="#64748b" font-size="10">进入反向:pre_backward 后逐层 autograd.backward</text>
+
   <!-- backward + post backward -->
   <g font-size="10">
     <g transform="translate(40,210)">
