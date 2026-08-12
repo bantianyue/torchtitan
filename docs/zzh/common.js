@@ -33,6 +33,7 @@ const PAGES = [
   { file: "03_config_system.html", title: "配置系统" },
   { file: "05_model_system.html",  title: "模型系统" },
   { file: "deepseek_v3_671b_structure.html", title: "DeepSeek V3 671B 结构" },
+  { file: "deepseek_v3_671b_training_example.html", title: "DeepSeek V3 671B 训练示例" },
   { file: "06_components.html",    title: "训练组件" },
 ];
 
