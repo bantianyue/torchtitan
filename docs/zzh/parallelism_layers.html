@@ -858,10 +858,10 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <text x="16" y="80" fill="#15803d">入参:in_dst Replicate(无通信)</text>
     <text x="16" y="96" fill="#64748b">① _redistribute_inputs:601 -> ② from_local</text>
     <text x="16" y="118" fill="#334155">本地 matmul:各 rank 算半头</text>
-    <text x="16" y="134" fill="#334155">输出 = Partial(各 rank 缺一半)</text>
-    <text x="16" y="156" fill="#b91c1c">出参:Partial -> Shard(-1)</text>
-    <text x="16" y="172" fill="#64748b">① _redistribute_outputs:705 -> ② redistribute</text>
-    <text x="16" y="190" fill="#c2410c">=> reduce_scatter(求和+切序列)</text>
+    <text x="16" y="134" fill="#334155">输出 = Shard(-1)(addmm 规则自由维传播,零通信)</text>
+    <text x="16" y="156" fill="#b91c1c">出参:out_src=S(-1) 断言通过,无变换</text>
+    <text x="16" y="172" fill="#64748b">① _redistribute_outputs:705 无通信</text>
+    <text x="16" y="190" fill="#c2410c">=> Partial->reduce_scatter 只发生在 rowwise 输出</text>
     <text x="16" y="214" fill="#64748b">placement_types.py:354</text>
     <text x="16" y="228" fill="#64748b">Shard._reduce_shard_tensor</text>
   </g>
