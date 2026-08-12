@@ -119,8 +119,8 @@
     <text x="52" y="132" fill="#334155">用 shard_placement_fn 按参数归属</text>
     <text x="52" y="146" fill="#334155">分配 mesh:专家参数走 edp_mesh,</text>
     <text x="52" y="160" fill="#334155">其余走 dp_mesh;PP 下 reshard=False</text>
-    <text x="52" y="174" fill="#64748b">apply_fsdp_to_decoder fsdp.py:180-272</text>
-    <text x="52" y="188" fill="#64748b">分流 _shard_placement_fn :251-265</text>
+    <text x="52" y="174" fill="#64748b">apply_fsdp_to_decoder fsdp.py:110-367(MoE 段 209-308)</text>
+    <text x="52" y="188" fill="#64748b">分流 _shard_placement_fn :281-295</text>
 
     <rect x="316" y="100" width="262" height="98" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
     <text x="328" y="116" fill="#1d4ed8" font-weight="700">TP:声明权重放置</text>
@@ -143,7 +143,7 @@
     <text x="880" y="132" fill="#334155">apply_cp_to_forward 在 parallelize 前</text>
     <text x="880" y="146" fill="#334155">替换 attention.inner_attention.forward</text>
     <text x="880" y="160" fill="#334155">为 CP 版;cp_shard 沿 seq 切输入</text>
-    <text x="880" y="174" fill="#64748b">context_parallel.py</text>
+    <text x="880" y="174" fill="#64748b">context_parallel/api.py:35</text>
     <text x="880" y="188" fill="#64748b">(顺序约束:必须早于 parallelize)</text>
   </g>
 
@@ -174,15 +174,15 @@
     <text x="52" y="440" fill="#64748b">hook 见 _fsdp_state.py</text>
 
     <rect x="316" y="310" width="262" height="132" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="328" y="326" fill="#1d4ed8" font-weight="700">TP:边界 redistribute 插通信</text>
-    <text x="328" y="342" fill="#334155">Colwise/Rowwise 经 distribute_module</text>
-    <text x="328" y="356" fill="#334155">注册 pre/post hook,边界处对激活</text>
-    <text x="328" y="370" fill="#334155">DTensor.redistribute:</text>
+    <text x="328" y="326" fill="#1d4ed8" font-weight="700">TP:Module.parallelize() 包 forward</text>
+    <text x="328" y="342" fill="#334155">_distribute_states 切权重(module.py:376)</text>
+    <text x="328" y="356" fill="#334155">_redistribute_inputs/outputs 边界处</text>
+    <text x="328" y="370" fill="#334155">对激活 DTensor.redistribute:</text>
     <text x="328" y="384" fill="#334155">入列并行 Shard(seq)->Replicate</text>
     <text x="328" y="398" fill="#334155">= all-gather;</text>
     <text x="328" y="412" fill="#334155">出行并行 Partial->Shard/Replicate</text>
     <text x="328" y="426" fill="#64748b">= reduce-scatter / all-reduce</text>
-    <text x="328" y="440" fill="#64748b">_api.py:1022 register hooks</text>
+    <text x="328" y="440" fill="#64748b">module.py:248-294(不经过 style API)</text>
 
     <rect x="592" y="310" width="262" height="132" rx="8" fill="#dcfce7" stroke="#0f766e"/>
     <text x="604" y="326" fill="#0f766e" font-weight="700">PP:schedule 驱动微批 + p2p</text>
@@ -479,7 +479,6 @@
   <text x="955" y="760" fill="#7c3aed" font-size="9.5">ncclReduceScatter</text>
 </svg>
 <p class="figcap">图 0-2:四层 × 五格总览(总 + FSDP/TP/PP/CP)。0 用户层:Trainer.Config 里怎么传并行度;① torchtitan:切什么(声明放置+编排);② pytorch:插通信(hook/redistribute/schedule)+ Inductor 编译融合;③ CUDA&NCCL:执行通信(NCCL 内核+GPU 收发,只执行不融合,重叠由 ② 编排)。各策略格均对照源码核验。</p>
-</p>
 
 <div class="key" style="margin-top:14px"><b>② 和 ③ 按代码归属分层(纠正:Inductor 属 PyTorch ② 层,不在 CUDA/NCCL 层):</b>
 <br><br>
@@ -558,17 +557,17 @@
 <h2 id="fsdp"><span class="num" style="background:#c2410c">2</span>FSDP 的三层实现</h2>
 
 <h3>2.1 ① torchtitan:调 fully_shard,传 mesh 与分流函数(fsdp.py)</h3>
-<pre><code><span class="cmt"># torchtitan/distributed/fsdp.py:81-336 apply_fsdp_to_decoder</span>
+<pre><code><span class="cmt"># torchtitan/distributed/fsdp.py:110-367 apply_fsdp_to_decoder</span>
 fully_shard(transformer_block,
             mesh=dp_mesh,                       <span class="cmt"># dense 参数走 fsdp 组</span>
             reshard_after_forward=reshard_after_forward,
             shard_placement_fn=_shard_placement_fn,  <span class="cmt"># EP:专家参数改走 edp_mesh</span>
             mp_policy=MixedPrecisionPolicy(...))
 <span class="cmt"># _shard_placement_fn:参数属于 experts -> ShardPlacementResult(mesh_info=edp_mesh_info),否则 dp_mesh_info</span></code></pre>
-<p>torchtitan 只决定:每个参数归哪个 mesh(fsdp=32 还是 efsdp=8)、是否 reshard_after_forward(PP 下默认 False)、关掉 FSDP 自动梯度除法(由 loss÷gvt 负责)。剩下交给 <code>fully_shard</code>。</p>
+<p>torchtitan 只决定:每个参数归哪个 mesh(fsdp=32 还是 efsdp=32,见 2.4 的 192GPU 例子)、是否 reshard_after_forward(PP 下默认 False)、关掉 FSDP 自动梯度除法(由 loss÷gvt 负责)。剩下交给 <code>fully_shard</code>。</p>
 
 <h3>2.2 ② pytorch:FSDP2 的 hook + all-gather/reduce-scatter</h3>
-<p><code>fully_shard()</code>(_fully_shard.py:98)给模块注册 4 个 hook,运行时自动 all-gather 参数 / reduce-scatter 梯度:</p>
+<p><code>fully_shard()</code>(_fully_shard.py:98)给模块挂 4 个时机,运行时自动 all-gather 参数 / reduce-scatter 梯度:<b>注册方式</b>:pre/post_forward 是 module forward hook(_fsdp_state.py:116-120);pre_backward 是输出梯度张量的 <code>register_hook</code>(:398);post_backward 由 root backward final callback 触发(<code>_root_post_backward_final_callback</code>:348,经 <code>queue_callback</code> 在整棵反向树结束后调 <code>FSDPParamGroup.post_backward</code>:517)。调用链:</p>
 
 <svg viewBox="0 0 1170 470" font-family="monospace" font-size="11">
   <defs><marker id="ar2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
@@ -663,13 +662,14 @@ fully_shard(transformer_block,
 
   <!-- comm detail -->
   <g transform="translate(40,320)">
-    <rect width="1090" height="120" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
-    <text x="16" y="22" fill="#0f172a" font-weight="700" font-size="12">通信落点(_fsdp_collectives.py)</text>
+    <rect width="1090" height="140" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="16" y="22" fill="#0f172a" font-weight="700" font-size="12">通信落点(_fsdp_collectives.py)与 hook 注册(_fsdp_state.py)</text>
     <g font-size="11">
       <text x="16" y="44" fill="#c2410c" font-weight="700">foreach_all_gather:325</text><text x="180" y="44" fill="#334155">-> DefaultAllGather:111 -> dist.all_gather_into_tensor()(eager) -> torch.ops._c10d_functional.all_gather_into_tensor(C++/NCCL)</text>
       <text x="16" y="64" fill="#c2410c" font-weight="700">foreach_reduce:524</text><text x="180" y="64" fill="#334155">-> DefaultReduceScatter:175 -> dist.reduce_scatter_tensor()(eager) -> torch.ops._c10d_functional.reduce_scatter_tensor(C++/NCCL)</text>
       <text x="16" y="84" fill="#1d4ed8" font-weight="700">mesh 路由</text><text x="180" y="84" fill="#334155">_get_mesh_info:87(FSDPMeshInfo/HSDPMeshInfo)决定 shard_process_group;shard_placement_fn 让专家走 edp_mesh(_fsdp_common.py:175 ShardPlacementResult)</text>
-      <text x="16" y="104" fill="#64748b">注:FSDP2 用 DTensor 表达分片(_init_param_group 把参数包成 Shard(0) 的 DTensor),reshard=换回 sharded DTensor,unshard=all-gather 后 to_local()。比 FSDP1 的 _flat_param 更细粒度(按 param group)。</text>
+      <text x="16" y="104" fill="#1d4ed8" font-weight="700">hook 注册</text><text x="180" y="104" fill="#334155">pre/post_forward=module hook(_fsdp_state.py:116-120);pre_backward=梯度 register_hook(:398);post_backward=root final callback(:348-360) -> FSDPParamGroup.post_backward:517</text>
+      <text x="16" y="124" fill="#64748b">注:FSDP2 用 DTensor 表达分片(_init_param_group 把参数包成 Shard(0) 的 DTensor),reshard=换回 sharded DTensor,unshard=all-gather 后 to_local()。比 FSDP1 的 _flat_param 更细粒度(按 param group)。</text>
     </g>
   </g>
 </svg>
@@ -685,7 +685,7 @@ fully_shard(transformer_block,
 <h4>shard_placement_fn 是什么</h4>
 <p><code>fully_shard</code> 默认把传入模块的<b>所有参数</b>塞进同一个 mesh 做分片。但有时同一模块的参数该走不同 mesh--MoE 层就是典型:专家权重走专家专用组,其余走普通组。<code>shard_placement_fn(param) -> ShardPlacementResult</code> 让你<b>逐参数</b>决定:<code>ShardPlacementResult(placement=Shard(dim), mesh_info=某组 mesh)</code>。FSDP2 的 <code>_init_param_group</code>(fsdp_init.py)按返回的 mesh_info 把参数<b>按通信组分组</b>:同组的进一个 <code>FSDPParamGroup</code>(组内合并通信),不同组分开建 group--所以一个 MoE 层的 <code>FSDPState</code> 下有<b>两个</b> param group(普通参数组 + 专家组),各走各的通信组。</p>
 
-<h4>torchtitan 怎么用(apply_fsdp_to_decoder:180-272)</h4>
+<h4>torchtitan 怎么用(apply_fsdp_to_decoder:110-367,MoE 分流段 209-308)</h4>
 <pre><code><span class="cmt"># 进入 MoE 层(transformer_block.moe_enabled == True)</span>
 experts = transformer_block.moe.experts
 expert_params = <span class="fn">set</span>(experts.parameters())      <span class="cmt"># 这层所有专家参数的集合(判别用)</span>
@@ -734,7 +734,7 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <text x="16" y="126" fill="#c2410c">routed experts(w1_EFD/w2_EDF/w3_EFD)</text>
     <text x="16" y="148" fill="#64748b">判别:expert_params =</text>
     <text x="16" y="162" fill="#64748b">set(experts.parameters())</text>
-    <text x="16" y="176" fill="#64748b">fsdp.py:191</text>
+    <text x="16" y="176" fill="#64748b">fsdp.py:221</text>
   </g>
   <path d="M 280 146 L 320 90" stroke="#64748b" stroke-width="1.5" marker-end="url(#ars)"/>
   <path d="M 280 146 L 320 210" stroke="#64748b" stroke-width="1.5" marker-end="url(#ars)"/>
@@ -789,7 +789,7 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <text x="16" y="58" fill="#334155" font-size="11">all-gather 会试图把所有 rank 的专家权重拼全--但各 rank 的专家集合不同,拼不出一致的完整专家集。</text>
     <text x="16" y="78" fill="#334155" font-size="11">所以专家走 efsdp 组:该组内的 rank 持有相同的专家集合(EP 的同一个副本内),all-gather 只在这组内拼--</text>
     <text x="16" y="94" fill="#334155" font-size="11">拼的是"这些专家权重的 FSDP 分片",与 EP 切分正交。</text>
-    <text x="16" y="116" fill="#0f172a" font-weight="700" font-size="12">Shard(0) vs Shard(1) 的抉择(fsdp.py:200-203)</text>
+    <text x="16" y="116" fill="#0f172a" font-weight="700" font-size="12">Shard(0) vs Shard(1) 的抉择(fsdp.py:230-233)</text>
     <text x="16" y="136" fill="#334155" font-size="11">efsdp_ep_size = efsdp × ep(专家能分到的总 rank 数)。若 efsdp_ep_size &gt; num_experts:并行度超过专家数,</text>
     <text x="16" y="152" fill="#334155" font-size="11">按专家维 E 切(Shard(0))会切不均,改 Shard(1) 切 hidden 维避免 padding。否则 Shard(0),每 rank 持 num_experts/efsdp_ep_size 个专家。</text>
   </g>
@@ -803,7 +803,7 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <text x="16" y="76" fill="#334155">专家仍需 Shard(1)(避免 padding),</text>
     <text x="16" y="92" fill="#334155">此时传 shard_placement_fn 但只改 placement,</text>
     <text x="16" y="108" fill="#334155">mesh_info 仍是同一个(不分组)。</text>
-    <text x="16" y="126" fill="#64748b">fsdp.py:213-228 _experts_shard_placement_fn</text>
+    <text x="16" y="126" fill="#64748b">fsdp.py:243-258 _experts_shard_placement_fn</text>
   </g>
   <g transform="translate(595,496)">
     <rect width="535" height="138" rx="8" fill="#dcfce7" stroke="#0f766e"/>
@@ -813,7 +813,7 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <text x="16" y="76" fill="#334155">FSDP2 按通信组拆成 2 个 param group。</text>
     <text x="16" y="94" fill="#334155">两组独立 all-gather/reduce-scatter,</text>
     <text x="16" y="110" fill="#334155">在各自的通信组上执行。</text>
-    <text x="16" y="126" fill="#64748b">fsdp.py:229-272 _shard_placement_fn</text>
+    <text x="16" y="126" fill="#64748b">fsdp.py:259-302 _shard_placement_fn</text>
   </g>
 </svg>
 <p class="figcap">图 2-2:MoE 层 FSDP 的参数分流。shard_placement_fn 按"参数是否属于专家"把它分到普通组(dp_mesh/fsdp)或专家组(edp_mesh/efsdp),各自合并通信。专家必须单独一组,因 EP 已把专家按 E 切到不同 rank,只能在与 EP 正交的 efsdp 组内做 FSDP all-gather。</p>
@@ -828,27 +828,39 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
 <span class="kw">def</span> <span class="fn">rowwise_config</span>(*, output_sp=<span class="kw">False</span>) -> ShardingConfig:
     <span class="kw">return</span> ShardingConfig(state_shardings={<span class="str">"weight"</span>: dense_param_placement(tp=spmd.S(1))})  <span class="cmt"># 切输入维</span>
 <span class="cmt"># attention.wkv_b = colwise_config();attention.wo = rowwise_config(output_sp=True)</span></code></pre>
-<p>torchtitan 只声明"权重 S(0)/S(1)"。运行时 <code>Module.parallelize</code> 的 <code>_redistribute_inputs/outputs</code> 会按 <code>in_src/in_dst/out_src/out_dst</code> 自动插通信。</p>
+<p>torchtitan 只声明"权重 S(0)/S(1)"。<code>colwise_config</code>/<code>rowwise_config</code> 的名字写在 docstring 里(decoder_sharding.py:66 "ColwiseParallel: weight S(0), output S(-1)")--只是<b>"语义等价于"</b> torch 的 <code>ColwiseParallel</code>/<code>RowwiseParallel</code>,<b>并不是调用它</b>。全库 grep:没有任何 <code>parallelize_module</code> / <code>ColwiseParallel()</code> 调用(仅 docstring/注释提及;从 <code>torch.distributed.tensor.parallel</code> 只 import 了 <code>ParallelStyle</code>,用于 tensor_parallel.py:23 的 <code>NoParallel</code>)。运行时由 <code>Module.parallelize</code> 的 <code>_distribute_states</code> + <code>_redistribute_inputs/outputs</code> 按 <code>state/in_src/in_dst/out_src/out_dst</code> 自动插通信。</p>
 
-<h3>3.2 ② pytorch:ParallelStyle + DTensor.redistribute</h3>
-<p>torch 的 <code>ColwiseParallel</code>/<code>RowwiseParallel</code>(style.py:45/186)用 <code>distribute_module</code>(_api.py:1022)注册 forward_pre_hook / forward_hook,在 hook 里调 <code>DTensor.redistribute</code>。redistribute 按 (src,dst) 放置决定通信:</p>
+<h3>3.2 ② pytorch:Module.parallelize() 直接调 DTensor 原语(不经过 ColwiseParallel)</h3>
+<p>torchtitan <b>不走</b> <code>parallelize_module</code> + <code>ColwiseParallel</code>(style.py:45/186)那套 style API。同一个 forward 包装由 <code>Module.parallelize()</code>(protocols/module.py:248)直接完成,调用链:</p>
+<pre><code>trainer.py:445 model = model_spec.parallelize_fn(...)          <span class="cmt"># ① -> ② 入口</span>
+  -&gt; deepseek_v3/parallelize.py:39 model.parallelize(parallel_dims)
+    -&gt; protocols/module.py:248 Module.parallelize():                  <span class="cmt"># 递归子模块,凡有 _sharding_config 的:</span>
+      |- _distribute_states() :331                                     <span class="cmt"># 切权重</span>
+      |    -&gt; torch.distributed.tensor.distribute_tensor(weight, mesh, [Shard(0)])   <span class="cmt"># :376;style.py 的 _partition_linear_fn:128 也是调它</span>
+      |- _redistribute_inputs() :518                                   <span class="cmt"># 入参对齐 in_dst</span>
+      |    -&gt; DTensor.from_local(:601) + DTensor.redistribute(:624)    <span class="cmt"># 同 style.py 的 _prepare_input_fn:99(forward_pre_hook)</span>
+      |- _redistribute_outputs() :631                                  <span class="cmt"># 出参对齐 out_dst</span>
+      |    -&gt; DTensor.redistribute(:705)                               <span class="cmt"># 同 style.py 的 _prepare_output_fn:146(forward_hook)</span>
+      `- _maybe_wrap_with_local_region() :413                          <span class="cmt"># SP 本地内核区</span>
+           -&gt; torch.distributed.tensor.local_map(:490)                 <span class="cmt"># 语义同 SequenceParallel:339(seq_dim 默认 1)</span></code></pre>
+<p>区别只在"注册方式":<code>ColwiseParallel</code> 用 <code>distribute_module</code>(tensor/_api.py:1022)把这些动作注册成 forward_pre_hook / forward_hook;torchtitan 直接用一个新 forward 包装调用<b>同样三个底层原语</b>(distribute_tensor / DTensor.redistribute / local_map)。两条路殊途同归:最终都在 <code>DTensor.redistribute</code>(_api.py:613)里按 (src,dst) 放置决定通信:</p>
 
 <svg viewBox="0 0 1170 430" font-family="monospace" font-size="11">
   <rect x="20" y="10" width="1130" height="410" rx="12" fill="#f8fafc" stroke="#1d4ed8" stroke-width="1.5"/>
-  <text x="585" y="30" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="13">TP:Colwise + Rowwise 配对的通信落点(style.py + _redistribute.py:1499)</text>
+  <text x="585" y="30" text-anchor="middle" fill="#1d4ed8" font-weight="700" font-size="13">TP:ShardingConfig -> Module.parallelize() 的通信落点(module.py + _redistribute.py:1499)</text>
 
   <!-- colwise box -->
   <g transform="translate(40,56)">
     <rect width="330" height="240" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="165" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">ColwiseParallel(wq/wkv_b)</text>
+    <text x="165" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">colwise_config()(语义=ColwiseParallel, wq/wkv_b)</text>
     <text x="16" y="40" fill="#334155">weight = Shard(0)(切输出维/头)</text>
-    <text x="16" y="58" fill="#64748b">_partition_linear_fn:128</text>
-    <text x="16" y="80" fill="#15803d">入参:Replicate -> Replicate(无通信)</text>
-    <text x="16" y="96" fill="#64748b">_prepare_input_fn:99 from_local</text>
+    <text x="16" y="58" fill="#64748b">module.py _distribute_states:376 distribute_tensor</text>
+    <text x="16" y="80" fill="#15803d">入参:in_dst Replicate(无通信)</text>
+    <text x="16" y="96" fill="#64748b">_redistribute_inputs:601 from_local</text>
     <text x="16" y="118" fill="#334155">本地 matmul:各 rank 算半头</text>
     <text x="16" y="134" fill="#334155">输出 = Partial(各 rank 缺一半)</text>
     <text x="16" y="156" fill="#b91c1c">出参:Partial -> Shard(-1)</text>
-    <text x="16" y="172" fill="#64748b">_prepare_output_fn:146 redistribute</text>
+    <text x="16" y="172" fill="#64748b">_redistribute_outputs:705 redistribute</text>
     <text x="16" y="190" fill="#c2410c">=> reduce_scatter(求和+切序列)</text>
     <text x="16" y="214" fill="#64748b">placement_types.py:354</text>
     <text x="16" y="228" fill="#64748b">Shard._reduce_shard_tensor</text>
@@ -857,15 +869,15 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
   <!-- rowwise box -->
   <g transform="translate(390,56)">
     <rect width="330" height="240" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="165" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">RowwiseParallel(wo/w2)</text>
+    <text x="165" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">rowwise_config()(语义=RowwiseParallel, wo/w2)</text>
     <text x="16" y="40" fill="#334155">weight = Shard(1)(切输入维)</text>
-    <text x="16" y="58" fill="#64748b">_partition_linear_fn:250</text>
+    <text x="16" y="58" fill="#64748b">module.py _distribute_states:376 distribute_tensor</text>
     <text x="16" y="80" fill="#15803d">入参:Shard(-1) -> Shard(-1)(无通信)</text>
     <text x="16" y="96" fill="#64748b">接 colwise 输出,零通信</text>
     <text x="16" y="118" fill="#334155">本地 matmul:各 rank 算一半输入维</text>
     <text x="16" y="134" fill="#334155">输出 = Partial(需求和)</text>
     <text x="16" y="156" fill="#b91c1c">出参:Partial -> Replicate</text>
-    <text x="16" y="172" fill="#64748b">_prepare_output_fn:293 redistribute</text>
+    <text x="16" y="172" fill="#64748b">_redistribute_outputs:705 redistribute</text>
     <text x="16" y="190" fill="#c2410c">=> all_reduce(求和成完整)</text>
     <text x="16" y="214" fill="#64748b">placement_types.py:1292</text>
     <text x="16" y="228" fill="#64748b">Partial._reduce_value</text>
@@ -874,9 +886,9 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
   <!-- SP box -->
   <g transform="translate(740,56)">
     <rect width="390" height="240" rx="8" fill="#fef3c7" stroke="#b45309"/>
-    <text x="195" y="20" text-anchor="middle" fill="#b45309" font-weight="700">SequenceParallel(SP)</text>
+    <text x="195" y="20" text-anchor="middle" fill="#b45309" font-weight="700">SP:in_dst Shard(1) + local_map(module.py:452)</text>
     <text x="16" y="40" fill="#334155">不切权重,切激活的序列维</text>
-    <text x="16" y="58" fill="#64748b">SequenceParallel:339,seq_dim 默认 1</text>
+    <text x="16" y="58" fill="#64748b">语义同 SequenceParallel:339,seq_dim 默认 1</text>
     <text x="16" y="80" fill="#334155">层间激活 = Shard(seq_dim)</text>
     <text x="16" y="98" fill="#334155">进 colwise 前:Shard(seq) -> Replicate</text>
     <text x="16" y="114" fill="#c2410c">=> all_gather(序列 1024->2048)</text>
@@ -885,12 +897,12 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <text x="16" y="170" fill="#c2410c">=> reduce_scatter(求和+切序列 2048->1024)</text>
     <text x="16" y="194" fill="#334155">效果:层间激活只持 1/(TP) 序列</text>
     <text x="16" y="212" fill="#334155">省激活显存,通信在层边界</text>
-    <text x="16" y="230" fill="#64748b">torchtitan 用 local_map 表达同样语义</text>
+    <text x="16" y="230" fill="#64748b">local_map 包本地内核区(_apply_local_map:490)</text>
   </g>
 
   <!-- redistribute table -->
   <g transform="translate(40,316)">
-    <rect width="1090" height="86" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <rect width="1090" height="102" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
     <text x="16" y="22" fill="#0f172a" font-weight="700" font-size="12">DTensor.redistribute 放置->通信映射(_api.py:613, _redistribute.py:1499)</text>
     <g font-size="11">
       <text x="16" y="44" fill="#b91c1c" font-weight="700">Shard -> Replicate</text><text x="200" y="44" fill="#334155">= all_gather(funcol.all_gather_tensor)</text>
@@ -899,13 +911,14 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
       <text x="520" y="62" fill="#b91c1c" font-weight="700">Shard(src) -> Shard(dst)</text><text x="700" y="62" fill="#334155">= all_to_all</text>
       <text x="16" y="80" fill="#15803d" font-weight="700">Replicate -> Shard</text><text x="200" y="80" fill="#334155">= 本地 chunk(无通信)</text>
       <text x="520" y="80" fill="#64748b">所有 funcol.* -> torch.ops._c10d_functional.* -> ProcessGroupNCCL -> ncclXxx</text>
+      <text x="16" y="96" fill="#1d4ed8">注:style.py 的 Colwise/Rowwise 是上游旧版走法(parallelize_module 注册 hook,apply_tp);本仓库 ShardingConfig 直接调同等原语,不经过 style API。</text>
     </g>
   </g>
 </svg>
-<p class="figcap">图 3-1:TP 三层。① 声明 S(0)/S(1);② Colwise/Rowwise 用 redistribute 插 reduce_scatter/all_reduce;SP 在层边界 all-gather/reduce-scatter;③ 落到 functional collective NCCL。</p>
+<p class="figcap">图 3-1:TP 三层。① 声明 S(0)/S(1);② Module.parallelize() 直接调 distribute_tensor / DTensor.redistribute 插 reduce_scatter/all_reduce(语义同 Colwise/Rowwise,但不经过 style API);SP 在层边界 all-gather/reduce-scatter;③ 落到 functional collective NCCL。</p>
 
 <h3>3.3 async TP 融合(Inductor 做,归属 ② 层;TP 专属优化,故列于此)</h3>
-<p><b>分层说明:</b>async TP 的融合由 Inductor 完成,代码在 <code>torch/_inductor/</code>,<b>归属 ② 层</b>(本应放第 6 节 Inductor 处讲);但它是<b>仅 TP 才有</b>的专属优化,为便于对照 TP 的三层实现,列于此。当 <code>enable_async_tensor_parallel</code> 开启,torchtitan 设 <code>torch._inductor.config._micro_pipeline_tp=True</code>(config.py:1107)。inductor 的 <code>micro_pipeline_tp.py:1087</code> pass 在 FX 图里匹配 <code>all_gather -> matmul</code> 模式,<code>fuse_all_gather_matmul:614</code> 把它换成 <code>symm_mem.fused_all_gather_matmul</code>--把 all-gather 切成小块,每块到达就立刻开始对应 matmul,<b>通信与计算重叠</b>(micro-pipelining)。同理 <code>fuse_matmul_reduce_scatter:862</code> 重叠 reduce-scatter 尾部。前提:该 group 开了 symmetric memory。<b>③ 层</b>则照常启动 NCCL 内核(无特殊处理)。</p>
+<p><b>分层说明:</b>async TP 的融合由 Inductor 完成,代码在 <code>torch/_inductor/</code>,<b>归属 ② 层</b>(本应放第 6 节 Inductor 处讲);但它是<b>仅 TP 才有</b>的专属优化,为便于对照 TP 的三层实现,列于此。当 <code>enable_async_tensor_parallel</code> 开启,torchtitan 的 <code>maybe_enable_async_tp</code>(tensor_parallel.py:113)设 <code>torch._inductor.config._micro_pipeline_tp=True</code>(flag 定义在 torch/_inductor/config.py:1107)。inductor 的 <code>micro_pipeline_tp.py:1087</code> pass 在 FX 图里匹配 <code>all_gather -> matmul</code> 模式,<code>fuse_all_gather_matmul:614</code> 把它换成 <code>symm_mem.fused_all_gather_matmul</code>--把 all-gather 切成小块,每块到达就立刻开始对应 matmul,<b>通信与计算重叠</b>(micro-pipelining)。同理 <code>fuse_matmul_reduce_scatter:862</code> 重叠 reduce-scatter 尾部。前提:该 group 开了 symmetric memory。<b>③ 层</b>则照常启动 NCCL 内核(无特殊处理)。</p>
 
 <!-- ============ 4 PP ============ -->
 <h2 id="pp"><span class="num" style="background:#0f766e">4</span>PP 的三层实现</h2>
@@ -930,8 +943,8 @@ pp_schedule = _build_pipeline_schedule(...)
   <g transform="translate(40,56)">
     <rect width="340" height="120" rx="8" fill="#dcfce7" stroke="#0f766e"/>
     <text x="170" y="20" text-anchor="middle" fill="#0f766e" font-weight="700">① 切阶段(split)</text>
-    <text x="16" y="40" fill="#334155">Pipe._from_traced:685</text>
-    <text x="16" y="56" fill="#334155">split_module:750 按 pipe_split 边界</text>
+    <text x="16" y="40" fill="#334155">Pipe._from_traced(_IR.py:685)</text>
+    <text x="16" y="56" fill="#334155">split_module(_IR.py:750)按 pipe_split 边界</text>
     <text x="16" y="72" fill="#334155">把模型切成 submod_pp_0/1/2</text>
     <text x="16" y="90" fill="#334155">每段一组参数 + forward</text>
     <text x="16" y="108" fill="#64748b">torchtitan 用 FQN 指定边界</text>
@@ -990,20 +1003,22 @@ pp_schedule = _build_pipeline_schedule(...)
 <p class="figcap">图 4-1:PP 三层。① pipeline_llm 编排切分;② split_module + Schedule1F1B + p2p(isend/irecv);③ ProcessGroupNCCL -> ncclSend/ncclRecv。</p>
 
 <h3>4.3 ③ CUDA/NCCL:p2p 的 NCCL 内核</h3>
-<p><code>dist.isend</code>/<code>dist.irecv</code>(schedules.py:608-618)落到 C++ <code>ProcessGroupNCCL::send/recv</code>,启动 <code>ncclSend</code>/<code>ncclRecv</code>。批量 p2p 用 <code>dist.batch_isend_irecv</code> 在单个 CUDA graph 里 <code>ncclGroupStart/ncclGroupEnd</code> 避免死锁。p2p 是<b>点对点</b>(不是集合通信),只在两个相邻 stage 间传 hidden/grad 张量。</p>
+<p><code>dist.isend</code>/<code>dist.irecv</code>(stage.py 组装 P2POp,批量走 schedules.py:593-616 <code>_batch_p2p</code>,纯 isend/irecv 时逐个调 <code>p.op(...)</code>,混合时 <code>dist.batch_isend_irecv</code>)落到 C++ <code>ProcessGroupNCCL::send/recv</code>,启动 <code>ncclSend</code>/<code>ncclRecv</code>。<code>batch_isend_irecv</code> 内部用 <code>ncclGroupStart/ncclGroupEnd</code> 打包批量 p2p 避免死锁。p2p 是<b>点对点</b>(不是集合通信),只在两个相邻 stage 间传 hidden/grad 张量。</p>
 
 <!-- ============ 5 CP ============ -->
 <h2 id="cp"><span class="num" style="background:#b91c1c">5</span>CP 的三层实现</h2>
 
-<h3>5.1 ① torchtitan:apply_cp_to_forward + cp_shard(context_parallel.py)</h3>
-<pre><code><span class="cmt"># ① 初始化时(必须早于 parallelize):包装 attention.inner_attention.forward</span>
-apply_cp_to_forward([blk.attention.inner_attention <span class="kw">for</span> blk <span class="kw">in</span> model.layers.values()], cp_mesh)
-<span class="cmt"># FlexAttention 分支:cp_forward 里调 flex_cp_allgather(k,v) -- 运行时才通信</span>
+<h3>5.1 ① torchtitan:apply_cp_to_forward + prepare_context_parallel_input(context_parallel/api.py)</h3>
+<pre><code><span class="cmt"># ① 初始化时(必须早于 parallelize,llama3/parallelize.py:48):包装 attention.inner_attention.forward</span>
+apply_cp_to_forward([blk.attention.inner_attention <span class="kw">for</span> blk <span class="kw">in</span> model.layers.values()], cp_mesh)   <span class="cmt"># api.py:35</span>
+<span class="cmt"># FlexAttention 分支:cp_forward 里调 flex_cp_allgather(k, v) -- 运行时才通信(api.py:61)</span>
 
-<span class="cmt"># ② 每步数据预处理:沿序列维切输入</span>
-inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1), load_balancer=load_balancer)</code></pre>
+<span class="cmt"># ② 每步数据预处理:沿序列维切输入(trainer.py:702),① -> ② 调用链:</span>
+inputs, labels, extra_kwargs = prepare_context_parallel_input(inputs, labels, extra_kwargs, cp_mesh, device, load_balancer_type=<span class="str">"headtail"</span>)   <span class="cmt"># api.py:114</span>
+<span class="cmt">#   -> cp_shard(api.py:166) -> torch._context_parallel_shard(experimental/_attention.py:1423)</span></code></pre>
 
-<h3>5.2 ② pytorch:负载均衡 + all-gather K/V + ring attention</h3>
+<h3>5.2 ② pytorch(experimental/_context_parallel/):负载均衡 + all-gather K/V + ring attention</h3>
+<p>CP 的运行时机制已在 torch 2.12 上移到 <code>torch/distributed/tensor/experimental/_context_parallel/</code>(<code>_attention.py</code> / <code>_load_balancer.py</code> / <code>_cp_custom_ops.py</code>),torchtitan ① 层只是薄封装(api.py 调它们):</p>
 
 <svg viewBox="0 0 1170 440" font-family="monospace" font-size="11">
   <defs><marker id="ar4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#64748b"/></marker></defs>
@@ -1013,23 +1028,23 @@ inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1),
   <!-- shard -->
   <g transform="translate(40,56)">
     <rect width="350" height="150" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
-    <text x="175" y="20" text-anchor="middle" fill="#b91c1c" font-weight="700">① 切输入序列(_context_parallel_shard:1423)</text>
+    <text x="175" y="20" text-anchor="middle" fill="#b91c1c" font-weight="700">① 切输入序列(_attention.py:1423,经 api.py cp_shard:166)</text>
     <text x="16" y="40" fill="#334155">沿 seq_dim 把 [B,L] 切 cp 份</text>
     <text x="16" y="58" fill="#334155">distribute_tensor([Shard(seq_dim)]).to_local()</text>
     <text x="16" y="78" fill="#b45309" font-weight="700">负载均衡(关键):</text>
-    <text x="16" y="94" fill="#334155">_HeadTailLoadBalancer:78</text>
+    <text x="16" y="94" fill="#334155">_HeadTailLoadBalancer(_load_balancer.py:78)</text>
     <text x="16" y="108" fill="#334155">causal attn 三角形:rank0 算少,rankN 算多</text>
     <text x="16" y="122" fill="#334155">头尾配对:每 rank 拿"开头+结尾"各一块</text>
-    <text x="16" y="138" fill="#64748b">_PTRRLoadBalancer:295(Flex,按 BlockMask 工时)</text>
+    <text x="16" y="138" fill="#64748b">_PTRRLoadBalancer(_load_balancer.py:295,Flex 按 BlockMask 工时)</text>
   </g>
 
   <!-- allgather KV -->
   <g transform="translate(410,56)">
     <rect width="350" height="150" rx="8" fill="#fce7f3" stroke="#b91c1c"/>
-    <text x="175" y="20" text-anchor="middle" fill="#b91c1c" font-weight="700">② attention 内 all-gather K/V(flex_cp_allgather:8)</text>
+    <text x="175" y="20" text-anchor="middle" fill="#b91c1c" font-weight="700">② attention 内 all-gather K/V(_cp_custom_ops.py:9)</text>
     <text x="16" y="40" fill="#334155">每 rank 只持本地 Q 段</text>
     <text x="16" y="58" fill="#c2410c">flex_cp_allgather(k, v, seq_dim, pg_name)</text>
-    <text x="16" y="74" fill="#64748b">_cp_custom_ops.py:8</text>
+    <text x="16" y="74" fill="#64748b">cp_forward 包装(api.py:61)运行时调它</text>
     <text x="16" y="94" fill="#334155">K/V 本地 [B,L/4,H,D] -> 全量 [B,L,H,D]</text>
     <text x="16" y="110" fill="#334155">= funcol.all_gather_tensor(k, seq_dim, pg)</text>
     <text x="16" y="128" fill="#334155">本地 Q 段对全量 K/V 算 attention</text>
@@ -1040,10 +1055,10 @@ inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1),
   <g transform="translate(780,56)">
     <rect width="350" height="150" rx="8" fill="#fef3c7" stroke="#b45309"/>
     <text x="175" y="20" text-anchor="middle" fill="#b45309" font-weight="700">③ SDPA 分支:ring attention</text>
-    <text x="16" y="40" fill="#334155">_enable_context_parallel_dispatcher:1496</text>
+    <text x="16" y="40" fill="#334155">_enable_context_parallel_dispatcher(_attention.py:1496)</text>
     <text x="16" y="58" fill="#334155">注册 SDPA aten op 的自定义 handler</text>
-    <text x="16" y="76" fill="#334155">_sdpa_handler:897 -> ring attention 变体</text>
-    <text x="16" y="94" fill="#334155">_templated_ring_attention:317</text>
+    <text x="16" y="76" fill="#334155">_sdpa_handler(_attention.py:897)-> ring 变体</text>
+    <text x="16" y="94" fill="#334155">_templated_ring_attention(_attention.py:317)</text>
     <text x="16" y="112" fill="#334155">K/V 在 cp 组上环形传递</text>
     <text x="16" y="130" fill="#334155">每步算本地 Q 对当前 K/V 段的 attn</text>
     <text x="16" y="146" fill="#64748b">Flex 走全量 K/V(②),SDPA 走 ring(③)</text>
@@ -1070,7 +1085,7 @@ inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1),
 <p class="figcap">图 5-1:CP 三层。① 包 attention + 切输入;② flex_cp_allgather 收全量 K/V(或 SDPA ring attention)+ HeadTail 负载均衡;③ all_gather/reduce_scatter -> NCCL。</p>
 
 <h3>5.3 ③ CUDA/NCCL:与 FSDP/TP 同一套 collective 内核</h3>
-<p>CP 的 <code>flex_cp_allgather</code> 内部就是 <code>funcol.all_gather_tensor</code>,反向是 <code>reduce_scatter_tensor</code>--和 FSDP/TP 走<b>完全相同</b>的 <code>_c10d_functional</code> -> <code>ProcessGroupNCCL</code> -> <code>ncclAllGather</code> 路径。CP 的特殊点全在 ② 层(负载均衡重排 + 全量 K/V 策略 + ring attention),③ 层无特殊处理(纯执行)。FlexAttention 的 BlockMask 创建还会 <code>torch.compile</code>(_attention.py:1232)加速 mask 生成--那也属 ② Inductor。</p>
+<p>CP 的 <code>flex_cp_allgather</code> 内部就是 <code>funcol.all_gather_tensor</code>,反向是 <code>reduce_scatter_tensor</code>--和 FSDP/TP 走<b>完全相同</b>的 <code>_c10d_functional</code> -> <code>ProcessGroupNCCL</code> -> <code>ncclAllGather</code> 路径。CP 的特殊点全在 ② 层(负载均衡重排 + 全量 K/V 策略 + ring attention),③ 层无特殊处理(纯执行)。FlexAttention 的 BlockMask 创建还会 <code>torch.compile</code> 加速 mask 生成(<code>_compiled_create_block_mask = torch.compile(create_block_mask)</code>,torchtitan attention.py:597)--那也属 ② Inductor。</p>
 
 <!-- ============ ③ layer3 ============ -->
 <h2 id="layer3"><span class="num" style="background:#7c3aed">③</span>CUDA & NCCL 层:NCCL 内核 + CUDA 收发(纯执行)</h2>
@@ -1101,9 +1116,9 @@ inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1),
     <rect width="540" height="170" rx="8" fill="#f2ecfb" stroke="#7c3aed"/>
     <text x="270" y="20" text-anchor="middle" fill="#7c3aed" font-weight="700">A. 通信算子降级 + 调度(comm_lowering.py)</text>
     <text x="16" y="40" fill="#334155">register_comm_lowerings:186 给 _c10d_functional 注册降级规则</text>
-    <text x="16" y="58" fill="#334155">_all_gather_into_tensor:295 -> _CollectiveKernel(ir.py:10445)</text>
-    <text x="16" y="76" fill="#334155">_reduce_scatter_tensor:327 -> _CollectiveKernel</text>
-    <text x="16" y="94" fill="#334155">wait_tensor:397 -> _WaitKernel</text>
+    <text x="16" y="58" fill="#334155">_all_gather_into_tensor:296 -> _CollectiveKernel(ir.py:10445)</text>
+    <text x="16" y="76" fill="#334155">_reduce_scatter_tensor:328 -> _CollectiveKernel</text>
+    <text x="16" y="94" fill="#334155">wait_tensor:398 -> _WaitKernel</text>
     <text x="16" y="114" fill="#0f766e">调度:scheduler 把 _CollectiveKernel 当外部内核,</text>
     <text x="16" y="130" fill="#0f766e">与 matmul 等 compute kernel 一起排流水线</text>
     <text x="16" y="150" fill="#b45309">CommBufferLayout(ir.py:4433):注册用户缓冲给 NCCL,</text>
@@ -1167,11 +1182,11 @@ inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1),
   <!-- step 1: input CP shard -->
   <g font-size="10">
     <rect x="40" y="74" width="370" height="40" rx="6" fill="#f0fdf4" stroke="#15803d"/>
-    <text x="52" y="90" fill="#15803d" font-weight="700">CP:cp_shard 声明切 seq_dim</text>
-    <text x="52" y="104" fill="#334155">ShardingConfig:seq_dims=(1,1,1), load_balancer=headtail</text>
+    <text x="52" y="90" fill="#15803d" font-weight="700">CP:prepare_context_parallel_input(trainer.py:702)</text>
+    <text x="52" y="104" fill="#334155">-> cp_shard(api.py:166):seq_dims=(1,1,1), load_balancer=headtail</text>
     <path d="M 410 94 L 430 94" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar5)"/>
     <rect x="434" y="74" width="370" height="40" rx="6" fill="#e7ecf3" stroke="#1d4ed8"/>
-    <text x="446" y="90" fill="#1d4ed8" font-weight="700">_context_parallel_shard:1423</text>
+    <text x="446" y="90" fill="#1d4ed8" font-weight="700">_context_parallel_shard(experimental/_attention.py:1423)</text>
     <text x="446" y="104" fill="#334155">index_select 重排 + distribute_tensor(Shard).to_local()</text>
     <path d="M 804 94 L 824 94" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar5)"/>
     <rect x="828" y="74" width="300" height="40" rx="6" fill="#f2ecfb" stroke="#7c3aed"/>
@@ -1187,9 +1202,9 @@ inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1),
     <text x="52" y="168" fill="#334155">redistribute: SP->full(AG), Partial->Shard(RS)</text>
     <path d="M 410 149 L 430 149" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar5)"/>
     <rect x="434" y="124" width="370" height="50" rx="6" fill="#e7ecf3" stroke="#1d4ed8"/>
-    <text x="446" y="140" fill="#1d4ed8" font-weight="700">Colwise._prepare_input:99 AG 序列</text>
-    <text x="446" y="154" fill="#1d4ed8">cp_forward: flex_cp_allgather K/V</text>
-    <text x="446" y="168" fill="#334155">_prepare_output:146 reduce_scatter(Partial->Shard)</text>
+    <text x="446" y="140" fill="#1d4ed8" font-weight="700">_redistribute_inputs:518 AG 序列</text>
+    <text x="446" y="154" fill="#1d4ed8">cp_forward: flex_cp_allgather K/V(api.py:61)</text>
+    <text x="446" y="168" fill="#334155">_redistribute_outputs:705 reduce_scatter(Partial->Shard)</text>
     <path d="M 804 149 L 824 149" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar5)"/>
     <rect x="828" y="124" width="300" height="50" rx="6" fill="#f2ecfb" stroke="#7c3aed"/>
     <text x="840" y="140" fill="#7c3aed" font-weight="700">funcol.all_gather_tensor / reduce_scatter</text>
@@ -1286,7 +1301,7 @@ inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1),
 <table>
 <tr><th>层</th><th>职责</th><th>FSDP</th><th>TP</th><th>PP</th><th>CP</th></tr>
 <tr><td><span class="tag t-tt">① torchtitan</span></td><td>声明"切什么"+ 编排顺序</td><td>apply_fsdp_to_decoder(传 mesh/shard_placement_fn)</td><td>ShardingConfig S(0)/S(1)</td><td>pipeline_llm(split+schedule)</td><td>apply_cp_to_forward + cp_shard</td></tr>
-<tr><td><span class="tag t-pt">② pytorch</span></td><td>在哪插通信(hook/redistribute/schedule)+ compile 时 Inductor 融合</td><td>FSDP2 4 hook;compile 融 _CollectiveKernel</td><td>Colwise/Rowwise redistribute;async TP fuse_all_gather_matmul 重叠</td><td>1F1B schedule + isend/irecv</td><td>flex_cp_allgather + HeadTail</td></tr>
+<tr><td><span class="tag t-pt">② pytorch</span></td><td>在哪插通信(hook/redistribute/schedule)+ compile 时 Inductor 融合</td><td>FSDP2 4 hook;compile 融 _CollectiveKernel</td><td>Module.parallelize 的 redistribute(语义同 Colwise/Rowwise);async TP fuse_all_gather_matmul 重叠</td><td>1F1B schedule + isend/irecv</td><td>flex_cp_allgather + HeadTail</td></tr>
 <tr><td><span class="tag t-cc">③ CUDA/NCCL</span></td><td>启动 NCCL 内核 + CUDA 收发(纯执行)</td><td>ncclAllGather / ncclReduceScatter</td><td>ncclAllGather / ncclReduceScatter</td><td>ncclSend/Recv(group)</td><td>ncclAllGather / ncclReduceScatter</td></tr>
 <tr><td>最终内核</td><td>GPU 上真正执行</td><td colspan="4">ncclAllGather / ncclReduceScatter / ncclAllReduce / ncclAllToAll / ncclSend/Recv(C++ ProcessGroupNCCL)</td></tr>
 </table>
@@ -1295,7 +1310,7 @@ inputs = _context_parallel_shard(mesh=cp_mesh, buffers=inputs, seq_dims=(1,1,1),
 <b>一句话:</b>torchtitan 写声明(①),pytorch 按声明插通信、compile 时由 Inductor 融合重叠(②),CUDA&NCCL 启动内核在 GPU 上执行(③)。FSDP/TP/CP 三者的集合通信在 ③ 层汇流成同一套 <code>_c10d_functional -> ProcessGroupNCCL -> nccl*</code>;PP 的 p2p 走单独的 <code>isend/irecv -> ncclSend/Recv</code>。<b>分层按代码归属</b>:Inductor 属 ②(torch/_inductor/),NCCL/CUDA 属 ③。各策略切不同维度(参数/激活/序列/层/token),故能在一次 forward 里正交叠加。
 </div>
 
-<p class="sub">torchtitan 源码:<code>torchtitan/distributed/{fsdp,tensor_parallel,pipeline_parallel,context_parallel,parallel_dims}.py</code> + <code>torchtitan/protocols/{module,sharding}.py</code>。pytorch 源码:<code>.venv/Lib/site-packages/torch/distributed/{fsdp/_fully_shard,tensor/parallel,tensor/experimental/_context_parallel,pipelining,_functional_collectives}.py</code> + <code>torch/_inductor/{comm_lowering,fx_passes/micro_pipeline_tp,config}.py</code> + C++ <code>torch/csrc/distributed/c10d/</code>(ProcessGroupNCCL)。torch 版本 2.12.1+cpu。</p>
+<p class="sub">torchtitan 源码:<code>torchtitan/distributed/{fsdp,tensor_parallel,pipeline_parallel,context_parallel/,parallel_dims}.py</code> + <code>torchtitan/protocols/{module,sharding}.py</code> + <code>torchtitan/models/common/decoder_sharding.py</code>。pytorch 源码:<code>.venv/Lib/site-packages/torch/distributed/{fsdp/_fully_shard,tensor/_api.py,tensor/parallel/style.py,tensor/experimental/_context_parallel,pipelining,_functional_collectives}.py</code> + <code>torch/_inductor/{comm_lowering,fx_passes/micro_pipeline_tp,config}.py</code> + C++ <code>torch/csrc/distributed/c10d/</code>(ProcessGroupNCCL)。torch 版本 2.12.1+cpu。</p>
 
 </div>
 <script src="common.js"></script>
