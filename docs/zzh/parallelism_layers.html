@@ -123,12 +123,12 @@
     <text x="52" y="188" fill="#64748b">分流 _shard_placement_fn :281-295</text>
 
     <rect x="316" y="100" width="262" height="98" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="328" y="116" fill="#1d4ed8" font-weight="700">TP:声明权重放置</text>
+    <text x="328" y="116" fill="#1d4ed8" font-weight="700">TP:声明 + 施加(① 代码)</text>
     <text x="328" y="132" fill="#334155">ShardingConfig 标:wkv_b/wq_b=S(0)</text>
-    <text x="328" y="146" fill="#334155">(列并行),wo=S(1)(行并行),</text>
-    <text x="328" y="160" fill="#334155">wkv_a/wq_a/gate=R(复制)</text>
+    <text x="328" y="146" fill="#334155">(列并行),wo=S(1)(行并行)</text>
+    <text x="328" y="160" fill="#334155">Module.parallelize() 包 forward</text>
     <text x="328" y="174" fill="#64748b">colwise/rowwise_config</text>
-    <text x="328" y="188" fill="#64748b">decoder_sharding.py</text>
+    <text x="328" y="188" fill="#64748b">decoder_sharding.py / module.py:248</text>
 
     <rect x="592" y="100" width="262" height="98" rx="8" fill="#dcfce7" stroke="#0f766e"/>
     <text x="604" y="116" fill="#0f766e" font-weight="700">PP:声明层分段</text>
@@ -174,15 +174,15 @@
     <text x="52" y="440" fill="#64748b">hook 见 _fsdp_state.py</text>
 
     <rect x="316" y="310" width="262" height="132" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
-    <text x="328" y="326" fill="#1d4ed8" font-weight="700">TP:Module.parallelize() 包 forward</text>
-    <text x="328" y="342" fill="#334155">_distribute_states 切权重(module.py:376)</text>
-    <text x="328" y="356" fill="#334155">_redistribute_inputs/outputs 边界处</text>
-    <text x="328" y="370" fill="#334155">对激活 DTensor.redistribute:</text>
+    <text x="328" y="326" fill="#1d4ed8" font-weight="700">TP:DTensor 原语插通信(② torch)</text>
+    <text x="328" y="342" fill="#334155">distribute_tensor 切权重 S(0)/S(1)</text>
+    <text x="328" y="356" fill="#334155">redistribute 边界处对激活,</text>
+    <text x="328" y="370" fill="#334155">按 (src,dst) 放置决定:</text>
     <text x="328" y="384" fill="#334155">入列并行 Shard(seq)->Replicate</text>
     <text x="328" y="398" fill="#334155">= all-gather;</text>
     <text x="328" y="412" fill="#334155">出行并行 Partial->Shard/Replicate</text>
     <text x="328" y="426" fill="#64748b">= reduce-scatter / all-reduce</text>
-    <text x="328" y="440" fill="#64748b">module.py:248-294(不经过 style API)</text>
+    <text x="328" y="440" fill="#64748b">tensor/_api.py:613(不经过 style API)</text>
 
     <rect x="592" y="310" width="262" height="132" rx="8" fill="#dcfce7" stroke="#0f766e"/>
     <text x="604" y="326" fill="#0f766e" font-weight="700">PP:schedule 驱动微批 + p2p</text>
@@ -828,21 +828,21 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
 <span class="kw">def</span> <span class="fn">rowwise_config</span>(*, output_sp=<span class="kw">False</span>) -> ShardingConfig:
     <span class="kw">return</span> ShardingConfig(state_shardings={<span class="str">"weight"</span>: dense_param_placement(tp=spmd.S(1))})  <span class="cmt"># 切输入维</span>
 <span class="cmt"># attention.wkv_b = colwise_config();attention.wo = rowwise_config(output_sp=True)</span></code></pre>
-<p>torchtitan 只声明"权重 S(0)/S(1)"。<code>colwise_config</code>/<code>rowwise_config</code> 的名字写在 docstring 里(decoder_sharding.py:66 "ColwiseParallel: weight S(0), output S(-1)")--只是<b>"语义等价于"</b> torch 的 <code>ColwiseParallel</code>/<code>RowwiseParallel</code>,<b>并不是调用它</b>。全库 grep:没有任何 <code>parallelize_module</code> / <code>ColwiseParallel()</code> 调用(仅 docstring/注释提及;从 <code>torch.distributed.tensor.parallel</code> 只 import 了 <code>ParallelStyle</code>,用于 tensor_parallel.py:23 的 <code>NoParallel</code>)。运行时由 <code>Module.parallelize</code> 的 <code>_distribute_states</code> + <code>_redistribute_inputs/outputs</code> 按 <code>state/in_src/in_dst/out_src/out_dst</code> 自动插通信。</p>
+<p>torchtitan 只声明"权重 S(0)/S(1)"。<code>colwise_config</code>/<code>rowwise_config</code> 的名字写在 docstring 里(decoder_sharding.py:66 "ColwiseParallel: weight S(0), output S(-1)")--只是<b>"语义等价于"</b> torch 的 <code>ColwiseParallel</code>/<code>RowwiseParallel</code>,<b>并不是调用它</b>。全库 grep:没有任何 <code>parallelize_module</code> / <code>ColwiseParallel()</code> 调用(仅 docstring/注释提及;从 <code>torch.distributed.tensor.parallel</code> 只 import 了 <code>ParallelStyle</code>,用于 tensor_parallel.py:23 的 <code>NoParallel</code>)。<b>施加动作也是 ① 层代码</b>:<code>Module.parallelize()</code> 及其 <code>_distribute_states</code> / <code>_redistribute_inputs</code> / <code>_redistribute_outputs</code> / <code>_maybe_wrap_with_local_region</code> 都在 torchtitan/protocols/module.py(属 ①);它们<b>内部才调 ② 层</b>的 <code>distribute_tensor</code> / <code>DTensor.from_local</code> / <code>DTensor.redistribute</code> / <code>local_map</code>(见 3.2)。</p>
 
-<h3>3.2 ② pytorch:Module.parallelize() 直接调 DTensor 原语(不经过 ColwiseParallel)</h3>
-<p>torchtitan <b>不走</b> <code>parallelize_module</code> + <code>ColwiseParallel</code>(style.py:45/186)那套 style API。同一个 forward 包装由 <code>Module.parallelize()</code>(protocols/module.py:248)直接完成,调用链:</p>
-<pre><code>trainer.py:445 model = model_spec.parallelize_fn(...)          <span class="cmt"># ① -> ② 入口</span>
+<h3>3.2 ② pytorch:DTensor 原语(distribute_tensor / redistribute / local_map)</h3>
+<p>torchtitan <b>不走</b> <code>parallelize_module</code> + <code>ColwiseParallel</code>(style.py:45/186)那套 style API。① 层的 <code>Module.parallelize()</code>(protocols/module.py:248)自己不动数据,它把"切权重 / 包 forward"编排成对 ② 层 torch 原语的调用 -- 与 style.py 的 ColwiseParallel 内部用的是同一批。调用链(① torchtitan 代码 -> ② torch API):</p>
+<pre><code>trainer.py:445 model = model_spec.parallelize_fn(...)          <span class="cmt"># ① 层:编排入口</span>
   -&gt; deepseek_v3/parallelize.py:39 model.parallelize(parallel_dims)
-    -&gt; protocols/module.py:248 Module.parallelize():                  <span class="cmt"># 递归子模块,凡有 _sharding_config 的:</span>
-      |- _distribute_states() :331                                     <span class="cmt"># 切权重</span>
-      |    -&gt; torch.distributed.tensor.distribute_tensor(weight, mesh, [Shard(0)])   <span class="cmt"># :376;style.py 的 _partition_linear_fn:128 也是调它</span>
-      |- _redistribute_inputs() :518                                   <span class="cmt"># 入参对齐 in_dst</span>
-      |    -&gt; DTensor.from_local(:601) + DTensor.redistribute(:624)    <span class="cmt"># 同 style.py 的 _prepare_input_fn:99(forward_pre_hook)</span>
-      |- _redistribute_outputs() :631                                  <span class="cmt"># 出参对齐 out_dst</span>
-      |    -&gt; DTensor.redistribute(:705)                               <span class="cmt"># 同 style.py 的 _prepare_output_fn:146(forward_hook)</span>
-      `- _maybe_wrap_with_local_region() :413                          <span class="cmt"># SP 本地内核区</span>
-           -&gt; torch.distributed.tensor.local_map(:490)                 <span class="cmt"># 语义同 SequenceParallel:339(seq_dim 默认 1)</span></code></pre>
+    -&gt; protocols/module.py:248 Module.parallelize():                  <span class="cmt"># ① 层:递归子模块,凡有 _sharding_config 的:</span>
+      |- _distribute_states() :331                                     <span class="cmt"># ① 切权重</span>
+      |    -&gt; ② torch.distributed.tensor.distribute_tensor(weight, mesh, [Shard(0)])  <span class="cmt"># :376;style.py 的 _partition_linear_fn:128 也是调它</span>
+      |- _redistribute_inputs() :518                                   <span class="cmt"># ① 入参对齐 in_dst</span>
+      |    -&gt; ② DTensor.from_local(:601) + DTensor.redistribute(:624)  <span class="cmt"># 同 style.py 的 _prepare_input_fn:99(forward_pre_hook)</span>
+      |- _redistribute_outputs() :631                                  <span class="cmt"># ① 出参对齐 out_dst</span>
+      |    -&gt; ② DTensor.redistribute(:705)                             <span class="cmt"># 同 style.py 的 _prepare_output_fn:146(forward_hook)</span>
+      `- _maybe_wrap_with_local_region() :413                          <span class="cmt"># ① SP 本地内核区</span>
+           -&gt; ② torch.distributed.tensor.local_map(:490)               <span class="cmt"># 语义同 SequenceParallel:339(seq_dim 默认 1)</span></code></pre>
 <p>区别只在"注册方式":<code>ColwiseParallel</code> 用 <code>distribute_module</code>(tensor/_api.py:1022)把这些动作注册成 forward_pre_hook / forward_hook;torchtitan 直接用一个新 forward 包装调用<b>同样三个底层原语</b>(distribute_tensor / DTensor.redistribute / local_map)。两条路殊途同归:最终都在 <code>DTensor.redistribute</code>(_api.py:613)里按 (src,dst) 放置决定通信:</p>
 
 <svg viewBox="0 0 1170 430" font-family="monospace" font-size="11">
@@ -854,13 +854,13 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <rect width="330" height="240" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
     <text x="165" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">colwise_config()(语义=ColwiseParallel, wq/wkv_b)</text>
     <text x="16" y="40" fill="#334155">weight = Shard(0)(切输出维/头)</text>
-    <text x="16" y="58" fill="#64748b">module.py _distribute_states:376 distribute_tensor</text>
+    <text x="16" y="58" fill="#64748b">① _distribute_states:376 -> ② distribute_tensor</text>
     <text x="16" y="80" fill="#15803d">入参:in_dst Replicate(无通信)</text>
-    <text x="16" y="96" fill="#64748b">_redistribute_inputs:601 from_local</text>
+    <text x="16" y="96" fill="#64748b">① _redistribute_inputs:601 -> ② from_local</text>
     <text x="16" y="118" fill="#334155">本地 matmul:各 rank 算半头</text>
     <text x="16" y="134" fill="#334155">输出 = Partial(各 rank 缺一半)</text>
     <text x="16" y="156" fill="#b91c1c">出参:Partial -> Shard(-1)</text>
-    <text x="16" y="172" fill="#64748b">_redistribute_outputs:705 redistribute</text>
+    <text x="16" y="172" fill="#64748b">① _redistribute_outputs:705 -> ② redistribute</text>
     <text x="16" y="190" fill="#c2410c">=> reduce_scatter(求和+切序列)</text>
     <text x="16" y="214" fill="#64748b">placement_types.py:354</text>
     <text x="16" y="228" fill="#64748b">Shard._reduce_shard_tensor</text>
@@ -871,13 +871,13 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <rect width="330" height="240" rx="8" fill="#dbeafe" stroke="#1d4ed8"/>
     <text x="165" y="20" text-anchor="middle" fill="#1d4ed8" font-weight="700">rowwise_config()(语义=RowwiseParallel, wo/w2)</text>
     <text x="16" y="40" fill="#334155">weight = Shard(1)(切输入维)</text>
-    <text x="16" y="58" fill="#64748b">module.py _distribute_states:376 distribute_tensor</text>
+    <text x="16" y="58" fill="#64748b">① _distribute_states:376 -> ② distribute_tensor</text>
     <text x="16" y="80" fill="#15803d">入参:Shard(-1) -> Shard(-1)(无通信)</text>
     <text x="16" y="96" fill="#64748b">接 colwise 输出,零通信</text>
     <text x="16" y="118" fill="#334155">本地 matmul:各 rank 算一半输入维</text>
     <text x="16" y="134" fill="#334155">输出 = Partial(需求和)</text>
     <text x="16" y="156" fill="#b91c1c">出参:Partial -> Replicate</text>
-    <text x="16" y="172" fill="#64748b">_redistribute_outputs:705 redistribute</text>
+    <text x="16" y="172" fill="#64748b">① _redistribute_outputs:705 -> ② redistribute</text>
     <text x="16" y="190" fill="#c2410c">=> all_reduce(求和成完整)</text>
     <text x="16" y="214" fill="#64748b">placement_types.py:1292</text>
     <text x="16" y="228" fill="#64748b">Partial._reduce_value</text>
@@ -897,7 +897,7 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     <text x="16" y="170" fill="#c2410c">=> reduce_scatter(求和+切序列 2048->1024)</text>
     <text x="16" y="194" fill="#334155">效果:层间激活只持 1/(TP) 序列</text>
     <text x="16" y="212" fill="#334155">省激活显存,通信在层边界</text>
-    <text x="16" y="230" fill="#64748b">local_map 包本地内核区(_apply_local_map:490)</text>
+    <text x="16" y="230" fill="#64748b">① _apply_local_map:490 -> ② local_map 包本地内核区</text>
   </g>
 
   <!-- redistribute table -->
@@ -915,7 +915,7 @@ fully_shard(transformer_block, mesh=dp_mesh, shard_placement_fn=_shard_placement
     </g>
   </g>
 </svg>
-<p class="figcap">图 3-1:TP 三层。① 声明 S(0)/S(1);② Module.parallelize() 直接调 distribute_tensor / DTensor.redistribute 插 reduce_scatter/all_reduce(语义同 Colwise/Rowwise,但不经过 style API);SP 在层边界 all-gather/reduce-scatter;③ 落到 functional collective NCCL。</p>
+<p class="figcap">图 3-1:TP 三层。① 声明 S(0)/S(1) + Module.parallelize() 施加(① 代码);② DTensor 原语(distribute_tensor 切权重、redistribute 插 reduce_scatter/all_reduce,语义同 Colwise/Rowwise,但不经过 style API);SP 在层边界 all-gather/reduce-scatter;③ 落到 functional collective NCCL。</p>
 
 <h3>3.3 async TP 融合(Inductor 做,归属 ② 层;TP 专属优化,故列于此)</h3>
 <p><b>分层说明:</b>async TP 的融合由 Inductor 完成,代码在 <code>torch/_inductor/</code>,<b>归属 ② 层</b>(本应放第 6 节 Inductor 处讲);但它是<b>仅 TP 才有</b>的专属优化,为便于对照 TP 的三层实现,列于此。当 <code>enable_async_tensor_parallel</code> 开启,torchtitan 的 <code>maybe_enable_async_tp</code>(tensor_parallel.py:113)设 <code>torch._inductor.config._micro_pipeline_tp=True</code>(flag 定义在 torch/_inductor/config.py:1107)。inductor 的 <code>micro_pipeline_tp.py:1087</code> pass 在 FX 图里匹配 <code>all_gather -> matmul</code> 模式,<code>fuse_all_gather_matmul:614</code> 把它换成 <code>symm_mem.fused_all_gather_matmul</code>--把 all-gather 切成小块,每块到达就立刻开始对应 matmul,<b>通信与计算重叠</b>(micro-pipelining)。同理 <code>fuse_matmul_reduce_scatter:862</code> 重叠 reduce-scatter 尾部。前提:该 group 开了 symmetric memory。<b>③ 层</b>则照常启动 NCCL 内核(无特殊处理)。</p>
@@ -1202,9 +1202,9 @@ inputs, labels, extra_kwargs = prepare_context_parallel_input(inputs, labels, ex
     <text x="52" y="168" fill="#334155">redistribute: SP->full(AG), Partial->Shard(RS)</text>
     <path d="M 410 149 L 430 149" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar5)"/>
     <rect x="434" y="124" width="370" height="50" rx="6" fill="#e7ecf3" stroke="#1d4ed8"/>
-    <text x="446" y="140" fill="#1d4ed8" font-weight="700">_redistribute_inputs:518 AG 序列</text>
-    <text x="446" y="154" fill="#1d4ed8">cp_forward: flex_cp_allgather K/V(api.py:61)</text>
-    <text x="446" y="168" fill="#334155">_redistribute_outputs:705 reduce_scatter(Partial->Shard)</text>
+    <text x="446" y="140" fill="#1d4ed8" font-weight="700">DTensor.redistribute: AG 序列</text>
+    <text x="446" y="154" fill="#1d4ed8">flex_cp_allgather -> funcol.all_gather_tensor</text>
+    <text x="446" y="168" fill="#334155">DTensor.redistribute: reduce_scatter(Partial->Shard)</text>
     <path d="M 804 149 L 824 149" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar5)"/>
     <rect x="828" y="124" width="300" height="50" rx="6" fill="#f2ecfb" stroke="#7c3aed"/>
     <text x="840" y="140" fill="#7c3aed" font-weight="700">funcol.all_gather_tensor / reduce_scatter</text>
