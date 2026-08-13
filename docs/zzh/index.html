@@ -62,6 +62,7 @@
       <span class="cat-title"></span>
       <a href="parallelism_sharding_detail.html">切分细节</a><span class="desc">各策略切分前后 shape 详表</span>
       <a href="parallelism_training_flow.html">并行训练流程</a>
+      <a href="parallelism_init_and_train.html">初始化 vs 训练期<span class="tag tag-new">新</span></a><span class="desc">五策略各自:初始化做了什么 / 训练中做了什么</span>
       <a href="mesh_example.html">网格示例</a><span class="desc">DeviceMesh 拓扑与编号</span>
     </div>
   </div>
@@ -103,7 +104,7 @@
     <span class="desc">需要快速找到某个策略的代码时,从代码地图入手,再到具体流程图验证。</span>
   </div>
 
-  <h2>三、文件总表(21 页)</h2>
+  <h2>三、文件总表(22 页)</h2>
   <table>
     <tr><th>文件名</th><th>分类</th><th>核心内容</th><th>与谁联动</th></tr>
     <tr><td>01_architecture.html</td><td>架构</td><td>分层设计、Configurable/Module/ModelSpec/ParallelDims 关系</td><td>→02→04→05</td></tr>
@@ -124,6 +125,7 @@
     <tr><td><b>parallelism_principles.html</b></td><td>并行</td><td>各策略实现原理:数学/通信/Shape</td><td>←代码地图 →后端</td></tr>
     <tr><td><b>parallelism_sharding_detail.html</b></td><td>并行</td><td>切分前后 shape 详表</td><td>←原理</td></tr>
     <tr><td><b>parallelism_training_flow.html</b></td><td>并行</td><td>并行训练流程</td><td></td></tr>
+    <tr><td><b>parallelism_init_and_train.html</b></td><td>并行</td><td>五策略各自:初始化做了什么 / 训练中做了什么(带图)</td><td>←训练流程 →代码地图</td></tr>
     <tr><td><b>spmd_backends.html</b></td><td>并行</td><td>default/full_dtensor/spmd_types 对比</td><td>←原理 →代码地图</td></tr>
     <tr><td><b>deepseek_v3_671b_training_example.html</b></td><td>训练</td><td>671B 训练示例:用户开发边界、调用的 API、ModelSpec 生命周期时序</td><td>←05_model_system</td></tr>
     
