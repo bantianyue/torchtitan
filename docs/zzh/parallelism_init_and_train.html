@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>五大并行策略 · 初始化 vs 训练期 · FSDP/TP/PP/CP/DP</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+  :root{
+    --tp:#3498db; --sp:#f1c40f; --cp:#e74c3c; --pp:#1abc9c;
+    --dp:#2ecc71; --fsdp:#e67e22; --ep:#9b59b6;
+    --bg:#0d0f14; --card:#161a22; --txt:#d7dde6; --dim:#8b94a3; --line:#272d39; --acc:#9be0a3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1200px;margin:0 auto;padding:26px 20px 90px}
+  h1{font-size:26px;margin:.2em 0 .1em;color:#fff}
+  h2{font-size:21px;margin:1.6em 0 .4em;padding-bottom:7px;border-bottom:2px solid var(--line);
+    color:#fff;display:flex;align-items:center;gap:10px}
+  h3{font-size:16.5px;margin:1.1em 0 .35em;color:#cdd4df}
+  p{margin:.5em 0}
+  code{background:#0a0c11;border:1px solid var(--line);padding:1px 5px;border-radius:4px;
+    font-family:"JetBrains Mono",Consolas,Menlo,monospace;font-size:13px;color:var(--acc)}
+  .sub{color:var(--dim);font-size:12.5px}
+  svg{display:block;margin:6px auto;max-width:100%;height:auto}
+  .figcap{text-align:center;color:var(--dim);font-size:12px;margin:2px 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:.9em 0}
+  .warn{border-left:3px solid #f0ad4e;padding:7px 13px;background:#1a160d;border-radius:0 6px 6px 0;margin:.6em 0}
+  table{border-collapse:collapse;width:100%;margin:.6em 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{background:#1c212c;color:#eef2f8;font-weight:600}
+  .shape{font-family:"JetBrains Mono",Consolas,monospace;font-size:12.5px;color:var(--acc)}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;font-weight:700;color:#0d0f14}
+  .t-tp{background:var(--tp)} .t-sp{background:var(--sp)} .t-cp{background:var(--cp)}
+  .t-pp{background:var(--pp)} .t-dp{background:var(--dp)} .t-fsdp{background:var(--fsdp)} .t-ep{background:var(--ep);color:#fff}
+  ul,ol{margin:.4em 0 .4em 1.4em;padding:0}
+  li{margin:.22em 0}
+  .ref{font-size:12px;color:var(--dim);font-family:"JetBrains Mono",Consolas,monospace}
+  /* SVG helpers */
+  .box{stroke-width:1.5;rx:6}
+  .lbl{font-size:12px;fill:#d7dde6}
+  .lbl-s{font-size:10.5px;fill:#8b94a3}
+  .lbl-m{font-family:"JetBrains Mono",Consolas,monospace;font-size:11px;fill:#9be0a3}
+  .ph{font-family:"JetBrains Mono",Consolas,monospace;font-size:10px;fill:#8b94a3}
+</style>
+</head>
+<body>
+<div id="sidebar"></div>
+<div class="wrap">
+
+<h1>五大并行策略 · 初始化做了什么 / 训练过程中做了什么</h1>
+<p class="sub">
+  按策略逐个拆解:FSDP / TP / PP / CP / DP。每个策略回答两个问题:<b>初始化</b>(Trainer 构造时,模型还在 meta device 上,做了什么)与
+  <b>训练期</b>(每个 step 的前向/反向/优化,发生了什么通信)。全部结论基于代码核实,标注 <code>文件:行号</code>。
+  配合 <a href="parallelism_training_flow.html">并行训练流程</a>(shape 演化)、<a href="parallelism_layers.html">并行实现三层</a>(torchtitan / pytorch / NCCL)、
+  <a href="parallelism_principles.html">实现原理</a>(数学与通信) 阅读。
+</p>
+
+<!-- ==================== 0. 总览 ==================== -->
+<h2><span class="num" style="background:#7f8c8d;color:#fff">0</span> 总览:五个策略在初始化和训练期的位置</h2>
+<p>先建立全局坐标。所有并行都挂在 <code>Trainer.__init__</code>(<code>trainer.py:243</code>)和 <code>train_step</code>(<code>trainer.py:813</code>)上。
+五个策略没有独立的"启动器",它们是被 <b>网格(mesh)定义 + 模型 parallelize + 数据预处理 + train_step 各环节</b> 组合启用的。
+下图左侧是初始化时间线,右侧是训练时间线,颜色对应各策略。</p>
+
+<svg viewBox="0 0 880 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="初始化与训练时间线总览">
+  <defs>
+    <marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker>
+  </defs>
+  <!-- 左列: 初始化 -->
+  <text x="220" y="24" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">初始化 (Trainer.__init__, trainer.py:243)</text>
+  <rect x="20" y="36" width="400" height="500" fill="#161a22" stroke="#272d39" rx="10"/>
+  <g font-size="11.5">
+    <rect x="40" y="52" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="50" y="72" class="lbl">1. init_distributed():建进程组 + ParallelDims 校验</text>
+    <text x="404" y="72" class="ph">trainer.py:606</text>
+    <rect x="40" y="96" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="50" y="116" class="lbl">2. build_mesh():world 网格 unflatten 成命名轴</text>
+    <text x="404" y="116" class="ph">parallel_dims.py:203</text>
+    <rect x="40" y="140" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="50" y="160" class="lbl">3. 模型在 meta device 上构建 (零显存)</text>
+    <text x="404" y="160" class="ph">trainer.py:317</text>
+    <rect x="40" y="184" width="360" height="34" fill="#1c212c" stroke="#1abc9c" class="box"/><text x="50" y="204" class="lbl">4. [PP] pipeline_llm:切 stage + 建 schedule</text>
+    <text x="404" y="204" class="ph">trainer.py:397</text>
+    <rect x="40" y="228" width="360" height="34" fill="#1c212c" stroke="#e74c3c" class="box"/><text x="50" y="248" class="lbl">5. [CP] apply_cp_to_forward:包装 attention</text>
+    <text x="404" y="248" class="ph">llama3/parallelize.py:47</text>
+    <rect x="40" y="272" width="360" height="34" fill="#1c212c" stroke="#3498db" class="box"/><text x="50" y="292" class="lbl">6. [TP] model.parallelize():切参数 + 包 forward</text>
+    <text x="404" y="292" class="ph">module.py:248</text>
+    <rect x="40" y="316" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="50" y="336" class="lbl">7. 激活重算 AC + torch.compile (可选)</text>
+    <text x="404" y="336" class="ph">llama3/parallelize.py:63</text>
+    <rect x="40" y="360" width="360" height="34" fill="#1c212c" stroke="#e67e22" class="box"/><text x="50" y="380" class="lbl">8. [FSDP] apply_fsdp_to_decoder:fully_shard 分片</text>
+    <text x="404" y="380" class="ph">fsdp.py:110</text>
+    <rect x="40" y="404" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="50" y="424" class="lbl">9. to_empty + init_weights:切好的参数落地初始化</text>
+    <text x="404" y="424" class="ph">trainer.py:455</text>
+    <rect x="40" y="448" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="50" y="468" class="lbl">10. optimizer + dataloader(按 batch rank 取数) + checkpoint</text>
+    <text x="404" y="468" class="ph">trainer.py:503-557</text>
+  </g>
+  <!-- 右列: 训练 -->
+  <text x="660" y="24" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">训练期 (train_step, trainer.py:813)</text>
+  <rect x="460" y="36" width="400" height="500" fill="#161a22" stroke="#272d39" rx="10"/>
+  <g font-size="11.5">
+    <rect x="480" y="52" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="490" y="72" class="lbl">a. optimizers.zero_grad()</text>
+    <text x="844" y="72" class="ph">trainer.py:816</text>
+    <rect x="480" y="96" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="490" y="116" class="lbl">b. 取 梯度累积组 x PP微批 数据</text>
+    <text x="844" y="116" class="ph">trainer.py:826</text>
+    <rect x="480" y="140" width="360" height="34" fill="#1c212c" stroke="#2ecc71" class="box"/><text x="490" y="160" class="lbl">c. [DP] 有效 token 数 all-reduce (batch mesh)</text>
+    <text x="844" y="160" class="ph">trainer.py:838</text>
+    <rect x="480" y="184" width="360" height="34" fill="#1c212c" stroke="#e74c3c" class="box"/><text x="490" y="204" class="lbl">d. [CP] 序列按 cp 切分 + mask 切分</text>
+    <text x="844" y="204" class="ph">trainer.py:701</text>
+    <rect x="480" y="228" width="360" height="74" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="490" y="248" class="lbl">e. 前向+反向 (每梯度累积步一次)</text>
+    <text x="490" y="268" class="lbl">   [TP] 层内集体通信  [FSDP] all-gather/reduce-scatter</text>
+    <text x="490" y="288" class="lbl">   [PP] 1F1B 调度 + p2p send/recv</text>
+    <text x="844" y="250" class="ph">trainer.py:848-871</text>
+    <rect x="480" y="312" width="360" height="34" fill="#1c212c" stroke="#4a5468" class="box"/><text x="490" y="332" class="lbl">f. grad clip ([PP] 跨 stage all-reduce) + optim.step</text>
+    <text x="844" y="332" class="ph">trainer.py:874-883</text>
+    <rect x="480" y="356" width="360" height="34" fill="#1c212c" stroke="#2ecc71" class="box"/><text x="490" y="376" class="lbl">g. [DP] loss 聚合 (loss mesh = dp x cp)</text>
+    <text x="844" y="376" class="ph">trainer.py:896-919</text>
+    <rect x="480" y="400" width="360" height="60" fill="#14171e" stroke="#4a5468" class="box"/>
+    <text x="490" y="420" class="lbl-s">DP 本身没有独立通信:它由 batch 网格切数据 +</text>
+    <text x="490" y="437" class="lbl-s">FSDP 梯度归约(分片) + HSDP all-reduce(复制) 实现</text>
+  </g>
+  <!-- 底部图例 -->
+  <g font-size="11.5">
+    <rect x="120" y="552" width="14" height="14" fill="#2ecc71" rx="3"/><text x="140" y="564" class="lbl">DP</text>
+    <rect x="210" y="552" width="14" height="14" fill="#e67e22" rx="3"/><text x="230" y="564" class="lbl">FSDP</text>
+    <rect x="310" y="552" width="14" height="14" fill="#3498db" rx="3"/><text x="330" y="564" class="lbl">TP</text>
+    <rect x="400" y="552" width="14" height="14" fill="#1abc9c" rx="3"/><text x="420" y="564" class="lbl">PP</text>
+    <rect x="490" y="552" width="14" height="14" fill="#e74c3c" rx="3"/><text x="510" y="564" class="lbl">CP</text>
+  </g>
+</svg>
+<p class="figcap">图 0 · 五大策略在初始化与训练中的挂载位置</p>
+
+<p>先讲一个贯穿全文的基础:<b>网格定义</b>(<code>parallel_dims.py:203 build_mesh</code>)把 1D world 网格 <code>unflatten</code> 成带名字的轴 ——
+<code>pp</code>、<code>batch</code>(=dp_replicate*dp_shard,数据加载用)、<code>cp</code>、<code>tp</code>,外加 <code>dp_replicate</code>、<code>fsdp</code>(=dp_shard*cp,legacy 折叠)/<code>dp_shard</code>、
+<code>ep</code>/<code>efsdp</code>,以及 <code>loss</code>(=batch*cp,loss 聚合用)。大小为 1 的轴用 fake backend(不建真实进程组),<code>fsdp</code> 例外——即使度为 1 也用真实后端,因为 <code>fully_shard</code> 需要安装 MixedPrecisionPolicy(<code>parallel_dims.py:186-201</code>)。
+这是后面每个策略"初始化"的落点:每个策略都拿到属于自己的子网格,再去做参数切分/数据切分。</p>
+
+<!-- ==================== DP ==================== -->
+<h2><span class="num" style="background:#2ecc71;color:#fff">1</span><span class="tag t-dp">DP</span> 数据并行:没有独立初始化的"隐形"并行</h2>
+
+<h3>1.1 初始化做了什么</h3>
+<p>torchtitan 没有单独一段"DDP 初始化"代码。DP 以三种形态存在,全部在网格定义 + FSDP 分片时一并完成:</p>
+<ul>
+  <li><b>网格定义</b>:<code>batch = dp_replicate * dp_shard</code>(<code>parallel_dims.py:272</code>)——数据加载轴;每个 DP rank 的"身份"就是 batch 网格上的 rank。</li>
+  <li><b>dataloader 按 DP rank 取数</b>:<code>StatefulDataLoader(dp_rank, dp_world_size=batch_degree)</code>(<code>dataloader.py:88-104</code>),由 <code>Trainer.__init__</code> 传入 batch 网格的 rank/size(<code>trainer.py:279-283, 524-542</code>)。每个 DP rank 读数据流的不同位置,checkpoint 时也按 dp_rank 保存 dataloader 状态(<code>dataloader.py:140-147</code>)。</li>
+  <li><b>dp_shard 维度</b>:权重分片交给 FSDP(见第 2 节),梯度在 shard 轴内 reduce-scatter。</li>
+  <li><b>dp_replicate 维度</b>:若 &gt;1,<code>fully_shard</code> 的网格带上 <code>dp_replicate</code> 轴 → HSDP:权重在 replicate 轴复制、shard 轴分片(<code>fsdp.py:319-322</code> 打印 "Applied HSDP to the model")。</li>
+  <li><b>loss 聚合轴</b>:<code>loss = flatten(batch, cp)</code>(<code>parallel_dims.py:284</code>),训练中 loss 指标在此轴上 all-reduce。</li>
+</ul>
+
+<svg viewBox="0 0 880 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DP 初始化">
+  <defs><marker id="ah2" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#2ecc71">初始化:DP 的落点 = batch 网格 + dataloader + HSDP/FSDP</text>
+  <!-- world mesh -->
+  <rect x="30" y="60" width="140" height="60" fill="#1c212c" stroke="#4a5468" class="box"/>
+  <text x="100" y="85" text-anchor="middle" class="lbl">world 网格</text>
+  <text x="100" y="103" text-anchor="middle" class="lbl-s">1D, world_size</text>
+  <path d="M170,90 H200" stroke="#8b94a3" marker-end="url(#ah2)"/>
+  <rect x="205" y="45" width="300" height="90" fill="#14171e" stroke="#2ecc71" class="box"/>
+  <text x="355" y="62" text-anchor="middle" class="lbl" fill="#2ecc71">unflatten 出命名轴 (parallel_dims.py:203)</text>
+  <g class="lbl-s">
+    <text x="215" y="85">pp</text><text x="215" y="102">cp</text><text x="215" y="119">tp</text>
+    <text x="265" y="85">batch = dp_replicate x dp_shard</text>
+    <text x="265" y="102">loss = batch x cp (flatten)</text>
+    <text x="265" y="119">fsdp = dp_shard x cp (legacy)</text>
+  </g>
+  <!-- dataloader -->
+  <path d="M510,90 H540" stroke="#8b94a3" marker-end="url(#ah2)"/>
+  <rect x="545" y="45" width="130" height="90" fill="#1c212c" stroke="#2ecc71" class="box"/>
+  <text x="610" y="70" text-anchor="middle" class="lbl">dataloader</text>
+  <text x="610" y="88" text-anchor="middle" class="lbl-s">dp_world_size=batch</text>
+  <text x="610" y="105" text-anchor="middle" class="lbl-s">dp_rank=本地 batch rank</text>
+  <text x="610" y="122" text-anchor="middle" class="ph">dataloader.py:88</text>
+  <!-- 数据分片 -->
+  <rect x="710" y="45" width="150" height="90" fill="#14171e" stroke="#4a5468" class="box"/>
+  <text x="785" y="68" text-anchor="middle" class="lbl">全局数据集</text>
+  <g class="lbl-s">
+    <rect x="720" y="80" width="130" height="16" fill="#1f2a1f" stroke="#2ecc71"/><text x="785" y="92" text-anchor="middle">rank0 读这份</text>
+    <rect x="720" y="100" width="130" height="16" fill="#1f2a1f" stroke="#2ecc71"/><text x="785" y="112" text-anchor="middle">rank1 读这份</text>
+  </g>
+  <text x="785" y="152" text-anchor="middle" class="lbl-s">每 DP rank 一份,互不重叠 (trainer.py:616)</text>
+  <!-- HSDP -->
+  <rect x="30" y="180" width="400" height="50" fill="#14171e" stroke="#2ecc71" class="box"/>
+  <text x="230" y="200" text-anchor="middle" class="lbl">dp_replicate &gt; 1:权重在 replicate 轴复制(HSDP)</text>
+  <text x="230" y="218" text-anchor="middle" class="lbl-s">fsdp.py:319 | 复制 + 分片同时存在, 复制轴梯度 all-reduce</text>
+  <rect x="480" y="180" width="380" height="50" fill="#14171e" stroke="#e67e22" class="box"/>
+  <text x="670" y="200" text-anchor="middle" class="lbl">dp_shard &gt; 1:权重在 shard 轴分片 → 见第 2 节 FSDP</text>
+  <text x="670" y="218" text-anchor="middle" class="lbl-s">fsdp.py:110 fully_shard 负责全部权重切分</text>
+</svg>
+<p class="figcap">图 1 · DP 初始化:网格定义 + dataloader 分数据 + FSDP/HSDP 分权重</p>
+
+<h3>1.2 训练过程中做了什么</h3>
+<ul>
+  <li><b>取数</b>:<code>batch_generator</code> 从 dataloader 逐批取出,每 DP rank 拿自己那份(<code>trainer.py:616-643</code>)。</li>
+  <li><b>全局有效 token 数</b>:本地 valid tokens 在 batch 网格上 all-reduce(<code>trainer.py:838-842</code>),loss 归一化用全局数,而不是 DP 除法——这正是 FSDP 梯度不除以 DP 度的原因(<code>fsdp.py:27-41</code>)。</li>
+  <li><b>梯度归约</b>:发生在 FSDP 反向阶段 —— 分片轴内 <code>reduce-scatter</code>(见第 2 节),复制轴内 <code>all-reduce</code>(HSDP)。</li>
+  <li><b>loss 指标聚合</b>:loss mesh(dp_replicate x dp_shard x cp)上 all-reduce SUM 得 global_avg_loss、MAX 得 global_max_loss(<code>trainer.py:896-919</code>)。</li>
+  <li><b>optimizer</b>:每 DP rank 在本地参数(分片或副本)上独立 step,无跨 DP 通信(<code>trainer.py:882</code>)。</li>
+</ul>
+
+<svg viewBox="0 0 880 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DP 训练期">
+  <defs><marker id="ah3" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#2ecc71">训练期:DP 的唯一动作 = 各 rank 独立计算 + 梯度/loss 归约</text>
+  <g>
+    <rect x="40" y="55" width="120" height="42" fill="#1c212c" stroke="#2ecc71" class="box"/>
+    <text x="100" y="73" text-anchor="middle" class="lbl">rank0 数据</text>
+    <text x="100" y="90" text-anchor="middle" class="lbl-s">batch 0</text>
+    <rect x="40" y="125" width="120" height="42" fill="#1c212c" stroke="#2ecc71" class="box"/>
+    <text x="100" y="143" text-anchor="middle" class="lbl">rank1 数据</text>
+    <text x="100" y="160" text-anchor="middle" class="lbl-s">batch 1</text>
+    <rect x="40" y="195" width="120" height="42" fill="#1c212c" stroke="#2ecc71" class="box"/>
+    <text x="100" y="213" text-anchor="middle" class="lbl">rank2 数据</text>
+    <text x="100" y="230" text-anchor="middle" class="lbl-s">batch 2</text>
+  </g>
+  <g>
+    <rect x="210" y="55" width="120" height="42" fill="#14171e" stroke="#4a5468" class="box"/>
+    <text x="270" y="73" text-anchor="middle" class="lbl">前向+反向</text>
+    <text x="270" y="90" text-anchor="middle" class="lbl-s">同一份模型副本</text>
+    <rect x="210" y="125" width="120" height="42" fill="#14171e" stroke="#4a5468" class="box"/>
+    <text x="270" y="143" text-anchor="middle" class="lbl">前向+反向</text>
+    <text x="270" y="160" text-anchor="middle" class="lbl-s">同一份模型副本</text>
+    <rect x="210" y="195" width="120" height="42" fill="#14171e" stroke="#4a5468" class="box"/>
+    <text x="270" y="213" text-anchor="middle" class="lbl">前向+反向</text>
+    <text x="270" y="230" text-anchor="middle" class="lbl-s">同一份模型副本</text>
+  </g>
+  <!-- grad reduction -->
+  <path d="M330,76 H370" stroke="#e67e22" marker-end="url(#ah3)"/>
+  <path d="M330,146 H370" stroke="#e67e22" marker-end="url(#ah3)"/>
+  <path d="M330,216 H370" stroke="#e67e22" marker-end="url(#ah3)"/>
+  <rect x="375" y="55" width="190" height="200" fill="#14171e" stroke="#e67e22" class="box"/>
+  <text x="470" y="75" text-anchor="middle" class="lbl" fill="#e67e22">梯度归约 (FSDP 内部)</text>
+  <text x="470" y="105" text-anchor="middle" class="lbl-s">dp_shard 轴: reduce-scatter</text>
+  <text x="470" y="125" text-anchor="middle" class="lbl-s">(每 rank 得到自己分片的梯度)</text>
+  <text x="470" y="155" text-anchor="middle" class="lbl-s">dp_replicate 轴: all-reduce</text>
+  <text x="470" y="175" text-anchor="middle" class="lbl-s">(HSDP,复制副本之间求和)</text>
+  <text x="470" y="205" text-anchor="middle" class="lbl-s">不做 DP 除法:</text>
+  <text x="470" y="222" text-anchor="middle" class="lbl-s">loss 已按全局 token 归一化</text>
+  <text x="470" y="242" text-anchor="middle" class="ph">fsdp.py:27, trainer.py:838</text>
+  <!-- optimizer -->
+  <path d="M565,146 H610" stroke="#8b94a3" marker-end="url(#ah3)"/>
+  <rect x="615" y="100" width="120" height="90" fill="#1c212c" stroke="#4a5468" class="box"/>
+  <text x="675" y="125" text-anchor="middle" class="lbl">optimizer.step</text>
+  <text x="675" y="145" text-anchor="middle" class="lbl-s">每 DP rank 独立</text>
+  <text x="675" y="162" text-anchor="middle" class="lbl-s">本地参数上更新</text>
+  <text x="675" y="179" text-anchor="middle" class="ph">trainer.py:882</text>
+  <!-- loss reduce -->
+  <path d="M120,190 H470 L470,270" stroke="none"/>
+  <rect x="40" y="0" width="0" height="0"/>
+  <path d="M675,190 C675,240 780,240 780,200" stroke="none"/>
+  <rect x="615" y="0" width="0" height="0"/>
+  <g>
+    <rect x="750" y="55" width="110" height="42" fill="#14171e" stroke="#2ecc71" class="box"/>
+    <text x="805" y="73" text-anchor="middle" class="lbl">loss 指标</text>
+    <text x="805" y="90" text-anchor="middle" class="lbl-s">loss mesh 上 all-reduce</text>
+    <text x="805" y="110" text-anchor="middle" class="ph">trainer.py:896</text>
+  </g>
+  <path d="M675,190 C675,225 745,225 745,85" stroke="#8b94a3" fill="none" marker-end="url(#ah3)" stroke-dasharray="4,3"/>
+</svg>
+<p class="figcap">图 2 · DP 训练期:独立取数、独立前反向,梯度归约与 loss 聚合是唯二跨 DP 的通信</p>
+
+<!-- ==================== FSDP ==================== -->
+<h2><span class="num" style="background:#e67e22;color:#fff">2</span><span class="tag t-fsdp">FSDP</span> 全分片数据并行:初始化 fully_shard 分片,训练期 all-gather / reduce-scatter</h2>
+
+<h3>2.1 初始化做了什么</h3>
+<p>入口 <code>apply_fsdp_to_decoder</code>(<code>fsdp.py:110</code>),由每个模型的 <code>parallelize.py</code> 调用(如 <code>llama3/parallelize.py:80-90</code>)。核心是 PyTorch FSDP2 的 <code>fully_shard</code>。发生在<b>模型还在 meta device、权重尚未初始化</b>的时候,只切分布局、不搬数据。</p>
+<ul>
+  <li><b>混合精度策略</b>:<code>MixedPrecisionPolicy(param_dtype, reduce_dtype, cast_forward_inputs=False)</code>(<code>fsdp.py:165-169</code>)——决定权重 all-gather 与梯度归约的通信精度,与训练 dtype 分离。</li>
+  <li><b>FSDP 单元划分</b>(<code>fsdp.py:194-310</code>):每个 transformer block 一个 <code>fully_shard</code>(<code>fsdp.py:209-308</code>);<code>tok_embeddings</code> 单独(<code>194-199</code>);<code>[norm, lm_head]</code> 合并成一个单元(<code>202-207</code>,最后两层会被 FSDP 立即 prefetch,合并不浪费);最终整模型再包一层(<code>310</code>)。权重绑定时 <code>tok_embeddings/norm/lm_head</code> 合成一个单元,避免重复 all-gather(<code>180-192</code>)。</li>
+  <li><b>reshard_after_forward 策略</b>:<code>"default" = not pp_enabled</code>(<code>fsdp.py:66-78</code>)——PP 开启时默认<b>不</b> reshard,避免每个微批都 all-gather(见训练期)。</li>
+  <li><b>MoE 特殊切分</b>:<code>shard_placement_fn</code> 让专家权重用独立网格 <code>edp_mesh</code>(EP&gt;1 时)或 <code>Shard(1)</code>(FSDP 度 &gt; 专家数时防 padding)(<code>fsdp.py:216-302</code>)。</li>
+  <li><b>关闭梯度除法</b>:<code>disable_fsdp_gradient_division</code> 把梯度除以因子设为 1.0(<code>fsdp.py:27-41, 316</code>)——torchtitan 的 loss 用全局 token 数归一化,不需要 FSDP 的 1/DP 缩放。</li>
+  <li><b>CPU offload / symm_mem</b>:可选(<code>fsdp.py:173-174, 312-313</code>)。</li>
+  <li><b>EP 显式 prefetch</b>:EP&gt;1 时设置 <code>set_modules_to_forward_prefetch / set_modules_to_backward_prefetch</code>(<code>fsdp.py:326-366</code>)。</li>
+  <li><b>网格</b>:legacy 后端用 <code>["dp_replicate","fsdp"]</code>(HSDP)或 <code>["fsdp"]</code>(纯 FSDP),其中 <code>fsdp = dp_shard * cp</code> —— <b>CP rank 也在 FSDP 组内</b>(<code>llama3/parallelize.py:74-77</code>, <code>parallel_dims.py:217-220</code>)。</li>
+</ul>
+
+<svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FSDP 初始化">
+  <defs><marker id="ah4" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#e67e22">初始化:fully_shard 在每个 FSDP 单元上切分参数(meta 上进行,不产生数据)</text>
+  <!-- 模型树 -->
+  <g>
+    <rect x="30" y="45" width="180" height="34" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="120" y="66" text-anchor="middle" class="lbl">tok_embeddings</text>
+    <rect x="30" y="90" width="180" height="34" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="120" y="111" text-anchor="middle" class="lbl">layers.0 .. layers.N</text>
+    <rect x="30" y="135" width="180" height="34" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="120" y="156" text-anchor="middle" class="lbl">[norm, lm_head]</text>
+    <rect x="30" y="180" width="180" height="34" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="120" y="201" text-anchor="middle" class="lbl">模型整体</text>
+  </g>
+  <!-- arrows -->
+  <g stroke="#e67e22">
+    <path d="M210,62 H250" marker-end="url(#ah4)"/>
+    <path d="M210,107 H250" marker-end="url(#ah4)"/>
+    <path d="M210,152 H250" marker-end="url(#ah4)"/>
+    <path d="M210,197 H250" marker-end="url(#ah4)"/>
+  </g>
+  <text x="230" y="250" class="lbl-s">每单元一个 fully_shard (fsdp.py:194-310)</text>
+  <!-- fully_shard box -->
+  <rect x="255" y="45" width="230" height="180" fill="#14171e" stroke="#e67e22" class="box"/>
+  <text x="370" y="66" text-anchor="middle" class="lbl" fill="#e67e22">fully_shard (FSDP2)</text>
+  <g class="lbl-s">
+    <text x="268" y="90">- mesh = fsdp (dp_shard x cp)</text>
+    <text x="268" y="110">  或 [dp_replicate, fsdp] (HSDP)</text>
+    <text x="268" y="135">- MixedPrecisionPolicy</text>
+    <text x="268" y="155">- reshard_after_forward 策略</text>
+    <text x="268" y="180">- MoE: shard_placement_fn 切专家</text>
+    <text x="268" y="200">- 梯度除法关闭 (除 1.0)</text>
+    <text x="268" y="218">- CPU offload (可选)</text>
+  </g>
+  <!-- 切分示意 -->
+  <path d="M485,120 H525" stroke="#8b94a3" marker-end="url(#ah4)"/>
+  <rect x="530" y="45" width="330" height="180" fill="#14171e" stroke="#4a5468" class="box"/>
+  <text x="695" y="66" text-anchor="middle" class="lbl">参数 W 沿 fsdp 轴切分</text>
+  <g class="lbl-m">
+    <rect x="545" y="80" width="130" height="30" fill="#1f1a12" stroke="#e67e22"/><text x="610" y="99" text-anchor="middle">W 本地分片 0</text>
+    <rect x="545" y="115" width="130" height="30" fill="#1f1a12" stroke="#e67e22"/><text x="610" y="134" text-anchor="middle">W 本地分片 1</text>
+    <rect x="545" y="150" width="130" height="30" fill="#1f1a12" stroke="#e67e22"/><text x="610" y="169" text-anchor="middle">W 本地分片 2</text>
+    <rect x="545" y="185" width="130" height="30" fill="#1f1a12" stroke="#e67e22"/><text x="610" y="204" text-anchor="middle">W 本地分片 3</text>
+  </g>
+  <g class="lbl-s">
+    <text x="700" y="95">rank0 持有</text>
+    <text x="700" y="130">rank1 持有</text>
+    <text x="700" y="165">rank2 持有</text>
+    <text x="700" y="200">rank3 持有</text>
+    <text x="700" y="225">(fsdp 度 = dp_shard x cp)</text>
+  </g>
+  <text x="370" y="260" text-anchor="middle" class="lbl-s">初始化时参数在 meta device:只建 DTensor 布局,不产生数据</text>
+  <text x="370" y="278" text-anchor="middle" class="lbl-s">真实数据在 to_empty + init_weights 时落地 (trainer.py:455-459)</text>
+</svg>
+<p class="figcap">图 3 · FSDP 初始化:单元划分 + fully_shard 分片布局</p>
+
+<h3>2.2 训练过程中做了什么</h3>
+<p>FSDP2 通过 <code>fully_shard</code> 给每个单元安装 <code>__call__</code> hook,在前向/反向的自然时机插入通信。per-microbatch 视角:</p>
+<ul>
+  <li><b>前向</b>:进入某 FSDP 单元前,<b>all-gather</b> 把完整权重收集到本 rank → 本地完整计算 → 离开时按策略 <b>reshard</b>(丢弃其他分片,释放显存)。<code>reshard_after_forward=True</code> 时每层前向后就 reshard,显存最优;下一层前向再 all-gather,两段时间重叠(prefetch)。</li>
+  <li><b>反向</b>:每单元梯度算完后 <b>reduce-scatter</b>:各 rank 只保留自己分片的梯度,同时完成 DP 求和。因此 <b>optimizer 更新的是本地分片参数,无需任何跨 rank 通信</b>(<code>trainer.py:882</code>)。</li>
+  <li><b>PP 协同</b>:PP 开启时 <code>reshard_after_forward</code> 默认 False(<code>fsdp.py:66-78</code>)——权重在前向保持展开,避免每个 PP 微批重复 all-gather(微批之间权重不变)。</li>
+  <li><b>权重绑定</b>:绑定单元合并后,一次 all-gather 同时服务 embedding 与 lm_head(<code>fsdp.py:180-192</code>)。</li>
+  <li><b>grad_norm 计算</b>:FSDP 参数的梯度是 DTensor,<code>clip_grad_norm_</code> 通过 <code>full_tensor()</code> 在分片轴内归约得到全局范数(<code>utils.py:639-642</code>)。</li>
+</ul>
+
+<svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FSDP 训练期">
+  <defs><marker id="ah5" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#e67e22">训练期(一层):前向 all-gather -> 计算 -> reshard;反向 reduce-scatter -> 本地更新</text>
+  <g>
+    <rect x="40" y="55" width="150" height="70" fill="#14171e" stroke="#e67e22" class="box"/>
+    <text x="115" y="80" text-anchor="middle" class="lbl" fill="#e67e22">1. all-gather 权重</text>
+    <text x="115" y="100" text-anchor="middle" class="lbl-s">fsdp 组内收集完整 W</text>
+    <text x="115" y="117" text-anchor="middle" class="ph">fully_shard 前向 hook</text>
+    <path d="M190,90 H230" stroke="#8b94a3" marker-end="url(#ah5)"/>
+    <rect x="235" y="55" width="150" height="70" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="310" y="80" text-anchor="middle" class="lbl">2. 本地完整计算</text>
+    <text x="310" y="100" text-anchor="middle" class="lbl-s">权重展开后与完整激活相乘</text>
+    <path d="M385,90 H425" stroke="#8b94a3" marker-end="url(#ah5)"/>
+    <rect x="430" y="55" width="150" height="70" fill="#14171e" stroke="#e67e22" class="box"/>
+    <text x="505" y="80" text-anchor="middle" class="lbl" fill="#e67e22">3. reshard</text>
+    <text x="505" y="100" text-anchor="middle" class="lbl-s">只留本分片,释放其余</text>
+    <text x="505" y="117" text-anchor="middle" class="ph">reshard_after_forward=True</text>
+    <path d="M580,90 H620" stroke="#8b94a3" marker-end="url(#ah5)"/>
+    <rect x="625" y="55" width="215" height="70" fill="#14171e" stroke="#e67e22" class="box"/>
+    <text x="732" y="80" text-anchor="middle" class="lbl" fill="#e67e22">4. 反向 reduce-scatter 梯度</text>
+    <text x="732" y="100" text-anchor="middle" class="lbl-s">各 rank 保留自己分片的梯度</text>
+    <text x="732" y="117" text-anchor="middle" class="ph">反向 hook,同时完成 DP 求和</text>
+  </g>
+  <g>
+    <path d="M732,125 V170" stroke="#8b94a3" marker-end="url(#ah5)"/>
+    <rect x="625" y="175" width="215" height="50" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="732" y="195" text-anchor="middle" class="lbl">optimizer.step 在本地分片上</text>
+    <text x="732" y="214" text-anchor="middle" class="lbl-s">无跨 rank 通信 (trainer.py:882)</text>
+  </g>
+  <g class="lbl-s">
+    <text x="40" y="180">同一时刻,下一层的前向 all-gather 已开始:</text>
+    <text x="40" y="198">FSDP2 按单元顺序预取,通信与计算重叠 (prefetch)</text>
+    <text x="40" y="222">PP 开启时:reshard_after_forward=False,</text>
+    <text x="40" y="240">前向保持展开,微批间不重复 all-gather</text>
+    <text x="40" y="264">grad_norm: 梯度是 DTensor, full_tensor() 归约 (utils.py:639)</text>
+  </g>
+</svg>
+<p class="figcap">图 4 · FSDP 训练期:一层内的一次前向/反向生命周期</p>
+
+<!-- ==================== TP ==================== -->
+<h2><span class="num" style="background:#3498db;color:#fff">3</span><span class="tag t-tp">TP</span> 张量并行:初始化声明式切分,训练期层内集体通信</h2>
+
+<h3>3.1 初始化做了什么</h3>
+<p>TP 是唯一"声明式"的并行:模型配置文件里写清楚每个参数/激活的 placement(<code>sharding.py</code>),<code>Module.parallelize()</code> 递归执行。</p>
+<ul>
+  <li><b>声明</b>:<code>set_llama3_sharding_config</code>(<code>llama3/sharding.py:25-75</code>)填写每个子模块的 <code>ShardingConfig</code>:<code>wqkv / w1 / w3</code> 列并行(<code>weight Shard(0)</code>,<code>decoder_sharding.py:65-73</code>);<code>wo / w2</code> 行并行(<code>weight Shard(1)</code>,输出 <code>Partial</code> → SP 时 reduce-scatter 到 <code>Shard(1)</code>,否则 all-reduce 到 Replicate,<code>decoder_sharding.py:76-93</code>);attention 内部用 <code>local_map</code> 切 Q/K/V(<code>decoder_sharding.py:190-231</code>);norm 在 SP 下权重 Replicate、激活 <code>Shard(1)</code>(<code>96-111</code>);<code>tok_embeddings / lm_head</code> 词表并行(<code>decoder_sharding.py:270-287</code>)。</li>
+  <li><b>执行</b>:<code>Module.parallelize</code>(<code>protocols/module.py:248-294</code>)递归每个带 sharding_config 的模块:(1) <code>_distribute_states</code>:<code>distribute_tensor(param, mesh, placements)</code> 把参数变成 DTensor(<code>module.py:331-411</code>,此时在 meta device,只建布局);(2) 把 <code>forward</code> 包成 <code>输入 redistribute -> local_map 本地计算 -> 输出 redistribute</code>(<code>module.py:287-294, 452-496</code>)。<code>local_map</code> 同时声明了 <code>in_grad_placements</code>,保证反向梯度也是正确的 DTensor 布局。</li>
+  <li><b>词表并行细节</b>:<code>Embedding.forward</code> 在本地词表分片做 lookup + mask,再由模块边界的 redistribute 完成 all-reduce(<code>embedding.py:39-79</code>);<code>ScaledBiasRowwiseLinear</code> 的 bias 除以 TP 度(<code>linear.py:61-71</code>)。</li>
+  <li><b>async TP</b>:若 <code>enable_async_tensor_parallel</code>,设置 Inductor 的 <code>_micro_pipeline_tp = True</code>(要求编译,<code>tensor_parallel.py:102-115</code>)——通信与计算按微块重叠,训练期生效。</li>
+</ul>
+
+<svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TP 初始化">
+  <defs><marker id="ah6" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#3498db">初始化:声明(配置) -> Module.parallelize 切参数 + 包 forward</text>
+  <!-- 声明 -->
+  <rect x="30" y="45" width="240" height="200" fill="#14171e" stroke="#3498db" class="box"/>
+  <text x="150" y="66" text-anchor="middle" class="lbl" fill="#3498db">ShardingConfig 声明 (sharding.py)</text>
+  <g class="lbl-s">
+    <text x="42" y="92">wqkv / w1 / w3  列并行  S(0)</text>
+    <text x="42" y="112">wo  / w2        行并行  S(1)</text>
+    <text x="42" y="132">  输出 Partial -> SP: rs 到 S(1)</text>
+    <text x="42" y="152">                非SP: ar 到 R</text>
+    <text x="42" y="177">attention: local_map 切 Q/K/V</text>
+    <text x="42" y="197">norm: SP 下 W=R, 激活 S(1)</text>
+    <text x="42" y="222">embedding/lm_head: 词表并行</text>
+    <text x="42" y="242" class="ph">decoder_sharding.py:65-287</text>
+  </g>
+  <path d="M270,145 H310" stroke="#8b94a3" marker-end="url(#ah6)"/>
+  <!-- 执行 -->
+  <rect x="315" y="45" width="260" height="200" fill="#14171e" stroke="#3498db" class="box"/>
+  <text x="445" y="66" text-anchor="middle" class="lbl" fill="#3498db">Module.parallelize (module.py:248)</text>
+  <g class="lbl-s">
+    <text x="327" y="92">1. _distribute_states:</text>
+    <text x="327" y="112">   distribute_tensor 切参数成 DTensor</text>
+    <text x="327" y="140">2. 包装 forward:</text>
+    <text x="327" y="160">   redistribute 输入</text>
+    <text x="327" y="180">   local_map 本地计算</text>
+    <text x="327" y="200">   redistribute 输出</text>
+    <text x="327" y="228">   (local_map 同时声明</text>
+    <text x="327" y="245">    in_grad_placements 反向布局)</text>
+  </g>
+  <path d="M575,145 H615" stroke="#8b94a3" marker-end="url(#ah6)"/>
+  <!-- 切分效果 -->
+  <rect x="620" y="45" width="240" height="200" fill="#14171e" stroke="#4a5468" class="box"/>
+  <text x="740" y="66" text-anchor="middle" class="lbl">切分效果 (tp=2 例)</text>
+  <g class="lbl-m" font-size="11">
+    <text x="632" y="92">列并行 W [H, H']</text>
+    <rect x="632" y="100" width="100" height="18" fill="#12202e" stroke="#3498db"/><text x="682" y="113" text-anchor="middle">W 右半边 r0</text>
+    <rect x="632" y="120" width="100" height="18" fill="#12202e" stroke="#3498db"/><text x="682" y="133" text-anchor="middle">W 左半边 r1</text>
+    <text x="632" y="165">行并行 W [H', H]</text>
+    <rect x="632" y="173" width="50" height="18" fill="#12202e" stroke="#3498db"/><text x="657" y="186" text-anchor="middle">上 r0</text>
+    <rect x="632" y="193" width="50" height="18" fill="#12202e" stroke="#3498db"/><text x="657" y="206" text-anchor="middle">下 r1</text>
+    <text x="632" y="240" class="ph">权重此时仍是 meta 上的 DTensor 布局</text>
+  </g>
+</svg>
+<p class="figcap">图 5 · TP 初始化:声明式配置 -> distribute_tensor 切参数 + local_map 包 forward</p>
+
+<h3>3.2 训练过程中做了什么</h3>
+<ul>
+  <li><b>前向</b>:每层数据流:输入按声明 redistribute(列并行输入复制、行并行输入切分)→ 本地矩阵乘 → 输出 Partial。列并行(<code>wqkv/w1/w3</code>)的输出是各 rank 的部分结果,由下一层的<b>行并行</b>(<code>wo/w2</code>)消费;行并行输出必须归约:<code>enable_sequence_parallel=True</code>(默认)时 <b>reduce-scatter</b> 到 <code>Shard(1)</code>,下一层 norm 直接在序列分片上算(SP);否则 <b>all-reduce</b> 到 Replicate(<code>decoder_sharding.py:76-93</code>)。</li>
+  <li><b>反向</b>:<code>local_map</code> 的 <code>in_grad_placements</code> 保证梯度按同样的布局流动:行并行权重的梯度来自 Partial 输入梯度的 all-reduce/reduce-scatter,列并行权重梯度是本地输入梯度与部分输出梯度的乘积(各 rank 独立,无需通信)。</li>
+  <li><b>async TP</b>:开启时 Inductor 把通信(如 all-reduce)按 micro-pipeline 切块,与计算交错重叠(<code>tensor_parallel.py:102-115</code>,需要 torch.compile)。</li>
+  <li><b>与 FSDP 协同</b>:TP 切完的参数是 DTensor,<code>fully_shard</code> 在其上再按 fsdp 轴分片;TP 轴的梯度在 TP 组内已归约,FSDP 只处理 fsdp 轴的归约。</li>
+</ul>
+
+<svg viewBox="0 0 880 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TP 训练期">
+  <defs><marker id="ah7" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#3498db">训练期:一层 attention+FFN 内的 TP 数据流 (tp=2, SP 开)</text>
+  <!-- 数据流 boxes -->
+  <rect x="30" y="50" width="120" height="44" fill="#1c212c" stroke="#4a5468" class="box"/>
+  <text x="90" y="67" text-anchor="middle" class="lbl">x [B,S,H]</text>
+  <text x="90" y="84" text-anchor="middle" class="lbl-s">R (输入复制)</text>
+  <rect x="30" y="110" width="120" height="44" fill="#14171e" stroke="#3498db" class="box"/>
+  <text x="90" y="127" text-anchor="middle" class="lbl" fill="#3498db">wqkv 列并行</text>
+  <text x="90" y="144" text-anchor="middle" class="lbl-s">本地 matmul</text>
+  <rect x="30" y="170" width="120" height="44" fill="#14171e" stroke="#3498db" class="box"/>
+  <text x="90" y="187" text-anchor="middle" class="lbl" fill="#3498db">wo 行并行</text>
+  <text x="90" y="204" text-anchor="middle" class="lbl-s">输出 Partial</text>
+  <rect x="30" y="230" width="120" height="36" fill="#1c212c" stroke="#4a5468" class="box"/>
+  <text x="90" y="252" text-anchor="middle" class="lbl">x' [B,S,H]</text>
+  <path d="M150,72 H180" stroke="#8b94a3" marker-end="url(#ah7)"/>
+  <path d="M150,132 H180" stroke="#8b94a3" marker-end="url(#ah7)"/>
+  <path d="M150,192 H180" stroke="#8b94a3" marker-end="url(#ah7)"/>
+  <!-- 通信标注 -->
+  <g>
+    <rect x="185" y="140" width="240" height="100" fill="#14171e" stroke="#f1c40f" class="box"/>
+    <text x="305" y="162" text-anchor="middle" class="lbl" fill="#f1c40f">集体通信 (SP 开)</text>
+    <text x="305" y="185" text-anchor="middle" class="lbl-s">列并行输出: 不归约,直接喂行并行</text>
+    <text x="305" y="205" text-anchor="middle" class="lbl-s">行并行输出: Partial -> reduce-scatter</text>
+    <text x="305" y="225" text-anchor="middle" class="lbl-s">  到 Shard(1),下一层 norm 在序列分片上算</text>
+    <text x="305" y="245" text-anchor="middle" class="ph">decoder_sharding.py:76-93, norm 96-111</text>
+  </g>
+  <!-- FFN -->
+  <rect x="480" y="110" width="120" height="44" fill="#14171e" stroke="#3498db" class="box"/>
+  <text x="540" y="127" text-anchor="middle" class="lbl" fill="#3498db">w1 / w3 列并行</text>
+  <text x="540" y="144" text-anchor="middle" class="lbl-s">SwiGLU 本地算</text>
+  <rect x="480" y="170" width="120" height="44" fill="#14171e" stroke="#3498db" class="box"/>
+  <text x="540" y="187" text-anchor="middle" class="lbl" fill="#3498db">w2 行并行</text>
+  <text x="540" y="204" text-anchor="middle" class="lbl-s">输出 Partial</text>
+  <rect x="480" y="230" width="120" height="36" fill="#1c212c" stroke="#4a5468" class="box"/>
+  <text x="540" y="252" text-anchor="middle" class="lbl">残差后 R 或 S(1)</text>
+  <path d="M425,165 H480" stroke="#8b94a3" marker-end="url(#ah7)"/>
+  <path d="M425,192 H480" stroke="#8b94a3" marker-end="url(#ah7)"/>
+  <path d="M600,192 H640" stroke="#8b94a3" marker-end="url(#ah7)"/>
+  <!-- 反向 -->
+  <rect x="645" y="50" width="215" height="180" fill="#14171e" stroke="#4a5468" class="box"/>
+  <text x="752" y="72" text-anchor="middle" class="lbl">反向 (local_map 梯度布局)</text>
+  <g class="lbl-s">
+    <text x="657" y="96">列并行权重梯度:</text>
+    <text x="657" y="116">本地输入 x 部分输出梯度,无通信</text>
+    <text x="657" y="146">行并行权重梯度:</text>
+    <text x="657" y="166">输入梯度 Partial -> ar / rs 归约</text>
+    <text x="657" y="196">in_grad_placements 声明在</text>
+    <text x="657" y="214">ShardingConfig 里 (module.py:482)</text>
+  </g>
+  <text x="752" y="262" text-anchor="middle" class="lbl-s">async TP: 通信按微块与计算重叠 (tensor_parallel.py:102)</text>
+</svg>
+<p class="figcap">图 6 · TP 训练期:层内"列并行出 Partial -> 行并行归约"的数据流与反向布局</p>
+
+<!-- ==================== PP ==================== -->
+<h2><span class="num" style="background:#1abc9c;color:#fff">4</span><span class="tag t-pp">PP</span> 流水线并行:初始化物理切层 + 建调度,训练期 1F1B 微批调度</h2>
+
+<h3>4.1 初始化做了什么</h3>
+<p>入口 <code>pipeline_llm</code>(<code>pipeline_parallel.py:65-141</code>),在 <code>trainer.py:397-422</code> 调用。<b>PP 最先执行</b>,因为切层之后,每个 stage 还要再跑一遍 TP/FSDP/AC/compile(<code>pipeline_parallel.py:109-123</code>)。</p>
+<ul>
+  <li><b>切分计划</b>:<code>_get_pipeline_metadata</code> 计算虚拟 stage 数(<code>pipeline_parallel.py:194-264</code>);<code>_generate_llm_fqn_per_model_part</code> 把 <code>tok_embeddings + layers + norm + lm_head</code> 尽量均匀分给每个 stage(<code>366-476</code>)。</li>
+  <li><b>物理切层</b>:<code>_split_module</code> deepcopy 整模型后删掉不属于本 stage 的模块(<code>479-538</code>);<code>PipelineStage(chunk, stage_idx, ..., group=pp_mesh.get_group("pp"))</code> 包装成 stage(<code>581-649</code>)。本 rank 只持有自己 stage 的模块。</li>
+  <li><b>stage 内再并行</b>:每个 stage chunk 上再跑 <code>parallelize_fn</code>(TP/FSDP/AC/compile)(<code>pipeline_parallel.py:109-123</code>)。</li>
+  <li><b>调度器</b>:<code>_build_pipeline_schedule</code>(<code>267-363</code>):默认 <code>1F1B</code>(<code>configs.py:188</code>),微批数 <code>n_microbatches = local_batch_size / pipeline_parallel_microbatch_size</code>;batch 必须能被微批整除,否则报错(<code>pipeline_parallel.py:306-311</code>)。</li>
+  <li><b>权重初始化</b>:每个 stage <code>to_empty + init_weights</code>(<code>trainer.py:427-433</code>);<code>set_determinism</code> 让 PP 组内 seed 相同、PP 组间 seed 不同(<code>utils.py:153+</code>, <code>distinct_seed_mesh_dims=["pp"]</code>),保证各 stage 参数独立初始化。</li>
+</ul>
+
+<svg viewBox="0 0 880 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PP 初始化">
+  <defs><marker id="ah8" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#1abc9c">初始化:整模型按 FQN 列表物理切层 -> 每 stage 再跑 TP/FSDP -> 建 1F1B 调度器</text>
+  <!-- 整模型 -->
+  <rect x="30" y="50" width="150" height="150" fill="#14171e" stroke="#4a5468" class="box"/>
+  <text x="105" y="70" text-anchor="middle" class="lbl">整模型 (meta)</text>
+  <g class="lbl-s">
+    <text x="42" y="92">tok_embeddings</text>
+    <text x="42" y="112">layers.0..7</text>
+    <text x="42" y="132">layers.8..15</text>
+    <text x="42" y="152">layers.16..23</text>
+    <text x="42" y="172">norm + lm_head</text>
+  </g>
+  <!-- 切分 -->
+  <path d="M180,125 H220" stroke="#1abc9c" marker-end="url(#ah8)"/>
+  <text x="200" y="250" class="lbl-s" fill="#1abc9c">按 _generate_llm_fqn_per_model_part 均匀分布</text>
+  <!-- 3 stages -->
+  <g>
+    <rect x="225" y="50" width="150" height="150" fill="#14171e" stroke="#1abc9c" class="box"/>
+    <text x="300" y="70" text-anchor="middle" class="lbl" fill="#1abc9c">stage 0 (pp_rank 0)</text>
+    <g class="lbl-s">
+      <text x="237" y="92">tok_embeddings</text>
+      <text x="237" y="112">layers.0..7</text>
+      <text x="237" y="132">(删掉其他层,</text>
+      <text x="237" y="150">deepcopy 后剪枝)</text>
+    </g>
+    <rect x="395" y="50" width="150" height="150" fill="#14171e" stroke="#1abc9c" class="box"/>
+    <text x="470" y="70" text-anchor="middle" class="lbl" fill="#1abc9c">stage 1 (pp_rank 1)</text>
+    <g class="lbl-s">
+      <text x="407" y="92">layers.8..15</text>
+      <text x="407" y="112">(只有中间层)</text>
+    </g>
+    <rect x="565" y="50" width="150" height="150" fill="#14171e" stroke="#1abc9c" class="box"/>
+    <text x="640" y="70" text-anchor="middle" class="lbl" fill="#1abc9c">stage 2 (pp_rank 2)</text>
+    <g class="lbl-s">
+      <text x="577" y="92">layers.16..23</text>
+      <text x="577" y="112">norm + lm_head</text>
+      <text x="577" y="132">(算 loss 的 stage)</text>
+    </g>
+  </g>
+  <!-- PipelineStage + schedule -->
+  <g>
+    <rect x="225" y="210" width="220" height="30" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="335" y="229" text-anchor="middle" class="lbl-s">PipelineStage(group=pp_mesh) x N</text>
+    <rect x="565" y="210" width="220" height="30" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="675" y="229" text-anchor="middle" class="lbl-s">schedule 1F1B, n_microbatches 个微批</text>
+  </g>
+  <text x="675" y="262" text-anchor="middle" class="ph">pipeline_parallel.py:65-141, 267-363; trainer.py:397-433</text>
+</svg>
+<p class="figcap">图 7 · PP 初始化:物理切层 -> 每 stage 内再并行 -> 调度器</p>
+
+<h3>4.2 训练过程中做了什么</h3>
+<ul>
+  <li><b>取微批</b>:每梯度累积步取 <code>num_pipeline_parallel_microbatches</code> 个微批(<code>trainer.py:826-833</code>);输入只进 first stage,labels 只进 last stage(<code>trainer.py:789-794</code>)。</li>
+  <li><b>调度执行</b>:<code>pp_schedule.step()</code>(<code>trainer.py:798-805</code>)按 1F1B 执行:前向阶段把管道填满(每个 stage 逐微批前向,stage 间 <b>p2p send/recv 激活</b>);随后每个 stage 交替执行前向/反向,每个微批的反向完成后把<b>梯度 p2p 回传给前一 stage</b>。last stage 计算 loss(<code>_scalar_loss_fn</code>, <code>pipeline_parallel.py:327-329</code>)。</li>
+  <li><b>loss</b>:非 last stage 返回 -1(<code>trainer.py:811</code>);last stage 汇总各微批 loss(<code>trainer.py:808-810</code>)。</li>
+  <li><b>grad clip</b>:跨 PP stage 的梯度范数要 all-reduce(SUM for L2 / MAX for inf)才能得到全局范数(<code>utils.py:644-650</code>)。</li>
+  <li><b>optimizer</b>:每个 stage 有自己的 optimizer 实例,只更新本 stage 参数(<code>trainer.py:503</code>)。</li>
+  <li><b>FSDP 协同</b>:PP 下 FSDP 默认不 reshard(见 2.2);微批间权重保持展开,省掉每微批的 all-gather(<code>fsdp.py:66-78</code>)。</li>
+</ul>
+
+<svg viewBox="0 0 880 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PP 1F1B 调度">
+  <defs><marker id="ah9" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#1abc9c">训练期:1F1B 调度 (pp=3, 4 个微批) -- 先填满管道,再前反向交替,stage 间 p2p</text>
+  <!-- 表格: 时间步 x stage -->
+  <g font-size="11">
+    <text x="70" y="50" text-anchor="middle" class="lbl-s">时间步-></text>
+    <g>
+      <text x="30" y="80" class="lbl-s">stage0</text>
+      <rect x="60" y="65" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="86" y="82" text-anchor="middle" class="lbl-s">F0</text>
+      <rect x="112" y="65" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="138" y="82" text-anchor="middle" class="lbl-s">F1</text>
+      <rect x="164" y="65" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="190" y="82" text-anchor="middle" class="lbl-s">F2</text>
+      <rect x="216" y="65" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="242" y="82" text-anchor="middle" class="lbl-s">F3</text>
+      <rect x="268" y="65" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="294" y="82" text-anchor="middle" class="lbl-s">B0</text>
+      <rect x="320" y="65" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="346" y="82" text-anchor="middle" class="lbl-s">B1</text>
+      <rect x="372" y="65" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="398" y="82" text-anchor="middle" class="lbl-s">B2</text>
+      <rect x="424" y="65" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="450" y="82" text-anchor="middle" class="lbl-s">B3</text>
+    </g>
+    <g>
+      <text x="30" y="120" class="lbl-s">stage1</text>
+      <rect x="60" y="105" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="86" y="122" text-anchor="middle" class="lbl-s">B0</text>
+      <rect x="112" y="105" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="138" y="122" text-anchor="middle" class="lbl-s">F0</text>
+      <rect x="164" y="105" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="190" y="122" text-anchor="middle" class="lbl-s">F1</text>
+      <rect x="216" y="105" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="242" y="122" text-anchor="middle" class="lbl-s">F2</text>
+      <rect x="268" y="105" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="294" y="122" text-anchor="middle" class="lbl-s">F3</text>
+      <rect x="320" y="105" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="346" y="122" text-anchor="middle" class="lbl-s">B0</text>
+      <rect x="372" y="105" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="398" y="122" text-anchor="middle" class="lbl-s">B1</text>
+      <rect x="424" y="105" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="450" y="122" text-anchor="middle" class="lbl-s">B2</text>
+    </g>
+    <g>
+      <text x="30" y="160" class="lbl-s">stage2</text>
+      <rect x="60" y="145" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="86" y="162" text-anchor="middle" class="lbl-s">B1</text>
+      <rect x="112" y="145" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="138" y="162" text-anchor="middle" class="lbl-s">B0</text>
+      <rect x="164" y="145" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="190" y="162" text-anchor="middle" class="lbl-s">F0</text>
+      <rect x="216" y="145" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="242" y="162" text-anchor="middle" class="lbl-s">F1</text>
+      <rect x="268" y="145" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="294" y="162" text-anchor="middle" class="lbl-s">F2</text>
+      <rect x="320" y="145" width="52" height="26" fill="#12332c" stroke="#1abc9c"/><text x="346" y="162" text-anchor="middle" class="lbl-s">F3</text>
+      <rect x="372" y="145" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="398" y="162" text-anchor="middle" class="lbl-s">B0</text>
+      <rect x="424" y="145" width="52" height="26" fill="#2c1212" stroke="#e74c3c"/><text x="450" y="162" text-anchor="middle" class="lbl-s">B1</text>
+    </g>
+    <g class="lbl-s">
+      <text x="500" y="82">F = 前向, B = 反向</text>
+      <text x="500" y="102">首个微批(F0)要依次穿过</text>
+      <text x="500" y="120">所有 stage, 管道才能填满</text>
+      <text x="500" y="146">stage 间: 前向传激活</text>
+      <text x="500" y="164">反向传梯度 (p2p send/recv)</text>
+      <text x="500" y="190">stage2 最后算 loss 并广播? </text>
+      <text x="500" y="208">不: loss 在 loss mesh 归约</text>
+      <text x="500" y="226">非 last stage loss=-1</text>
+      <text x="500" y="250" class="ph">trainer.py:775-811, 796-805</text>
+    </g>
+  </g>
+  <rect x="30" y="270" width="480" height="50" fill="#14171e" stroke="#4a5468" class="box"/>
+  <text x="270" y="290" text-anchor="middle" class="lbl-s">调度器还有 looped / ZB / DualPipe 等选项 (pipeline_parallel.py:267-363)</text>
+  <text x="270" y="308" text-anchor="middle" class="lbl-s">grad clip 需跨 PP all-reduce 全局范数 (utils.py:644-650)</text>
+</svg>
+<p class="figcap">图 8 · PP 训练期:1F1B 调度的前向/反向交替与 p2p 通信</p>
+
+<!-- ==================== CP ==================== -->
+<h2><span class="num" style="background:#e74c3c;color:#fff">5</span><span class="tag t-cp">CP</span> 上下文并行:初始化包装 attention,训练期序列切分 + K/V all-gather</h2>
+
+<h3>5.1 初始化做了什么</h3>
+<ul>
+  <li><b>包装 attention</b>:<code>apply_cp_to_forward</code>(<code>context_parallel/api.py:35-112</code>)替换每个 attention 的 <code>forward</code>(<code>llama3/parallelize.py:47-52</code>)。按 attention 类型分两条路:
+    <ul>
+      <li><b>FlexAttention</b>:包一层 <code>cp_forward</code>,进入前把 K/V <b>all-gather 成全局</b>(<code>flex_cp_allgather(k, v, dim=1)</code>),再调用原 forward(<code>api.py:57-78</code>)。Q 保持本地分片。</li>
+      <li><b>SDPA</b>:启用 CP dispatcher(<code>_enable_context_parallel_dispatcher()</code>),把 Q/K/V 包成 <code>Shard(1)</code> 的 DTensor(<code>DTensor.from_local</code>),输出再 <code>to_local()</code>(<code>api.py:80-101</code>)。</li>
+    </ul>
+  </li>
+  <li><b>时序</b>:CP 包装<b>必须在 <code>Module.parallelize()</code> 之前</b>(<code>llama3/parallelize.py:47-54</code> 注释),这样 CP 层会被 TP 的 local_map 包在内层,两层并行叠加正确。</li>
+  <li><b>约束</b>:<code>seq_len</code> 必须能被 <code>2 * cp</code> 整除(load balancer 需要,<code>parallel_dims.py:699-706</code>;trainer.py:262-270 校验)。</li>
+  <li><b>FSDP 协同</b>:legacy 后端下 <code>fsdp = dp_shard * cp</code>,CP rank 也参与权重 all-gather/reduce-scatter(<code>parallel_dims.py:217-220</code>)。</li>
+</ul>
+
+<svg viewBox="0 0 880 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CP 初始化">
+  <defs><marker id="ahA" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#e74c3c">初始化:apply_cp_to_forward 替换每个 attention 的 forward (api.py:35-112)</text>
+  <!-- attention module -->
+  <rect x="30" y="60" width="200" height="120" fill="#14171e" stroke="#4a5468" class="box"/>
+  <text x="130" y="85" text-anchor="middle" class="lbl">每个 attention 模块</text>
+  <g class="lbl-s">
+    <text x="42" y="110">q/k/v [B, S, H]</text>
+    <text x="42" y="130">forward = 原逻辑</text>
+  </g>
+  <path d="M230,120 H270" stroke="#e74c3c" marker-end="url(#ahA)"/>
+  <text x="250" y="205" class="lbl-s" fill="#e74c3c">必须在 model.parallelize() 之前</text>
+  <text x="250" y="223" class="ph">llama3/parallelize.py:47-54</text>
+  <!-- Flex -->
+  <rect x="275" y="60" width="270" height="120" fill="#14171e" stroke="#e74c3c" class="box"/>
+  <text x="410" y="85" text-anchor="middle" class="lbl" fill="#e74c3c">FlexAttention 分支</text>
+  <g class="lbl-s">
+    <text x="287" y="110">cp_forward(q, k, v):</text>
+    <text x="287" y="130">  flex_cp_allgather(k, v, dim=1)</text>
+    <text x="287" y="150">  -> 原 forward(q, 全局k, 全局v)</text>
+    <text x="287" y="172" class="ph">api.py:57-78 | Q 不 gather, 只 gather K/V</text>
+  </g>
+  <!-- SDPA -->
+  <rect x="570" y="60" width="280" height="120" fill="#14171e" stroke="#e74c3c" class="box"/>
+  <text x="710" y="85" text-anchor="middle" class="lbl" fill="#e74c3c">SDPA 分支</text>
+  <g class="lbl-s">
+    <text x="582" y="110">_enable_context_parallel_dispatcher()</text>
+    <text x="582" y="130">q/k/v = from_local(Shard(1))</text>
+    <text x="582" y="150">输出 to_local()</text>
+    <text x="582" y="172" class="ph">api.py:80-101</text>
+  </g>
+  <rect x="275" y="205" width="575" height="40" fill="#14171e" stroke="#4a5468" class="box"/>
+  <text x="562" y="222" text-anchor="middle" class="lbl-s">seq_len 必须能被 2*cp 整除 (parallel_dims.py:699-706, trainer.py:262-270 校验)</text>
+  <text x="562" y="240" text-anchor="middle" class="lbl-s">fsdp 轴 = dp_shard x cp: CP rank 也在 FSDP 组内 (parallel_dims.py:217-220)</text>
+</svg>
+<p class="figcap">图 9 · CP 初始化:按 attention 类型替换 forward</p>
+
+<h3>5.2 训练过程中做了什么</h3>
+<ul>
+  <li><b>序列切分</b>:<code>post_dataloading_process</code> 调用 <code>prepare_context_parallel_input</code>(<code>trainer.py:701-710</code>):<code>cp_shard</code> 把 inputs / labels / positions 沿序列维(<code>seq_dim=1</code>)切到各 CP rank(<code>api.py:114-163, 166-301</code>)。</li>
+  <li><b>mask 切分</b>:attention masks(BlockMask)只切 Q 序列维(dim 2),KV 维不动(<code>api.py:276-299</code>)。</li>
+  <li><b>负载均衡</b>:<code>HeadTailLoadBalancer</code>(SDPA,默认)或 <code>PTRRLoadBalancer</code>(FlexAttention)处理序列不均(<code>api.py:217-264</code>, <code>configs.py:213</code> 默认 "headtail")。</li>
+  <li><b>前向</b>:每个 CP rank 只计算自己那截序列;attention 内 all-gather K/V 后本地计算完整注意力(FlexAttention 路径的 all-gather 在包装的 forward 里,<code>api.py:73</code>)。序列维的剩余计算(FFN/norm)完全本地。</li>
+  <li><b>loss 聚合</b>:loss mesh 包含 cp(<code>parallel_dims.py:284, 391</code>),loss 指标在 dp x cp 上一起归约(<code>trainer.py:896-919</code>)。</li>
+  <li><b>有效 token 数</b>:labels 在 CP 切分后计数,<code>ntokens_seen</code> 反映本 rank 真实处理的 token(<code>trainer.py:712-714</code>)。</li>
+</ul>
+
+<svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CP 训练期">
+  <defs><marker id="ahB" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b94a3"/></marker></defs>
+  <text x="440" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#e74c3c">训练期 (cp=2):序列切分 -> 各 rank 前向 -> attention 内 K/V all-gather</text>
+  <!-- 输入序列 -->
+  <rect x="30" y="55" width="240" height="60" fill="#1c212c" stroke="#4a5468" class="box"/>
+  <text x="150" y="78" text-anchor="middle" class="lbl">inputs [B, S] (全局序列)</text>
+  <text x="150" y="98" text-anchor="middle" class="lbl-s">+ labels + positions + masks</text>
+  <path d="M270,85 H310" stroke="#e74c3c" marker-end="url(#ahB)"/>
+  <text x="290" y="140" class="lbl-s" fill="#e74c3c">cp_shard 沿 S 维切 (api.py:166)</text>
+  <!-- 两个 rank -->
+  <g>
+    <rect x="315" y="55" width="120" height="60" fill="#14171e" stroke="#e74c3c" class="box"/>
+    <text x="375" y="78" text-anchor="middle" class="lbl">rank0 切片</text>
+    <text x="375" y="98" text-anchor="middle" class="lbl-s">[B, S/2] 前半</text>
+    <rect x="315" y="125" width="120" height="60" fill="#14171e" stroke="#e74c3c" class="box"/>
+    <text x="375" y="148" text-anchor="middle" class="lbl">rank1 切片</text>
+    <text x="375" y="168" text-anchor="middle" class="lbl-s">[B, S/2] 后半</text>
+  </g>
+  <!-- 前向 -->
+  <g>
+    <rect x="460" y="55" width="130" height="60" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="525" y="78" text-anchor="middle" class="lbl">FFN/norm 等</text>
+    <text x="525" y="98" text-anchor="middle" class="lbl-s">完全本地计算</text>
+    <rect x="460" y="125" width="130" height="60" fill="#1c212c" stroke="#4a5468" class="box"/>
+    <text x="525" y="148" text-anchor="middle" class="lbl">FFN/norm 等</text>
+    <text x="525" y="168" text-anchor="middle" class="lbl-s">完全本地计算</text>
+  </g>
+  <!-- attention allgather -->
+  <g>
+    <rect x="615" y="55" width="235" height="130" fill="#14171e" stroke="#e74c3c" class="box"/>
+    <text x="732" y="78" text-anchor="middle" class="lbl" fill="#e74c3c">attention (cp_forward 内)</text>
+    <text x="732" y="103" text-anchor="middle" class="lbl-s">K/V all-gather -> 全局 K/V</text>
+    <text x="732" y="123" text-anchor="middle" class="lbl-s">Q 保持本地分片</text>
+    <text x="732" y="148" text-anchor="middle" class="lbl-s">每个 token 能看到全序列</text>
+    <text x="732" y="168" text-anchor="middle" class="lbl-s">api.py:73 (Flex) / 80-101 (SDPA)</text>
+    <path d="M590,85 H615" stroke="#e74c3c" marker-end="url(#ahB)"/>
+    <path d="M590,155 H615" stroke="#e74c3c" marker-end="url(#ahB)"/>
+  </g>
+  <!-- loss -->
+  <rect x="30" y="215" width="820" height="60" fill="#14171e" stroke="#2ecc71" class="box"/>
+  <text x="440" y="238" text-anchor="middle" class="lbl">反向: 各 rank 对自己切片的部分输出求梯度, 梯度在 fsdp 轴 (dp_shard x cp) reduce-scatter</text>
+  <text x="440" y="258" text-anchor="middle" class="lbl-s">loss 指标在 loss mesh (= dp_replicate x dp_shard x cp) 上聚合 (trainer.py:896-919)</text>
+</svg>
+<p class="figcap">图 10 · CP 训练期:序列切分 + 仅 K/V 全局可见的注意力</p>
+
+<!-- ==================== 汇总 ==================== -->
+<h2><span class="num" style="background:#7f8c8d;color:#fff">6</span> 一表汇总:五策略"初始化 vs 训练期"对照</h2>
+<table>
+  <tr>
+    <th style="width:9%">策略</th>
+    <th style="width:30%">初始化做了什么</th>
+    <th style="width:30%">训练过程中做了什么</th>
+    <th style="width:16%">关键通信原语</th>
+    <th style="width:15%">核心代码</th>
+  </tr>
+  <tr>
+    <td><span class="tag t-dp">DP</span></td>
+    <td>无独立初始化。batch 网格定义数据身份;dataloader 按 dp_rank 分数据;dp_replicate 走 HSDP 复制轴</td>
+    <td>各 rank 独立取数/前反向;valid tokens 在 batch mesh 归约;梯度归约并入 FSDP;loss 在 loss mesh 聚合;optimizer 本地 step</td>
+    <td>all-reduce (token/loss)</td>
+    <td class="ref">trainer.py:279, 838, 896<br>dataloader.py:88</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-fsdp">FSDP</span></td>
+    <td>fully_shard 逐单元分片(mesh=fsdp=dp_shard*cp);装 MixedPrecisionPolicy;设 reshard 策略;关梯度除法;MoE 专家特殊切分</td>
+    <td>前向单元入口 all-gather 权重,出口 reshard;反向 reduce-scatter 梯度;optimizer 在本地分片 step;PP 下前向不 reshard</td>
+    <td>all-gather / reduce-scatter</td>
+    <td class="ref">fsdp.py:110-366</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-tp">TP</span></td>
+    <td>sharding.py 声明 placement;Module.parallelize 把参数 distribute_tensor 成 DTensor;forward 包成 redistribute + local_map;async TP 设置 Inductor</td>
+    <td>层内:列并行出 Partial -> 行并行消费;行并行输出 SP 时 reduce-scatter、否则 all-reduce;反向按 in_grad_placements 布局流动</td>
+    <td>all-reduce / reduce-scatter (层内)</td>
+    <td class="ref">sharding.py:25<br>module.py:248<br>decoder_sharding.py:65-93</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-pp">PP</span></td>
+    <td>按 FQN 列表物理切层(deepcopy+剪枝)成 PipelineStage;每 stage 内再跑 TP/FSDP;建 1F1B 调度器 + n_microbatches</td>
+    <td>pp_schedule.step:1F1B 填管道后前反向交替;stage 间 p2p 传激活/梯度;last stage 算 loss;grad clip 跨 stage 归约;每 stage 独立 optimizer</td>
+    <td>p2p send/recv</td>
+    <td class="ref">pipeline_parallel.py:65-363<br>trainer.py:397-440</td>
+  </tr>
+  <tr>
+    <td><span class="tag t-cp">CP</span></td>
+    <td>apply_cp_to_forward 替换 attention forward(Flex 包 all-gather K/V;SDPA 包 DTensor Shard(1));必须在 model.parallelize 之前</td>
+    <td>每 step 先 cp_shard 切 inputs/labels/positions/masks(带负载均衡);attention 内 K/V all-gather, Q 本地;loss 并入 loss mesh 聚合</td>
+    <td>all-gather (K/V)</td>
+    <td class="ref">api.py:35-301<br>trainer.py:701</td>
+  </tr>
+</table>
+
+<div class="warn">
+  说明:以上基于默认 <code>spmd_backend="default"</code>(legacy)路径。切换到 <code>full_dtensor</code>/<code>spmd_types</code> 时(<code>configs.py:143</code>):
+  <code>dp_shard</code> 与 <code>cp</code> 不再折叠成 fsdp 轴(<code>parallel_dims.py:286-329</code>),输入在 <code>post_dataloading_process</code> 里被包成 DTensor(<code>full_dtensor.py:128-167</code>:DP->Shard(0), CP->Shard(1), TP->Replicate),其余训练期行为不变。
+  各策略的训练期通信原语底层都是 NCCL kernel,见 <a href="parallelism_layers.html">并行实现三层</a>。
+</div>
+
+</div>
+<script src="common.js"></script>
+</body>
+</html>

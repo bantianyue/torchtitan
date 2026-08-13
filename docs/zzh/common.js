@@ -20,6 +20,7 @@ const PAGES = [
   { file: "parallelism_principles.html",title: "实现原理" },
   { file: "parallelism_sharding_detail.html",title: "切分细节" },
   { file: "parallelism_training_flow.html",title: "并行训练流程" },
+  { file: "parallelism_init_and_train.html",title: "初始化 vs 训练期" },
   { file: "spmd_backends.html",    title: "SPMD 后端对比" },
   { file: "parallelism_layers.html", title: "并行实现三层" },
   { file: "mesh_example.html",     title: "网格示例" },
