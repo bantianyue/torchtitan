@@ -1,0 +1,132 @@
+{
+  "combo": "qwen35",
+  "module": "cpu_lab.qwen35",
+  "config": "qwen35_0_8b_sft_bf16",
+  "python": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe",
+  "command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe cpu_lab\\run_cpu_train.py --combo qwen35 -n 1 --threads 4 --module cpu_lab.qwen35 --config qwen35_0_8b_sft_bf16 --hf-cache D:/02_source/torchtitan/cpu_lab/hf --no-warmup --log-dir cpu_lab/logs_qwen35/sft_bf16_1r --show-logs",
+  "child_command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe -u -m cpu_lab_child --module cpu_lab.qwen35 --config qwen35_0_8b_sft_bf16 --parallelism.data_parallel_replicate_degree 1 --parallelism.data_parallel_shard_degree 1 --parallelism.context_parallel_degree 1 --parallelism.tensor_parallel_degree 1 --parallelism.pipeline_parallel_degree 1 --dump-folder D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "started": "2026-10-12T20:55:09",
+  "wall_time_s": 819.1,
+  "world_size": 1,
+  "ranks_spawned": 1,
+  "dims": {
+    "dp_replicate": 1,
+    "dp_shard": 1,
+    "cp": 1,
+    "tp": 1,
+    "pp": 1
+  },
+  "overrides": {
+    "seq_len": null,
+    "steps": null,
+    "local_batch_size": null,
+    "dataset_path": null,
+    "sequence_parallel": null
+  },
+  "collectives": false,
+  "probe": false,
+  "results": {
+    "rows": [
+      {
+        "rank": 0,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\sft_bf16_1r\\train.log",
+        "n_steps": 10,
+        "last_step": 10,
+        "last_loss": 0.24605,
+        "last_grad_norm": 41.25,
+        "has_real_loss": true,
+        "series": [
+          [
+            1,
+            1.33863,
+            145.0
+          ],
+          [
+            2,
+            0.80721,
+            96.5
+          ],
+          [
+            3,
+            0.61097,
+            131.0
+          ],
+          [
+            4,
+            1.00407,
+            86.5
+          ],
+          [
+            5,
+            0.68332,
+            93.0
+          ],
+          [
+            6,
+            0.70705,
+            109.0
+          ],
+          [
+            7,
+            0.37813,
+            62.5
+          ],
+          [
+            8,
+            0.25086,
+            45.75
+          ],
+          [
+            9,
+            0.12888,
+            38.5
+          ],
+          [
+            10,
+            0.24605,
+            41.25
+          ]
+        ]
+      }
+    ]
+  },
+  "last_step": 10,
+  "dump_dir": "D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "log_dir": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\sft_bf16_1r",
+  "artifacts": [
+    {
+      "rel": "checkpoint/step-10/.metadata",
+      "bytes": 150089
+    },
+    {
+      "rel": "checkpoint/step-10/__0_0.distcp",
+      "bytes": 2215466786
+    },
+    {
+      "rel": "structured_logs/training.global_rank_0.20261012-204140-EYROKT.jsonl",
+      "bytes": 887288
+    }
+  ],
+  "memory": {
+    "per_rank": {
+      "0": {
+        "peak_rss": 8258027520,
+        "peak_commit": 12646375424,
+        "samples": 1401
+      }
+    },
+    "system_low": {
+      "min_avail_phys": 3174400,
+      "min_commit_free": 8240369664,
+      "max_commit_used": 40759635968,
+      "commit_limit": 49000005632
+    },
+    "system_after": {
+      "total_phys": 16885276672,
+      "avail_phys": 4615249920,
+      "commit_limit": 49000005632,
+      "commit_used": 27168063488
+    },
+    "source": "windows"
+  }
+}

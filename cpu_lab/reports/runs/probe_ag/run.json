@@ -1,0 +1,200 @@
+{
+  "combo": "qwen35",
+  "module": "torchtitan.models.tinygpt",
+  "config": "tinygpt_debugmodel",
+  "python": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe",
+  "command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe cpu_lab\\run_cpu_train.py --combo qwen35 -n 8 --no-warmup --log-dir cpu_lab/logs_qwen35/probe_ag --show-logs",
+  "child_command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe -u -m cpu_lab._probe_allgather --module torchtitan.models.tinygpt --config tinygpt_debugmodel --parallelism.data_parallel_replicate_degree 1 --parallelism.data_parallel_shard_degree 8 --parallelism.context_parallel_degree 1 --parallelism.tensor_parallel_degree 1 --parallelism.pipeline_parallel_degree 1 --dump-folder D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "started": "2026-10-12T19:58:22",
+  "wall_time_s": 174.7,
+  "world_size": 8,
+  "ranks_spawned": 8,
+  "dims": {
+    "dp_replicate": 1,
+    "dp_shard": 8,
+    "cp": 1,
+    "tp": 1,
+    "pp": 1
+  },
+  "overrides": {
+    "seq_len": null,
+    "steps": null,
+    "local_batch_size": null,
+    "dataset_path": null,
+    "sequence_parallel": null
+  },
+  "collectives": false,
+  "probe": false,
+  "results": {
+    "rows": [
+      {
+        "rank": 0,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag\\rank_0.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 1,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag\\rank_1.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 2,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag\\rank_2.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 3,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag\\rank_3.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 4,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag\\rank_4.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 5,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag\\rank_5.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 6,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag\\rank_6.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 7,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag\\rank_7.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      }
+    ]
+  },
+  "last_step": null,
+  "dump_dir": "D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "log_dir": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\probe_ag",
+  "artifacts": [
+    {
+      "rel": "structured_logs/training.global_rank_0.20261012-195200-RFM4J7.jsonl",
+      "bytes": 781505
+    },
+    {
+      "rel": "structured_logs/training.global_rank_1.20261012-195200-ZW8JP7.jsonl",
+      "bytes": 784242
+    },
+    {
+      "rel": "structured_logs/training.global_rank_2.20261012-195209-UTINTX.jsonl",
+      "bytes": 781539
+    },
+    {
+      "rel": "structured_logs/training.global_rank_3.20261012-195212-NTG2BQ.jsonl",
+      "bytes": 781449
+    },
+    {
+      "rel": "structured_logs/training.global_rank_4.20261012-195216-UTBHWC.jsonl",
+      "bytes": 781537
+    },
+    {
+      "rel": "structured_logs/training.global_rank_5.20261012-195227-KLN27F.jsonl",
+      "bytes": 784255
+    },
+    {
+      "rel": "structured_logs/training.global_rank_6.20261012-195227-YXX012.jsonl",
+      "bytes": 784263
+    },
+    {
+      "rel": "structured_logs/training.global_rank_7.20261012-195238-WE4HJ4.jsonl",
+      "bytes": 784287
+    }
+  ],
+  "memory": {
+    "per_rank": {
+      "0": {
+        "peak_rss": 315174912,
+        "peak_commit": 510824448,
+        "samples": 162
+      },
+      "1": {
+        "peak_rss": 316637184,
+        "peak_commit": 981618688,
+        "samples": 162
+      },
+      "2": {
+        "peak_rss": 374820864,
+        "peak_commit": 981790720,
+        "samples": 162
+      },
+      "3": {
+        "peak_rss": 351350784,
+        "peak_commit": 704229376,
+        "samples": 162
+      },
+      "4": {
+        "peak_rss": 361054208,
+        "peak_commit": 704413696,
+        "samples": 162
+      },
+      "5": {
+        "peak_rss": 393789440,
+        "peak_commit": 981630976,
+        "samples": 162
+      },
+      "6": {
+        "peak_rss": 427380736,
+        "peak_commit": 981426176,
+        "samples": 162
+      },
+      "7": {
+        "peak_rss": 427708416,
+        "peak_commit": 981798912,
+        "samples": 162
+      }
+    },
+    "system_after": {
+      "total_phys": 16885276672,
+      "avail_phys": 1544564736,
+      "commit_limit": 48985092096,
+      "commit_used": 41668841472
+    },
+    "source": "windows"
+  }
+}

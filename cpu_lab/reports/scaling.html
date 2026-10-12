@@ -1,0 +1,125 @@
+<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>能跑多大的模型</title><style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#16181d;--muted:#6b7280;--line:#e3e5ea;
+--panel:#f7f8fa;--accent:#2f6fd0;--ok:#1a7f4b;--miss:#b4451f;--code:#f2f3f6;}
+@media (prefers-color-scheme:dark){:root{--bg:#15171c;--fg:#e8eaf0;--muted:#9aa1ad;
+--line:#2b2f38;--panel:#1c1f26;--accent:#6ea8ff;--ok:#5ed09a;--miss:#ff9b7a;--code:#22262e;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",Roboto,sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:32px 24px 72px}
+h1{font-size:23px;font-weight:600;margin:0 0 4px}h2{font-size:16px;font-weight:600;margin:26px 0 8px}
+h3{font-size:14px;font-weight:600;margin:20px 0 6px}
+.sub{color:var(--muted);margin:2px 0 14px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--code);
+padding:1px 5px;border-radius:4px}
+.note{background:var(--panel);border-left:3px solid var(--accent);padding:10px 14px;
+border-radius:6px;margin:12px 0}.muted{color:var(--muted)}.ok{color:var(--ok);font-weight:600}
+.miss{color:var(--miss);font-weight:600}
+.chartbox{border:1px solid var(--line);border-radius:10px;padding:12px;margin:12px 0}
+canvas{width:100%;height:300px;display:block}
+.pill{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 12px;
+font-size:12.5px;display:inline-block;margin:0 8px 8px 0}.pill b{font-weight:600}
+ul.tight{margin:6px 0;padding-left:20px}
+</style></head><body>
+<div class="wrap">
+<h1>这台机器能跑多大的模型</h1>
+<p class="sub">实测估算：同一并行策略（pp2 × tp2 × dp_shard2，8 rank，gloo/CPU，fp32）
+在若干尺寸上各跑几步，采样每 rank 峰值内存与每步耗时，再线性外推。
+先量化目标，再看架构，最后给规划——数字全部来自 <code>cpu_lab/logs_scale/</code> 下的实测。</p>
+<div><span class='pill'>物理内存 <b>15.73 GiB</b></span><span class='pill'>commit 上限 <b>43.88 GiB</b></span><span class='pill'>系统盘剩余 <b>13.43 GiB</b></span><span class='pill'>per-param commit <b>41.23 B/param (all ranks)</b></span><span class='pill'>固定 commit <b>4.08 GiB</b></span><span class='pill'>commit 口径上限 <b>232M (0.23B)</b></span><span class='pill'>驻留口径上限 <b>364M (0.36B)</b></span></div>
+<h2>1. 实测各档</h2>
+<table><tr><th>flavor</th><th>params (total)</th><th>tokens/step</th><th>s/step</th><th>peak RSS/rank</th><th>peak commit/rank</th><th>commit, all ranks</th></tr><tr><td><b>8L512_untied</b></td><td class='num'>27.5M</td><td class='num'>2048</td><td class='num'>6.5</td><td class='num'>563.08 MB</td><td class='num'>676.71 MB</td><td class='num'>5.16 GiB</td></tr><tr><td><b>scale_12L768</b></td><td class='num'>88.5M</td><td class='num'>2048</td><td class='num'>15.0</td><td class='num'>793.57 MB</td><td class='num'>967.46 MB</td><td class='num'>7.44 GiB</td></tr><tr><td><b>scale_16L1024</b></td><td class='num'>206.1M</td><td class='num'>2048</td><td class='num'>36.5</td><td class='num'>1,023.81 MB</td><td class='num'>1.50 GiB</td><td class='num'>12.01 GiB</td></tr></table>
+<div class="chartbox"><canvas id="memChart">memory vs parameters</canvas></div>
+<p class="note">实线为每 rank 峰值 <b>commit</b>（进程向系统预留的字节），虚线为峰值 <b>RSS</b>（实际驻留）。
+两者都随参数量线性增长；直线在 0 参数处的截距就是每 rank 的固定开销
+（python + torch + dataloader），在本文的尺寸区间里它由截距主导，
+所以「能跑多大」首先取决于开了几个 rank，而不是模型本身多大。</p>
+<h2>2. 每步耗时</h2>
+<table><tr><th>flavor</th><th>params</th><th>s/step</th><th>tokens/s</th></tr><tr><td>8L512_untied</td><td class='num'>27.5M</td><td class='num'>6.5 s</td><td class='num'>315</td></tr><tr><td>scale_12L768</td><td class='num'>88.5M</td><td class='num'>15.0 s</td><td class='num'>137</td></tr><tr><td>scale_16L1024</td><td class='num'>206.1M</td><td class='num'>36.5 s</td><td class='num'>56</td></tr></table>
+<div class="chartbox"><canvas id="timeChart">step time vs parameters</canvas></div>
+<p class='note'>每步耗时拟合 <code>t ≈ 0.170 s 每 M 参数 + 1.1 s 固定开销</code>。commit 上限处约 <b>0.7 分钟/步</b>。RSS 上限处约 <b>1.0 分钟/步</b>。</p>
+<h2>3. 结论</h2>
+<ul class="tight">
+<li>内存上限（commit 口径）：约 <b>232M (0.23B)</b> —— 系统 commit 预算决定。</li>
+<li>内存上限（驻留口径）：约 <b>364M (0.36B)</b> —— 物理 RAM 决定。</li>
+<li>两者取小：<b>232M (0.23B)</b> 是这套配置下能启动的上限；再大就要么分配不到内存，要么开始疯狂换页。</li>
+</ul>
+<p class="note">commit 那一栏不是常数：Windows 需要时会自动把 <code>pagefile.sys</code> 撑大，
+本次实验期间 commit 上限就从 40.75 GiB 长到
+43.88 GiB，能长多大取决于系统盘剩余空间
+（实测 13.43 GiB）。
+所以「commit 口径上限」是个会浮动的数；真正硬的是<b>物理内存</b>那一栏——
+超出它的部分只能在页面文件里来回倒，每步耗时会被换页吞掉。</p>
+<h2>4. 跑不起来的那一档</h2><table><tr><th>flavor</th><th>结果</th><th>日志里的最后一条关键行</th></tr><tr><td><b>scale_24L1536</b></td><td class='miss'>分配失败导致进程崩溃</td><td><code>Windows fatal exception: access violation</code></td></tr></table><p class='note'>这一档是<b>实测的边界</b>，不是外推：它按同一套命令启动，却没能跑完。它的意义在于把「线性外推说能到哪」压到「实际上到哪」。</p>
+<p class="note">估算前提：固定 <code>seq_len=128</code>、<code>local_batch_size=8</code>
+（global batch 16）、<code>pp2×tp2×dp_shard2</code>、fp32 参数与优化器状态。
+换更大的 batch/seq 会抬高激活内存的系数，因此上面的数字是这套配置下的上限。</p>
+<footer class="muted">生成于 2026-10-12 17:22:14 · 数据来自 D:\02_source\torchtitan\cpu_lab\logs_scale 下各档的 run.json</footer>
+</div>
+<script id="scaling-data" type="application/json">{"memory": [{"x": [27542528, 88512000, 206112768], "y": [709582848, 1014456320, 1615863808], "color": "#2f6fd0"}, {"x": [27542528, 88512000, 206112768], "y": [590430208, 832118784, 1073545216], "color": "#1d9e75", "dash": [5, 4]}], "time": [[27542528, 6.5], [88512000, 15.0], [206112768, 36.5]]}</script>
+<script>
+function draw(canvas, series, yLabel){
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w*dpr; canvas.height = h*dpr;
+  const c = canvas.getContext('2d'); c.scale(dpr,dpr);
+  const cs = getComputedStyle(document.body);
+  const M = {l:62,r:16,t:14,b:36}, W = w-M.l-M.r, H = h-M.t-M.b;
+  const xs = series[0].x.concat(series.flatMap(s=>s.x));
+  const ys = series.flatMap(s=>s.y);
+  const x0 = 0, x1 = Math.max(...xs)*1.05;
+  const y0 = 0, y1 = Math.max(...ys)*1.15;
+  const X = v => M.l + (v-x0)/(x1-x0)*W;
+  const Y = v => M.t + H - (v-y0)/(y1-y0)*H;
+  c.strokeStyle = cs.getPropertyValue('--line')||'#ddd';
+  c.fillStyle = cs.getPropertyValue('--muted')||'#888';
+  c.font = '11px sans-serif'; c.lineWidth = 1;
+  for (let k=0;k<=4;k++){
+    const y = M.t + H*k/4;
+    c.beginPath(); c.moveTo(M.l,y); c.lineTo(M.l+W,y); c.stroke();
+    c.textAlign='right'; c.fillText(((y1-(y1-y0)*k/4)/1073741824).toFixed(1)+' GiB', M.l-8, y+4);
+  }
+  c.textAlign='center';
+  for (let k=0;k<=4;k++){
+    const v = x0+(x1-x0)*k/4;
+    c.fillText((v/1e6).toFixed(0)+'M', X(v), M.t+H+18);
+  }
+  series.forEach((s,idx)=>{
+    c.strokeStyle = s.color; c.lineWidth = 2; c.setLineDash(s.dash||[]);
+    c.beginPath();
+    s.x.forEach((xv,i)=>{ const px=X(xv), py=Y(s.y[i]); i?c.lineTo(px,py):c.moveTo(px,py); });
+    c.stroke(); c.setLineDash([]);
+    c.fillStyle = s.color;
+    s.x.forEach((xv,i)=>{ c.beginPath(); c.arc(X(xv),Y(s.y[i]),3,0,7); c.fill(); });
+  });
+}
+document.addEventListener('DOMContentLoaded', function(){
+  const data = JSON.parse(document.getElementById('scaling-data').textContent);
+  const c1 = document.getElementById('memChart');
+  if (c1) draw(c1, data.memory, 'bytes');
+  const c2 = document.getElementById('timeChart');
+  if (c2){
+    const dpr = window.devicePixelRatio||1, w=c2.clientWidth, h=c2.clientHeight;
+    c2.width=w*dpr; c2.height=h*dpr;
+    const c=c2.getContext('2d'); c.scale(dpr,dpr);
+    const cs=getComputedStyle(document.body);
+    const M={l:62,r:16,t:14,b:36}, W=w-M.l-M.r, H=h-M.t-M.b;
+    const xs=data.time.map(p=>p[0]), ys=data.time.map(p=>p[1]);
+    const x1=Math.max(...xs)*1.05, y1=Math.max(...ys)*1.15;
+    const X=v=>M.l+v/x1*W, Y=v=>M.t+H-v/y1*H;
+    c.strokeStyle=cs.getPropertyValue('--line')||'#ddd'; c.fillStyle=cs.getPropertyValue('--muted')||'#888';
+    c.font='11px sans-serif';
+    for(let k=0;k<=4;k++){const y=M.t+H*k/4;c.beginPath();c.moveTo(M.l,y);c.lineTo(M.l+W,y);c.stroke();
+      c.textAlign='right';c.fillText((y1-(y1)*k/4).toFixed(0)+' s',M.l-8,y+4);}
+    c.textAlign='center';
+    for(let k=0;k<=4;k++){const v=x1*k/4;c.fillText((v/1e6).toFixed(0)+'M',X(v),M.t+H+18);}
+    c.strokeStyle='#2f6fd0';c.lineWidth=2;c.beginPath();
+    xs.forEach((xv,i)=>{const px=X(xv),py=Y(ys[i]);i?c.lineTo(px,py):c.moveTo(px,py);});
+    c.stroke();c.fillStyle='#2f6fd0';
+    xs.forEach((xv,i)=>{c.beginPath();c.arc(X(xv),Y(ys[i]),3,0,7);c.fill();});
+  }
+});
+</script>
+</body></html>

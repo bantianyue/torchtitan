@@ -1,4 +1,4 @@
-__pycache__
+﻿__pycache__
 .idea
 .DS_Store
 *.egg-info
@@ -51,3 +51,37 @@ CLAUDE_CONTEXT/
 
 # Lychee (link checker) cache
 .lycheecache
+
+# ---------------------------------------------------------------------------
+# cpu_lab / qlora_lab: derived artifacts.
+#
+# Everything excluded below is reproducible on a new machine by running
+#   python cpu_lab/bootstrap.py
+# so it must NOT be committed:
+#   - venvs        : contain absolute paths, must be rebuilt anyway
+#   - model weights: re-download from hf-mirror, then convert to DCP
+#   - run logs     : per-rank .log files; the numbers that matter are
+#                    distilled into cpu_lab/reports/ and cpu_lab/MIGRATION.md
+#
+# Hard rule: GitHub's free LFS quota is 10 GiB storage / 10 GiB monthly
+# bandwidth, and the weights alone are ~6.6 GiB.
+# ---------------------------------------------------------------------------
+
+.venv/
+qlora_lab/.venv/
+venv/
+
+cpu_lab/checkpoints/
+cpu_lab/hf/
+qlora_lab/hf/
+qlora_lab/model/
+qlora_lab/runs/
+*.safetensors
+*.distcp
+
+cpu_lab/logs*/
+.hf_cache/
+
+# scratch files written by ad-hoc probes
+cpu_lab/_*.txt
+cpu_lab/_probe_*.py
