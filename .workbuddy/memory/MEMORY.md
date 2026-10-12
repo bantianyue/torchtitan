@@ -183,6 +183,24 @@ FSDP 走 Python 的 `dist.*` 且会再派发到 aten（需去重）；`fsdp.all_
 - 失败路径也要写 `run_json`/`summary.txt`（此前崩溃时内存数据被整段丢弃，
   而那恰好是唯一需要看的那次）。
 
+## 换机器：产物与说明已推送 GitHub（2026-10-12 末）
+
+**方案：只提交无法重建的东西。** venv / HF 权重 / DCP checkpoint / 日志一律不进 Git，
+交由 `cpu_lab/bootstrap.py` 重建。克隆 ~150 MB 而非 ~7 GB。
+
+- 远端：`https://github.com/bantianyue/torchtitan.git`（`origin/main`，已同步）。
+- `cpu_lab/bootstrap.py`：6 步 `venv → deps → assets → dcp → data → smoke`，
+  幂等、可 `--steps` / `--skip`，失败打印续跑命令。
+- `cpu_lab/MIGRATION.md`：产物清单 / 重建步骤 / 实测基准 / 策略矩阵 / 已知坑。
+- 冻结依赖：`cpu_lab/requirements-cpu.txt`、`qlora_lab/requirements.txt`。
+  **venv 是 uv 建的、没有 pip** ⇒ 必须用 `uv pip freeze --python <py>`，
+  且要剔除 `-e file:///D:/...` 这类旧机器绝对路径。
+- `.gitignore` 已排除 `.venv/`、`cpu_lab/checkpoints/`、`qlora_lab/{hf,model,runs}/`、
+  `*.safetensors`、`*.distcp`、`cpu_lab/logs*/`、`cpu_lab/_*.txt`。
+
+**不用 Git LFS**：免费 10 GiB 存储 / 10 GiB 月流量，权重就 6.6 GiB，且比镜像站重下慢。
+**备选**：物理可达时用 `robocopy` 整目录直传；但 Windows venv 含绝对路径，**仍要重建**。
+
 ## 换 32 GiB 机器的结论（2026-10-12 末）
 - **内存**：够。pp2×tp2×dp2 需 ~25 GiB；32 GiB 物理下基线几乎不换页，可用 20–24 GiB。
   纯 FSDP 8 rank 需 ~45 GiB，仍然贴上限 ⇒ **8 rank 必须带 PP/TP，不能纯 dp_shard**。
