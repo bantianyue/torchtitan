@@ -1,0 +1,84 @@
+{
+  "combo": "qwen35",
+  "module": "cpu_lab.qwen35",
+  "config": "qwen35_0_8b_bf16",
+  "python": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe",
+  "command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe cpu_lab\\run_cpu_train.py --combo qwen35 -n 1 --threads 4 --module cpu_lab.qwen35 --config qwen35_0_8b_bf16 --hf-cache D:/02_source/torchtitan/cpu_lab/hf --no-warmup --log-dir cpu_lab/logs_qwen35/bf16_clean_1r --show-logs",
+  "child_command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe -u -m cpu_lab_child --module cpu_lab.qwen35 --config qwen35_0_8b_bf16 --parallelism.data_parallel_replicate_degree 1 --parallelism.data_parallel_shard_degree 1 --parallelism.context_parallel_degree 1 --parallelism.tensor_parallel_degree 1 --parallelism.pipeline_parallel_degree 1 --dump-folder D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "started": "2026-10-12T20:35:59",
+  "wall_time_s": 319.9,
+  "world_size": 1,
+  "ranks_spawned": 1,
+  "dims": {
+    "dp_replicate": 1,
+    "dp_shard": 1,
+    "cp": 1,
+    "tp": 1,
+    "pp": 1
+  },
+  "overrides": {
+    "seq_len": null,
+    "steps": null,
+    "local_batch_size": null,
+    "dataset_path": null,
+    "sequence_parallel": null
+  },
+  "collectives": false,
+  "probe": false,
+  "results": {
+    "rows": [
+      {
+        "rank": 0,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\bf16_clean_1r\\train.log",
+        "n_steps": 2,
+        "last_step": 2,
+        "last_loss": 12.84252,
+        "last_grad_norm": 87.0,
+        "has_real_loss": true,
+        "series": [
+          [
+            1,
+            12.81853,
+            91.0
+          ],
+          [
+            2,
+            12.84252,
+            87.0
+          ]
+        ]
+      }
+    ]
+  },
+  "last_step": 2,
+  "dump_dir": "D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "log_dir": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\bf16_clean_1r",
+  "artifacts": [
+    {
+      "rel": "structured_logs/training.global_rank_0.20261012-203058-3J2F2C.jsonl",
+      "bytes": 799568
+    }
+  ],
+  "memory": {
+    "per_rank": {
+      "0": {
+        "peak_rss": 6947418112,
+        "peak_commit": 12539174912,
+        "samples": 548
+      }
+    },
+    "system_low": {
+      "min_avail_phys": 9527296,
+      "min_commit_free": 4949864448,
+      "max_commit_used": 44050141184,
+      "commit_limit": 49000005632
+    },
+    "system_after": {
+      "total_phys": 16885276672,
+      "avail_phys": 5486272512,
+      "commit_limit": 49000005632,
+      "commit_used": 27693932544
+    },
+    "source": "windows"
+  }
+}

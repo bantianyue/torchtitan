@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>local_map 是什么 · 在哪儿用（torchtitan 图解）</title>
+<style>
+  :root {
+    --bg: #f8fafc; --panel: #ffffff; --panel2: #f1f5f9; --line: #e2e8f0;
+    --fg: #1e293b; --dim: #64748b; --acc: #0284c7; --acc2: #059669;
+    --warn: #d97706; --pink: #db2777; --purple: #7c3aed; --code-bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 32px 28px 80px; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 26px; }
+  header h1 { margin: 0 0 6px; font-size: 27px; color: #0f172a; }
+  header h1 code { color: var(--acc); font-size: 24px; }
+  header p { margin: 4px 0 0; color: var(--dim); }
+
+  h2 {
+    font-size: 19px; color: var(--acc); margin: 44px 0 6px;
+    padding-left: 10px; border-left: 4px solid var(--acc);
+  }
+  h3 { font-size: 16px; color: #0f172a; margin: 20px 0 8px; }
+  p { margin: 8px 0; }
+  code {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 6px; font-family: "Cascadia Code", Consolas, monospace; font-size: 13px;
+    color: #047857;
+  }
+  .loc { color: var(--pink); font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; }
+  .tag {
+    display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px;
+    margin-right: 6px; vertical-align: 1px; font-weight: 600;
+  }
+  .t-core { background: #e0f2fe; color: #0369a1; border: 1px solid #0369a1; }
+  .t-attn { background: #fef3c7; color: #b45309; border: 1px solid #fcd34d; }
+  .t-moe  { background: #fce7f3; color: #be185d; border: 1px solid #be185d; }
+  .t-loss { background: #d1fae5; color: #047857; border: 1px solid #047857; }
+  .t-kern { background: #e0e7ff; color: #4338ca; border: 1px solid #4338ca; }
+  .t-vision{ background: #f3e8ff; color: #7e22ce; border: 1px solid #d8b4fe; }
+
+  figure { margin: 16px 0 22px; }
+  figure svg {
+    width: 100%; height: auto; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px;
+  }
+  figcaption { color: var(--dim); font-size: 13px; margin-top: 8px; }
+  figcaption b { color: var(--acc); }
+
+  .box {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; margin: 14px 0;
+  }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  li b { color: #0f172a; }
+  .warn {
+    background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px;
+    padding: 12px 16px; margin: 14px 0; color: #92400e;
+  }
+  .warn b { color: var(--warn); }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.55;
+    font-family: "Cascadia Code", Consolas, monospace;
+  }
+  pre .c { color: #94a3b8; } pre .k { color: #6d28d9; } pre .s { color: #0369a1; } pre .p { color: var(--pink); }
+  footer { margin-top: 40px; color: var(--dim); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1><code>local_map</code> 是什么 · 在哪儿用</h1>
+  <p>torchtitan 声明式并行中的「本地计算区」机制 · 图解版（基于 <span class="loc">D:\02_source\torchtitan</span> 源码）</p>
+</header>
+
+<!-- ================= 图 1 ================= -->
+<h2>① 核心机制：DTensor 边界 + 本地计算区（两条路径）</h2>
+<figure>
+<svg viewBox="0 0 920 660" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr1b" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#0284c7"/>
+    </marker>
+    <marker id="arr1p" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#db2777"/>
+    </marker>
+    <marker id="arr1g" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#d97706"/>
+    </marker>
+  </defs>
+
+  <!-- 图例 -->
+  <rect x="250" y="24" width="14" height="14" rx="3" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="270" y="36" fill="#0369a1" font-size="10.5">DTensor 布局转换（redistribute · 有通信）</text>
+  <rect x="500" y="24" width="14" height="14" rx="3" fill="#fce7f3" stroke="#db2777"/>
+  <text x="520" y="36" fill="#be185d" font-size="10.5">DTensor↔本地（to_local / from_local · 无通信）</text>
+  <rect x="772" y="24" width="14" height="14" rx="3" fill="#d1fae5" stroke="#059669"/>
+  <text x="792" y="36" fill="#047857" font-size="10.5">本地计算区（零通信）</text>
+
+  <!-- 路径 A -->
+  <text x="460" y="72" text-anchor="middle" fill="#0f172a" font-size="13.5" font-weight="700">路径 A：sharding_config 配了 local_map —— 输入/输出布局转换 + local_map 转换</text>
+
+  <!-- A1 输入 -->
+  <rect x="14" y="88" width="116" height="64" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.4"/>
+  <text x="72" y="108" text-anchor="middle" fill="#1e293b" font-size="11.5" font-weight="700">输入 DTensor</text>
+  <text x="72" y="126" text-anchor="middle" fill="#64748b" font-size="9.5">in_src：Shard(1)@SP</text>
+  <text x="72" y="140" text-anchor="middle" fill="#64748b" font-size="9.5">（旧布局）</text>
+
+  <!-- A2 布局转换① -->
+  <rect x="146" y="88" width="118" height="64" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.4"/>
+  <text x="205" y="108" text-anchor="middle" fill="#0369a1" font-size="10.5" font-weight="700">_redistribute_inputs</text>
+  <text x="205" y="124" text-anchor="middle" fill="#1e293b" font-size="9.5">Shard(1) → Replicate</text>
+  <text x="205" y="140" text-anchor="middle" fill="#64748b" font-size="9">all-gather（通信）</text>
+
+  <!-- A3 to_local -->
+  <rect x="280" y="88" width="112" height="64" rx="8" fill="#fce7f3" stroke="#db2777" stroke-width="1.4"/>
+  <text x="336" y="108" text-anchor="middle" fill="#be185d" font-size="11" font-weight="700">to_local()</text>
+  <text x="336" y="126" text-anchor="middle" fill="#1e293b" font-size="9.5">DTensor → 本地</text>
+  <text x="336" y="142" text-anchor="middle" fill="#64748b" font-size="9">卸装 · 无通信</text>
+
+  <!-- A4 本地区 -->
+  <rect x="408" y="80" width="150" height="84" rx="10" fill="#d1fae5" stroke="#059669" stroke-width="2"/>
+  <text x="483" y="104" text-anchor="middle" fill="#047857" font-size="12" font-weight="700">fn 本地计算</text>
+  <text x="483" y="122" text-anchor="middle" fill="#1e293b" font-size="9.5">FlexAttention / SDPA</text>
+  <text x="483" y="138" text-anchor="middle" fill="#1e293b" font-size="9.5">GroupedExperts / CE …</text>
+  <text x="483" y="156" text-anchor="middle" fill="#047857" font-size="9.5" font-weight="700">零通信 · 可 compile</text>
+
+  <!-- A5 from_local -->
+  <rect x="574" y="88" width="112" height="64" rx="8" fill="#fce7f3" stroke="#db2777" stroke-width="1.4"/>
+  <text x="630" y="108" text-anchor="middle" fill="#be185d" font-size="10.5" font-weight="700">from_local()</text>
+  <text x="630" y="126" text-anchor="middle" fill="#1e293b" font-size="9.5">本地 → DTensor</text>
+  <text x="630" y="142" text-anchor="middle" fill="#64748b" font-size="9">包回 · 无通信</text>
+
+  <!-- A6 布局转换② -->
+  <rect x="702" y="88" width="118" height="64" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.4"/>
+  <text x="761" y="108" text-anchor="middle" fill="#0369a1" font-size="10.5" font-weight="700">_redistribute_outputs</text>
+  <text x="761" y="124" text-anchor="middle" fill="#1e293b" font-size="9.5">Partial → Shard(1)</text>
+  <text x="761" y="140" text-anchor="middle" fill="#64748b" font-size="9">reduce-scatter（通信）</text>
+
+  <!-- A7 输出 -->
+  <rect x="836" y="88" width="70" height="64" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.4"/>
+  <text x="871" y="108" text-anchor="middle" fill="#1e293b" font-size="10.5" font-weight="700">输出</text>
+  <text x="871" y="126" text-anchor="middle" fill="#64748b" font-size="9">DTensor</text>
+  <text x="871" y="140" text-anchor="middle" fill="#64748b" font-size="9">out_dst</text>
+
+  <!-- 路径 A 箭头 -->
+  <line x1="132" y1="120" x2="144" y2="120" stroke="#0284c7" stroke-width="1.8" marker-end="url(#arr1b)"/>
+  <line x1="266" y1="120" x2="278" y2="120" stroke="#0284c7" stroke-width="1.8" marker-end="url(#arr1b)"/>
+  <line x1="394" y1="120" x2="406" y2="120" stroke="#0284c7" stroke-width="1.8" marker-end="url(#arr1b)"/>
+  <line x1="560" y1="120" x2="572" y2="120" stroke="#0284c7" stroke-width="1.8" marker-end="url(#arr1b)"/>
+  <line x1="688" y1="120" x2="700" y2="120" stroke="#0284c7" stroke-width="1.8" marker-end="url(#arr1b)"/>
+  <line x1="822" y1="120" x2="834" y2="120" stroke="#0284c7" stroke-width="1.8" marker-end="url(#arr1b)"/>
+
+  <!-- 布局标注 -->
+  <text x="72" y="172" text-anchor="middle" fill="#64748b" font-size="9.5">in_src（旧布局）</text>
+  <text x="205" y="172" text-anchor="middle" fill="#0369a1" font-size="9.5" font-weight="700">布局转换① → in_dst</text>
+  <text x="336" y="172" text-anchor="middle" fill="#be185d" font-size="9.5" font-weight="700">本地</text>
+  <text x="483" y="184" text-anchor="middle" fill="#047857" font-size="9.5">纯本地张量</text>
+  <text x="630" y="172" text-anchor="middle" fill="#be185d" font-size="9.5" font-weight="700">out_src</text>
+  <text x="761" y="172" text-anchor="middle" fill="#0369a1" font-size="9.5" font-weight="700">布局转换② → out_dst</text>
+  <text x="871" y="172" text-anchor="middle" fill="#64748b" font-size="9.5">给下一模块</text>
+
+  <!-- 反向 -->
+  <path d="M 836 214 L 336 214" stroke="#db2777" stroke-width="1.8" stroke-dasharray="6,4" marker-end="url(#arr1p)"/>
+  <text x="586" y="204" text-anchor="middle" fill="#be185d" font-size="10.5" font-weight="700">反向：in_grad_placements 在 to_local 时声明 → 梯度按声明布局回流（无额外通信）</text>
+  <text x="120" y="230" text-anchor="middle" fill="#64748b" font-size="9.5">梯度仍是 DTensor（布局由 in_grad_placements 决定）</text>
+
+  <!-- 路径 B -->
+  <text x="460" y="272" text-anchor="middle" fill="#0f172a" font-size="13.5" font-weight="700">路径 B：sharding_config 没配 local_map —— 不需要转换（forward 原样跑）</text>
+
+  <rect x="14" y="292" width="140" height="64" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.4"/>
+  <text x="84" y="312" text-anchor="middle" fill="#1e293b" font-size="11.5" font-weight="700">输入 DTensor</text>
+  <text x="84" y="330" text-anchor="middle" fill="#64748b" font-size="9.5">in_src（任意布局）</text>
+  <text x="84" y="344" text-anchor="middle" fill="#64748b" font-size="9.5">不检查 · 不搬运</text>
+
+  <rect x="170" y="284" width="460" height="80" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="1.8" stroke-dasharray="7,4"/>
+  <text x="400" y="308" text-anchor="middle" fill="#b45309" font-size="12" font-weight="700">forward 原样执行（无 local_map 包装）</text>
+  <text x="400" y="328" text-anchor="middle" fill="#1e293b" font-size="10.5">module.py:427-428：local_map is None → 返回原 fn</text>
+  <text x="400" y="346" text-anchor="middle" fill="#1e293b" font-size="10">算子分发直接处理 DTensor（matmul 等）；参数保持原样（plain 或 DTensor）</text>
+  <text x="400" y="360" text-anchor="middle" fill="#64748b" font-size="9.5">给的 DTensor 还是 DTensor，给的 plain 还是 plain</text>
+
+  <rect x="646" y="292" width="140" height="64" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.4"/>
+  <text x="716" y="312" text-anchor="middle" fill="#1e293b" font-size="11.5" font-weight="700">输出 DTensor</text>
+  <text x="716" y="330" text-anchor="middle" fill="#64748b" font-size="9.5">out_dst（任意）</text>
+  <text x="716" y="344" text-anchor="middle" fill="#64748b" font-size="9.5">原样给下一模块</text>
+
+  <line x1="156" y1="324" x2="168" y2="324" stroke="#d97706" stroke-width="1.8" marker-end="url(#arr1g)"/>
+  <line x1="632" y1="324" x2="644" y2="324" stroke="#d97706" stroke-width="1.8" marker-end="url(#arr1g)"/>
+
+  <!-- 路径 B 注 -->
+  <rect x="14" y="384" width="892" height="56" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.2"/>
+  <text x="36" y="406" fill="#1e293b" font-size="11">仍可能发生 DTensor 布局转换：如果模块声明了 in/out_shardings（只是没配 local_map），_redistribute_inputs / _redistribute_outputs 照常搬布局</text>
+  <text x="36" y="426" fill="#64748b" font-size="10">例：FFN 线性层 colwise_config() 只有 state_shardings + out_src，没有 local_map —— 布局转换有、本地计算区无（decoder_sharding.py:65-93）</text>
+
+  <!-- 决策条 -->
+  <rect x="14" y="466" width="892" height="176" rx="10" fill="#f0f9ff" stroke="#0284c7" stroke-width="1.4"/>
+  <text x="36" y="492" fill="#0369a1" font-size="13" font-weight="700">怎么选：什么时候需要路径 A？</text>
+  <text x="36" y="518" fill="#1e293b" font-size="11.5">· forward 含 DTensor 分发不支持的算子（注意力内核 / 索引 scatter / 变长 grouped GEMM / 插值采样 / 自定义 CUDA）→ 路径 A：local_map 隔离成本地区</text>
+  <text x="36" y="540" fill="#1e293b" font-size="11.5">· forward 全是 DTensor 原生支持的算子（matmul / elementwise / softmax / norm）→ 路径 B：纯算子分发，不设 local_map</text>
+  <rect x="36" y="560" width="14" height="14" rx="3" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="56" y="571" fill="#0369a1" font-size="10.5">布局转换（redistribute · 有通信）</text>
+  <rect x="320" y="560" width="14" height="14" rx="3" fill="#fce7f3" stroke="#db2777"/>
+  <text x="340" y="571" fill="#be185d" font-size="10.5">DTensor↔本地（to_local / from_local · 无通信）</text>
+  <rect x="612" y="560" width="14" height="14" rx="3" fill="#d1fae5" stroke="#059669"/>
+  <text x="632" y="571" fill="#047857" font-size="10.5">本地计算区（零通信）</text>
+  <text x="36" y="614" fill="#64748b" font-size="10.5">前向：布局转换① → 卸装 → 本地计算 → 包回 → 布局转换②；反向：in_grad_placements 决定梯度布局</text>
+  <text x="36" y="632" fill="#64748b" font-size="10.5">两处布局转换都是 async_op=True：通信异步发起，在 local_map 入口 wait() 消费（_func_map.py:228-229）</text>
+</svg>
+<figcaption><b>图 1 · 两条路径。</b> 上（路径 A）：配了 local_map —— 输入先做 DTensor 布局转换（redistribute，有通信），再 to_local 卸成本地 → 本地计算 → from_local 包回 → 输出布局转换；下（路径 B）：没配 local_map —— 不包装、forward 原样跑，算子分发处理 DTensor；布局转换（如有声明）仍由边界负责。</figcaption>
+</figure>
+
+<!-- ================= 图 2 ================= -->
+<h2>② 实现链：从声明到运行</h2>
+<figure>
+<svg viewBox="0 0 920 430" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#0284c7"/>
+    </marker>
+  </defs>
+  <!-- 4 个步骤卡片 -->
+  <g>
+    <rect x="20" y="40" width="200" height="330" rx="12" fill="#ffffff" stroke="#0284c7" stroke-width="1.4"/>
+    <circle cx="60" cy="76" r="14" fill="#0284c7"/><text x="60" y="81" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="700">1</text>
+    <text x="120" y="81" fill="#0f172a" font-size="14" font-weight="700">声明</text>
+    <text x="40" y="110" fill="#64748b" font-size="11">protocols/sharding.py</text>
+    <text x="40" y="132" fill="#1e293b" font-size="11">ShardingConfig:</text>
+    <text x="40" y="150" fill="#047857" font-size="10.5">  in_dst_shardings</text>
+    <text x="40" y="166" fill="#047857" font-size="10.5">  out_src_shardings</text>
+    <text x="40" y="182" fill="#047857" font-size="10.5">  local_map:</text>
+    <text x="40" y="198" fill="#047857" font-size="10.5">    in_grad_placements</text>
+    <text x="40" y="228" fill="#64748b" font-size="10.5">挂在每个子模块 Config 上</text>
+    <text x="40" y="244" fill="#64748b" font-size="10.5">（decoder_sharding.py 等</text>
+    <text x="40" y="260" fill="#64748b" font-size="10.5">模型 helper 填充）</text>
+  </g>
+  <line x1="224" y1="205" x2="258" y2="205" stroke="#0284c7" stroke-width="2" marker-end="url(#arr2)"/>
+
+  <g>
+    <rect x="264" y="40" width="200" height="330" rx="12" fill="#ffffff" stroke="#0284c7" stroke-width="1.4"/>
+    <circle cx="304" cy="76" r="14" fill="#0284c7"/><text x="304" y="81" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="700">2</text>
+    <text x="364" y="81" fill="#0f172a" font-size="14" font-weight="700">施加</text>
+    <text x="284" y="110" fill="#64748b" font-size="11">protocols/module.py</text>
+    <text x="284" y="132" fill="#1e293b" font-size="11">Module.parallelize()</text>
+    <text x="284" y="152" fill="#047857" font-size="10.5">① _distribute_states:</text>
+    <text x="284" y="168" fill="#047857" font-size="10.5">   参数 → DTensor</text>
+    <text x="284" y="192" fill="#047857" font-size="10.5">② _maybe_wrap_with</text>
+    <text x="284" y="208" fill="#047857" font-size="10.5">   _local_region</text>
+    <text x="284" y="238" fill="#64748b" font-size="10.5">递归遍历全部子模块，</text>
+    <text x="284" y="254" fill="#64748b" font-size="10.5">无 sharding_config 的</text>
+    <text x="284" y="270" fill="#64748b" font-size="10.5">模块直接跳过</text>
+  </g>
+  <line x1="468" y1="205" x2="502" y2="205" stroke="#0284c7" stroke-width="2" marker-end="url(#arr2)"/>
+
+  <g>
+    <rect x="508" y="40" width="200" height="330" rx="12" fill="#ffffff" stroke="#db2777" stroke-width="1.4"/>
+    <circle cx="548" cy="76" r="14" fill="#db2777"/><text x="548" y="81" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="700">3</text>
+    <text x="608" y="81" fill="#0f172a" font-size="14" font-weight="700">包装</text>
+    <text x="528" y="110" fill="#64748b" font-size="11">_apply_local_map</text>
+    <text x="528" y="126" fill="#64748b" font-size="11">module.py:452-496</text>
+    <text x="528" y="152" fill="#1e293b" font-size="11">local_map(</text>
+    <text x="528" y="168" fill="#047857" font-size="10.5">  fn,                     ← 原 forward</text>
+    <text x="528" y="186" fill="#047857" font-size="10.5">  in_placements,</text>
+    <text x="528" y="202" fill="#047857" font-size="10.5">  out_placements,</text>
+    <text x="528" y="218" fill="#047857" font-size="10.5">  in_grad_placements,</text>
+    <text x="528" y="234" fill="#047857" font-size="10.5">  device_mesh)</text>
+    <text x="528" y="264" fill="#64748b" font-size="10.5">spmd_types 后端走</text>
+    <text x="528" y="280" fill="#64748b" font-size="10.5">spmd.local_map（按类型</text>
+    <text x="528" y="296" fill="#64748b" font-size="10.5">声明，不依赖 placements）</text>
+  </g>
+  <line x1="712" y1="205" x2="746" y2="205" stroke="#0284c7" stroke-width="2" marker-end="url(#arr2)"/>
+
+  <g>
+    <rect x="752" y="40" width="150" height="330" rx="12" fill="#ffffff" stroke="#059669" stroke-width="1.4"/>
+    <circle cx="782" cy="76" r="14" fill="#059669"/><text x="782" y="81" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="700">4</text>
+    <text x="842" y="81" fill="#0f172a" font-size="14" font-weight="700">运行</text>
+    <text x="770" y="110" fill="#64748b" font-size="11">forward_with_</text>
+    <text x="770" y="126" fill="#64748b" font-size="11">redistribution</text>
+    <text x="770" y="156" fill="#047857" font-size="10.5">输入重切分 →</text>
+    <text x="770" y="176" fill="#047857" font-size="10.5">本地区 fn →</text>
+    <text x="770" y="196" fill="#047857" font-size="10.5">输出重切分</text>
+    <text x="770" y="236" fill="#64748b" font-size="10.5">通信全部发生在</text>
+    <text x="770" y="252" fill="#64748b" font-size="10.5">本地区外：</text>
+    <text x="770" y="268" fill="#64748b" font-size="10.5">all-gather /</text>
+    <text x="770" y="284" fill="#64748b" font-size="10.5">reduce-scatter</text>
+  </g>
+
+  <!-- 底部流程条 -->
+  <rect x="20" y="392" width="882" height="24" rx="12" fill="#e0f2fe"/>
+  <text x="460" y="409" text-anchor="middle" fill="#0369a1" font-size="11.5">一次 parallelize() 就把「分布式」写进模型：之后每次 forward 自动走边界重切分 + 本地区执行</text>
+</svg>
+<figcaption><b>图 2 · 四步链路。</b> ① <span class="loc">sharding.py</span> 声明布局 → ② <span class="loc">module.py:248-294</span> 递归施加 → ③ <span class="loc">module.py:452-516</span> 用 local_map 包住 forward → ④ 运行期自动「输入重切分 → 本地区 → 输出重切分」。</figcaption>
+</figure>
+
+<!-- ================= 图 3 ================= -->
+<h2>③ 重点拆解：GQA 内注意力（TP × CP 叠加）</h2>
+<figure>
+<svg viewBox="0 0 920 470" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr3" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#d97706"/>
+    </marker>
+    <marker id="arr3g" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#059669"/>
+    </marker>
+  </defs>
+
+  <!-- mesh 图例 -->
+  <rect x="20" y="24" width="180" height="86" rx="10" fill="#f1f5f9" stroke="#e2e8f0"/>
+  <text x="36" y="46" fill="#64748b" font-size="11">mesh：TP(2) × CP(2) = 4 ranks</text>
+  <rect x="36" y="56" width="34" height="22" rx="3" fill="#e0f2fe" stroke="#0284c7"/>
+  <rect x="72" y="56" width="34" height="22" rx="3" fill="#e0f2fe" stroke="#0284c7"/>
+  <rect x="36" y="80" width="34" height="22" rx="3" fill="#e0f2fe" stroke="#0284c7"/>
+  <rect x="72" y="80" width="34" height="22" rx="3" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="110" y="72" fill="#0369a1" font-size="9.5">CP 轴（seq 切）</text>
+  <text x="110" y="94" fill="#0369a1" font-size="9.5">TP 轴（头切）</text>
+
+  <!-- q：左 -->
+  <rect x="20" y="140" width="200" height="120" rx="10" fill="#ffffff" stroke="#d97706" stroke-width="1.4"/>
+  <text x="120" y="162" text-anchor="middle" fill="#d97706" font-size="13" font-weight="700">q_BLNH</text>
+  <rect x="40" y="172" width="80" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <rect x="122" y="172" width="80" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <rect x="40" y="200" width="80" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <rect x="122" y="200" width="80" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="120" y="242" text-anchor="middle" fill="#64748b" font-size="10.5">CP Shard(1) · TP Shard(2)</text>
+  <text x="120" y="256" text-anchor="middle" fill="#64748b" font-size="10.5">保持切分进入本地区</text>
+
+  <!-- k/v：中左，all-gather -->
+  <rect x="260" y="140" width="200" height="120" rx="10" fill="#ffffff" stroke="#059669" stroke-width="1.4"/>
+  <text x="360" y="162" text-anchor="middle" fill="#059669" font-size="13" font-weight="700">k / v</text>
+  <rect x="280" y="172" width="40" height="26" rx="3" fill="#d1fae5" stroke="#059669"/>
+  <rect x="322" y="172" width="40" height="26" rx="3" fill="#d1fae5" stroke="#059669"/>
+  <rect x="280" y="200" width="40" height="26" rx="3" fill="#d1fae5" stroke="#059669"/>
+  <rect x="322" y="200" width="40" height="26" rx="3" fill="#d1fae5" stroke="#059669"/>
+  <text x="360" y="242" text-anchor="middle" fill="#047857" font-size="10.5">TP Shard(2) · CP Replicate</text>
+  <text x="360" y="256" text-anchor="middle" fill="#64748b" font-size="10.5">→ 边界对 CP 轴 all-gather</text>
+
+  <!-- all-gather 聚合箭头 -->
+  <path d="M 400 200 C 470 160, 520 160, 550 186" stroke="#059669" stroke-width="2" fill="none" marker-end="url(#arr3g)"/>
+  <path d="M 400 200 C 470 240, 520 240, 550 214" stroke="#059669" stroke-width="2" fill="none" marker-end="url(#arr3g)"/>
+  <text x="470" y="150" text-anchor="middle" fill="#059669" font-size="10.5" font-weight="700">all-gather（仅此处通信）</text>
+
+  <!-- kernel：中 -->
+  <rect x="560" y="140" width="180" height="120" rx="10" fill="#f0f9ff" stroke="#d97706" stroke-width="2"/>
+  <text x="650" y="168" text-anchor="middle" fill="#d97706" font-size="12.5" font-weight="700">Attention kernel</text>
+  <text x="650" y="188" text-anchor="middle" fill="#1e293b" font-size="11">FlexAttention / SDPA</text>
+  <text x="650" y="206" text-anchor="middle" fill="#64748b" font-size="10.5">本地张量上执行</text>
+  <text x="650" y="222" text-anchor="middle" fill="#64748b" font-size="10.5">kernel 看到全长 K/V</text>
+  <text x="650" y="238" text-anchor="middle" fill="#64748b" font-size="10.5">（匹配 BlockMask 的 kv 维）</text>
+  <text x="650" y="254" text-anchor="middle" fill="#64748b" font-size="10">输出回到 q 布局</text>
+
+  <!-- 箭头 -->
+  <line x1="224" y1="200" x2="256" y2="200" stroke="#d97706" stroke-width="2" marker-end="url(#arr3)"/>
+  <line x1="464" y1="200" x2="556" y2="200" stroke="#d97706" stroke-width="2" marker-end="url(#arr3)"/>
+
+  <!-- 反向条 -->
+  <rect x="20" y="290" width="720" height="56" rx="10" fill="#f1f5f9" stroke="#db2777"/>
+  <text x="40" y="314" fill="#db2777" font-size="12" font-weight="700">反向：</text>
+  <text x="104" y="314" fill="#1e293b" font-size="11.5">q 梯度保持 CP Shard(1) 自然回流</text>
+  <text x="40" y="334" fill="#1e293b" font-size="11.5">k/v 本地梯度以 CP 轴 Partial 累积 → 出边界时由 DTensor 归约（in_grad_placements 声明）</text>
+
+  <!-- 代码卡 -->
+  <rect x="20" y="366" width="880" height="88" rx="10" fill="#f1f5f9" stroke="#e2e8f0"/>
+  <text x="40" y="390" fill="#047857" font-family="Consolas, monospace" font-size="11.5">set_gqa_inner_attention_local_map()  ← decoder_sharding.py:190-229</text>
+  <text x="40" y="410" fill="#047857" font-family="Consolas, monospace" font-size="11.5">  in_dst = { q: tp=S(2),        k: tp=S(2)+cp=R,   v: tp=S(2)+cp=R }</text>
+  <text x="40" y="430" fill="#047857" font-family="Consolas, monospace" font-size="11.5">  out_src = q 布局； in_grad_placements = (q, kv_grad, kv_grad)，kv_grad: tp=S(2)+cp=P</text>
+  <text x="40" y="446" fill="#64748b" font-size="10.5">调用方：llama3:67 · qwen3:79 · deepseek_v3:121 · gpt_oss:118 · kimi_k2_7:135 · muse_glimmer:221,323 · qwen3_5:237,272</text>
+</svg>
+<figcaption><b>图 3 · GQA 内注意力。</b> q 按头（TP）与序列（CP）双轴切分进入本地区；k/v 在 CP 轴被边界 all-gather 成全长（kernel 需要完整 KV 做注意力），head 维仍 TP 切分。一套 placements 同时表达 TP + CP 两层并行，通信点被压缩到唯一一处边界。</figcaption>
+</figure>
+
+<!-- ================= 图 4 ================= -->
+<h2>④ 使用全景：local_map 在仓库里覆盖了哪些地方</h2>
+<figure>
+<svg viewBox="0 0 920 560" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr4" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+  <!-- 中心 -->
+  <ellipse cx="460" cy="280" rx="130" ry="52" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+  <text x="460" y="272" text-anchor="middle" fill="#0284c7" font-size="16" font-weight="700">local_map</text>
+  <text x="460" y="292" text-anchor="middle" fill="#0369a1" font-size="10.5">torch.distributed.tensor.experimental</text>
+  <text x="460" y="306" text-anchor="middle" fill="#0369a1" font-size="10.5">+ spmd.local_map（双后端）</text>
+
+  <!-- 分支 1：框架机制 -->
+  <g>
+    <rect x="30" y="40" width="240" height="104" rx="10" fill="#ffffff" stroke="#0284c7" stroke-width="1.3"/>
+    <text x="48" y="64" fill="#0284c7" font-size="12.5" font-weight="700">框架机制（驱动一切）</text>
+    <text x="48" y="84" fill="#1e293b" font-size="11">protocols/sharding.py:39-119</text>
+    <text x="48" y="100" fill="#1e293b" font-size="11">protocols/module.py:413-516</text>
+    <text x="48" y="120" fill="#64748b" font-size="10.5">ShardingConfig.local_map → 统一施加</text>
+    <text x="48" y="136" fill="#64748b" font-size="10.5">DTensor 与 spmd_types 双后端</text>
+  </g>
+  <line x1="270" y1="150" x2="400" y2="252" stroke="#64748b" stroke-width="1.4" marker-end="url(#arr4)"/>
+
+  <!-- 分支 2：注意力 -->
+  <g>
+    <rect x="30" y="176" width="240" height="104" rx="10" fill="#ffffff" stroke="#d97706" stroke-width="1.3"/>
+    <text x="48" y="200" fill="#d97706" font-size="12.5" font-weight="700">GQA 内注意力（TP×CP）</text>
+    <text x="48" y="220" fill="#1e293b" font-size="11">decoder_sharding.py:190-229</text>
+    <text x="48" y="236" fill="#64748b" font-size="10.5">q/k/v 头切 → 本地 kernel</text>
+    <text x="48" y="252" fill="#64748b" font-size="10.5">k/v CP 轴 all-gather</text>
+    <text x="48" y="268" fill="#64748b" font-size="10.5">7 个解码器模型共用</text>
+  </g>
+  <line x1="270" y1="240" x2="400" y2="270" stroke="#64748b" stroke-width="1.4" marker-end="url(#arr4)"/>
+
+  <!-- 分支 3：MoE -->
+  <g>
+    <rect x="30" y="316" width="240" height="104" rx="10" fill="#ffffff" stroke="#db2777" stroke-width="1.3"/>
+    <text x="48" y="340" fill="#db2777" font-size="12.5" font-weight="700">MoE RoutedExperts（EP）</text>
+    <text x="48" y="360" fill="#1e293b" font-size="11">moe_sharding.py:200-264</text>
+    <text x="48" y="376" fill="#64748b" font-size="10.5">token_dispatcher + GroupedExperts</text>
+    <text x="48" y="392" fill="#64748b" font-size="10.5">专家按 E 维切分，本地张量计算</text>
+    <text x="48" y="408" fill="#64748b" font-size="10.5">deepseek_v3 / qwen3 / kimi_k2_7</text>
+  </g>
+  <line x1="270" y1="370" x2="400" y2="300" stroke="#64748b" stroke-width="1.4" marker-end="url(#arr4)"/>
+
+  <!-- 分支 4：损失/算子/量化 -->
+  <g>
+    <rect x="650" y="40" width="240" height="128" rx="10" fill="#ffffff" stroke="#059669" stroke-width="1.3"/>
+    <text x="668" y="64" fill="#059669" font-size="12.5" font-weight="700">损失 / 融合算子 / 量化</text>
+    <text x="668" y="84" fill="#1e293b" font-size="11">loss.py:224-280 词表并行 CE</text>
+    <text x="668" y="100" fill="#1e293b" font-size="11">fused_swiglu.py:399-413</text>
+    <text x="668" y="116" fill="#1e293b" font-size="11">nvfp4.py:78-152</text>
+    <text x="668" y="136" fill="#64748b" font-size="10.5">本地 flatten / 本地 kernel /</text>
+    <text x="668" y="152" fill="#64748b" font-size="10.5">不透明算子围成本地区</text>
+  </g>
+  <line x1="650" y1="120" x2="560" y2="250" stroke="#64748b" stroke-width="1.4" marker-end="url(#arr4)"/>
+
+  <!-- 分支 5：视觉/多模态 -->
+  <g>
+    <rect x="650" y="200" width="240" height="128" rx="10" fill="#ffffff" stroke="#7e22ce" stroke-width="1.3"/>
+    <text x="668" y="224" fill="#7e22ce" font-size="12.5" font-weight="700">视觉 / 多模态</text>
+    <text x="668" y="244" fill="#1e293b" font-size="11">qwen3_5/model.py:269-294 Conv1d</text>
+    <text x="668" y="260" fill="#1e293b" font-size="11">qwen3_5/vision_encoder.py:75,383</text>
+    <text x="668" y="276" fill="#1e293b" font-size="11">muse_glimmer:84-129,329-345</text>
+    <text x="668" y="292" fill="#1e293b" font-size="11">flux/sharding.py:39-70</text>
+    <text x="668" y="312" fill="#64748b" font-size="10.5">interpolate / grid_sample /</text>
+    <text x="668" y="328" fill="#64748b" font-size="10.5">高级索引 → 本地执行</text>
+  </g>
+  <line x1="650" y1="260" x2="560" y2="280" stroke="#64748b" stroke-width="1.4" marker-end="url(#arr4)"/>
+
+  <!-- 分支 6：CP 协作 -->
+  <g>
+    <rect x="650" y="360" width="240" height="104" rx="10" fill="#ffffff" stroke="#d97706" stroke-width="1.3"/>
+    <text x="668" y="384" fill="#d97706" font-size="12.5" font-weight="700">CP 协作（顺序敏感）</text>
+    <text x="668" y="404" fill="#1e293b" font-size="11">context_parallel/api.py:35-51</text>
+    <text x="668" y="420" fill="#64748b" font-size="10.5">apply_cp_to_forward 必须在</text>
+    <text x="668" y="436" fill="#64748b" font-size="10.5">parallelize() 之前调用，</text>
+    <text x="668" y="452" fill="#64748b" font-size="10.5">CP 包装才被 local_map 捕获</text>
+  </g>
+  <line x1="650" y1="400" x2="560" y2="306" stroke="#64748b" stroke-width="1.4" marker-end="url(#arr4)"/>
+
+  <!-- 分支 7：其他 -->
+  <g>
+    <rect x="650" y="486" width="240" height="56" rx="10" fill="#ffffff" stroke="#4338ca" stroke-width="1.3"/>
+    <text x="668" y="508" fill="#4338ca" font-size="12" font-weight="700">其他</text>
+    <text x="668" y="528" fill="#1e293b" font-size="11">rope.py:348 · helion_rope:843 · transformers 后端</text>
+  </g>
+  <line x1="650" y1="500" x2="560" y2="320" stroke="#64748b" stroke-width="1.4" marker-end="url(#arr4)"/>
+
+  <!-- 底部统计 -->
+  <rect x="30" y="486" width="240" height="56" rx="10" fill="#f1f5f9" stroke="#e2e8f0"/>
+  <text x="48" y="508" fill="#1e293b" font-size="11.5">全仓库 220+ 处提及 local_map，</text>
+  <text x="48" y="526" fill="#1e293b" font-size="11.5">覆盖 7 个解码器 + 3 个多模态 + MoE/损失/算子</text>
+</svg>
+<figcaption><b>图 4 · 使用全景。</b> 框架机制（图 2）是唯一施加点，其余全部是「声明者」——通过往子模块 Config 上填 <code>local_map</code> 字段触发。按用途分六类：注意力、MoE、损失/算子、视觉、CP 协作、其他。</figcaption>
+</figure>
+
+<!-- ================= 图 5 ================= -->
+<h2>⑤ MoE 使用点拆解：RoutedExperts 本地区</h2>
+<figure>
+<svg viewBox="0 0 920 380" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr5" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#db2777"/>
+    </marker>
+  </defs>
+  <!-- 输入 -->
+  <rect x="20" y="110" width="140" height="150" rx="10" fill="#ffffff" stroke="#059669" stroke-width="1.4"/>
+  <text x="90" y="136" text-anchor="middle" fill="#059669" font-size="12.5" font-weight="700">x_BLD</text>
+  <text x="90" y="158" text-anchor="middle" fill="#64748b" font-size="10.5">SP: Shard(1)</text>
+  <text x="90" y="176" text-anchor="middle" fill="#64748b" font-size="10.5">+ topk 路由元数据</text>
+  <text x="90" y="240" text-anchor="middle" fill="#64748b" font-size="10.5">MoE 边界：</text>
+  <text x="90" y="256" text-anchor="middle" fill="#64748b" font-size="10.5">重切分到专家布局</text>
+
+  <!-- local_map 区 -->
+  <rect x="230" y="40" width="460" height="290" rx="14" fill="#f0f9ff" stroke="#db2777" stroke-width="2.4"/>
+  <text x="460" y="68" text-anchor="middle" fill="#db2777" font-size="14" font-weight="700">RoutedExperts · local_map 本地区（moe_sharding.py:234-262）</text>
+
+  <!-- token dispatcher -->
+  <rect x="260" y="92" width="180" height="90" rx="8" fill="#fce7f3" stroke="#db2777"/>
+  <text x="350" y="116" text-anchor="middle" fill="#be185d" font-size="12" font-weight="700">token_dispatcher</text>
+  <text x="350" y="138" text-anchor="middle" fill="#1e293b" font-size="10.5">路由：token → 专家</text>
+  <text x="350" y="154" text-anchor="middle" fill="#64748b" font-size="10">scatter / gather</text>
+  <text x="350" y="170" text-anchor="middle" fill="#64748b" font-size="10">EP 下 all-to-all 在边界</text>
+
+  <!-- GroupedExperts -->
+  <rect x="470" y="92" width="190" height="90" rx="8" fill="#fce7f3" stroke="#db2777"/>
+  <text x="565" y="116" text-anchor="middle" fill="#be185d" font-size="12" font-weight="700">inner_experts</text>
+  <text x="565" y="138" text-anchor="middle" fill="#1e293b" font-size="10.5">GroupedExperts 批量前向</text>
+  <text x="565" y="154" text-anchor="middle" fill="#64748b" font-size="10">专家权重 E 维切分</text>
+  <text x="565" y="170" text-anchor="middle" fill="#64748b" font-size="10">dense: TP 切 · sparse: EP 切</text>
+
+  <line x1="444" y1="137" x2="466" y2="137" stroke="#db2777" stroke-width="2" marker-end="url(#arr5)"/>
+
+  <!-- 输出 -->
+  <rect x="270" y="212" width="380" height="56" rx="8" fill="#e0f2fe" stroke="#db2777"/>
+  <text x="460" y="236" text-anchor="middle" fill="#0369a1" font-size="11">输出 Partial / SP Shard(1) → 出边界重切分回主布局</text>
+  <text x="460" y="254" text-anchor="middle" fill="#64748b" font-size="10.5">out_src = experts_output_layout（EP: SP 布局 / dense: Partial）</text>
+
+  <!-- 梯度 -->
+  <rect x="270" y="280" width="380" height="36" rx="8" fill="#f1f5f9" stroke="#db2777" stroke-dasharray="5,3"/>
+  <text x="460" y="303" text-anchor="middle" fill="#db2777" font-size="10.5">in_grad_placements：x/topk/ids 按输入布局回流 · 元数据张量也需 placement</text>
+
+  <line x1="164" y1="185" x2="226" y2="185" stroke="#db2777" stroke-width="2" marker-end="url(#arr5)"/>
+  <rect x="694" y="110" width="206" height="120" rx="10" fill="#ffffff" stroke="#db2777" stroke-width="1.3"/>
+  <text x="797" y="136" text-anchor="middle" fill="#be185d" font-size="12" font-weight="700">为什么这里要 local_map</text>
+  <text x="710" y="158" fill="#1e293b" font-size="10.5">· dispatcher 用 scatter/高级索引，</text>
+  <text x="710" y="174" fill="#1e293b" font-size="10.5">  DTensor 不支持</text>
+  <text x="710" y="192" fill="#1e293b" font-size="10.5">· 专家 kernel 逐 token 形状不一，</text>
+  <text x="710" y="208" fill="#1e293b" font-size="10.5">  本地张量 + compile 更友好</text>
+  <text x="710" y="224" fill="#1e293b" font-size="10.5">· EP all-to-all 收敛到边界一次</text>
+</svg>
+<figcaption><b>图 5 · MoE 使用点。</b> 激活在 MoE 边界重切分后，整个 <code>token_dispatcher + inner_experts</code> 被 local_map 包成本地区：路由的 scatter/gather、逐 token 变形的专家 kernel 都在本地张量上跑，EP 的 all-to-all 只发生在边界（moe_sharding.py:234-262）。</figcaption>
+</figure>
+
+<!-- ================= 注意事项 ================= -->
+<h2>⑥ 使用注意事项（踩坑点）</h2>
+<div class="warn">
+  <b>① 顺序约束：</b>CP 包装（<code>apply_cp_to_forward</code>）必须在 <code>parallelize()</code> <b>之前</b>调用；否则 CP 逻辑跑在 local_map 边界外，拿到的是 DTensor 而非本地张量，直接出错（<span class="loc">context_parallel/api.py:41-42</span>、<span class="loc">llama3/parallelize.py:47-54</span> 注释）。
+</div>
+<div class="warn">
+  <b>② 声明必须成对：</b>设了 <code>local_map</code> 就必须同时给全 <code>in_dst_shardings</code>（覆盖 forward 全部位置参数，缺一个就抛 AssertionError）和 <code>out_src_shardings</code>（<span class="loc">module.py:435-445</span>）。
+</div>
+<div class="warn">
+  <b>③ 非张量参数用 None 占位：</b>在 <code>in_grad_placements</code> 里对非张量参数填 <code>None</code>（原样透传、mesh 解析时过滤，<span class="loc">module.py:469-471</span>）；MoE 的路由元数据虽是元数据但仍是 DTensor 输入，也必须给 placement（<span class="loc">moe_sharding.py:256-259</span>）。
+</div>
+<div class="warn">
+  <b>④ 双后端别混用：</b>DTensor 后端用 <code>torch.distributed.tensor.experimental.local_map</code>（placement 元组），spmd_types 后端用 <code>spmd.local_map</code>（in/out_types 字典），由 <code>parallel_dims.spmd_backend</code> 选择（<span class="loc">module.py:448-450</span>）。
+</div>
+
+<!-- ================= 图 6 ================= -->
+<h2>⑦ 深挖 Q1：`_redistribute_inputs` 用的是 `DTensor.redistribute`，怎么配合 local_map？</h2>
+<figure>
+<svg viewBox="0 0 920 460" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr6" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#0284c7"/>
+    </marker>
+    <marker id="arr6b" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#db2777"/>
+    </marker>
+  </defs>
+
+  <!-- Zone A：上游边界 -->
+  <rect x="20" y="40" width="270" height="230" rx="12" fill="#d1fae5" stroke="#059669" stroke-width="1.4"/>
+  <text x="155" y="66" text-anchor="middle" fill="#059669" font-size="13" font-weight="700">① 模块边界 · _redistribute_inputs</text>
+  <text x="155" y="84" text-anchor="middle" fill="#64748b" font-size="10.5">module.py:618-624 · 布局不匹配才搬</text>
+  <rect x="36" y="98" width="238" height="38" rx="8" fill="#f1f5f9" stroke="#059669"/>
+  <text x="155" y="122" text-anchor="middle" fill="#1e293b" font-size="11.5">输入 DTensor（旧布局 in_src）</text>
+  <rect x="36" y="168" width="238" height="52" rx="8" fill="#f1f5f9" stroke="#059669"/>
+  <text x="155" y="190" text-anchor="middle" fill="#047857" font-size="11" font-weight="700">redistribute(placements=in_dst,</text>
+  <text x="155" y="206" text-anchor="middle" fill="#047857" font-size="11" font-weight="700">async_op=True)</text>
+  <text x="155" y="236" text-anchor="middle" fill="#64748b" font-size="10.5">→ 返回 AsyncCollectiveTensor（异步，不阻塞）</text>
+
+  <!-- Zone B：local_map 内部 -->
+  <rect x="310" y="20" width="300" height="270" rx="12" fill="#f0f9ff" stroke="#db2777" stroke-width="2"/>
+  <text x="460" y="46" text-anchor="middle" fill="#db2777" font-size="13" font-weight="700">② local_map 内部（_func_map.py）</text>
+  <text x="460" y="64" text-anchor="middle" fill="#64748b" font-size="10.5">不主动重切分（redistribute_inputs=False）</text>
+  <rect x="326" y="78" width="268" height="34" rx="8" fill="#f1f5f9" stroke="#db2777"/>
+  <text x="460" y="99" text-anchor="middle" fill="#1e293b" font-size="11">in_placements 检查（= in_dst 已对齐）</text>
+  <rect x="326" y="126" width="268" height="42" rx="8" fill="#fce7f3" stroke="#db2777"/>
+  <text x="460" y="144" text-anchor="middle" fill="#be185d" font-size="11">wait() 消费异步通信（:228-229）</text>
+  <text x="460" y="160" text-anchor="middle" fill="#be185d" font-size="11">→ to_local(grad_placements)</text>
+  <rect x="326" y="182" width="268" height="42" rx="8" fill="#fce7f3" stroke="#db2777"/>
+  <text x="460" y="200" text-anchor="middle" fill="#be185d" font-size="11">func(*local_args) 本地计算</text>
+  <text x="460" y="216" text-anchor="middle" fill="#64748b" font-size="10">零通信 · 无 DTensor 分发</text>
+  <rect x="326" y="238" width="268" height="36" rx="8" fill="#f1f5f9" stroke="#db2777"/>
+  <text x="460" y="260" text-anchor="middle" fill="#1e293b" font-size="11">from_local(out_src) 包回 DTensor</text>
+  <line x1="460" y1="112" x2="460" y2="124" stroke="#db2777" stroke-width="1.6" marker-end="url(#arr6b)"/>
+  <line x1="460" y1="168" x2="460" y2="180" stroke="#db2777" stroke-width="1.6" marker-end="url(#arr6b)"/>
+  <line x1="460" y1="224" x2="460" y2="236" stroke="#db2777" stroke-width="1.6" marker-end="url(#arr6b)"/>
+
+  <!-- Zone C：下游边界 -->
+  <rect x="640" y="40" width="260" height="230" rx="12" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.4"/>
+  <text x="770" y="66" text-anchor="middle" fill="#0284c7" font-size="13" font-weight="700">③ 模块边界 · _redistribute_outputs</text>
+  <text x="770" y="84" text-anchor="middle" fill="#64748b" font-size="10.5">module.py:700-705</text>
+  <rect x="656" y="98" width="228" height="38" rx="8" fill="#f1f5f9" stroke="#0284c7"/>
+  <text x="770" y="122" text-anchor="middle" fill="#1e293b" font-size="11.5">DTensor(out_src) 输出</text>
+  <rect x="656" y="168" width="228" height="52" rx="8" fill="#f1f5f9" stroke="#0284c7"/>
+  <text x="770" y="190" text-anchor="middle" fill="#0369a1" font-size="11" font-weight="700">redistribute(placements=out_dst,</text>
+  <text x="770" y="206" text-anchor="middle" fill="#0369a1" font-size="11" font-weight="700">async_op=True)</text>
+  <text x="770" y="236" text-anchor="middle" fill="#64748b" font-size="10.5">reduce-scatter / all-reduce</text>
+  <text x="770" y="254" text-anchor="middle" fill="#64748b" font-size="10.5">→ 输出 DTensor（下一模块输入）</text>
+
+  <!-- 跨区箭头 -->
+  <line x1="258" y1="194" x2="324" y2="147" stroke="#059669" stroke-width="2" marker-end="url(#arr6)"/>
+  <line x1="594" y1="256" x2="654" y2="117" stroke="#0284c7" stroke-width="2" marker-end="url(#arr6)"/>
+
+  <!-- 底部说明条 -->
+  <rect x="20" y="300" width="880" height="140" rx="10" fill="#f1f5f9" stroke="#059669" stroke-width="1.2"/>
+  <text x="40" y="326" fill="#059669" font-size="13" font-weight="700">分工结论：搬布局在外、卸装在内 —— 通信只发生在 ①③ 两处模块边界，本地区（②）零通信</text>
+  <text x="40" y="352" fill="#1e293b" font-size="12">· <b>async_op=True</b>：①③ 的 redistribute 异步发起，返回 AsyncCollectiveTensor；② 的 to_local() 后调 .wait() 才真正等待</text>
+  <text x="40" y="374" fill="#1e293b" font-size="12">  → 通信与相邻模块的计算重叠，进本地区前才消费（_func_map.py:228-229）</text>
+  <text x="40" y="398" fill="#1e293b" font-size="12">· torch 的 local_map 里 in_placements 不匹配且 redistribute_inputs=False 会抛 ValueError（_func_map.py:203-214）</text>
+  <text x="40" y="420" fill="#1e293b" font-size="12">· torchtitan 不传 redistribute_inputs：重切分已由 _redistribute_inputs 完成 → local_map 的检查是「兜底双重保险」</text>
+  <text x="40" y="436" fill="#64748b" font-size="11">注：② 内 in_placements 传入的正是 in_dst 布局（module.py:492），所以检查必然通过</text>
+</svg>
+<figcaption><b>图 6 · 分工时序。</b> 通信发起在模块边界（async），等待消费在 local_map 入口（wait），本地区零通信 —— 这就是「redistribute 在外、local_map 在内」的配合方式。</figcaption>
+</figure>
+
+<!-- ================= Q2 ================= -->
+<h2>⑧ 深挖 Q2：逐行详解 `_redistribute_inputs` / `_redistribute_outputs`</h2>
+
+<h3>`_redistribute_inputs`（module.py:518-629）</h3>
+<table>
+  <tr><th>行</th><th>代码</th><th>含义</th></tr>
+  <tr><td>535-539</td><td><code>in_dst is None and in_src is None</code> → 原样返回</td><td>没声明输入重切分就什么都不做</td></tr>
+  <tr><td>541-545</td><td><code>new_kwargs = dict(zip(pos_arg_names, args)) + kwargs</code></td><td>把<b>位置参数按参数名</b>并入 kwargs，统一按键处理（forward 的位置参数也有名字）</td></tr>
+  <tr><td>547-548</td><td><code>in_dst_shardings = cfg.in_dst_shardings or {}</code></td><td><code>None</code> 归一成空 dict，后面 <code>.get()</code> 安全</td></tr>
+  <tr><td>550-552</td><td><code>if not isinstance(value, torch.Tensor): continue</code></td><td><b>非 Tensor 参数（BlockMask、bool 等）直接跳过</b>——只有张量需要重切分</td></tr>
+  <tr><td>553-554</td><td><code>src = in_src.get(name)</code>、<code>dst = in_dst.get(name)</code></td><td>查这个参数名声明的 src/dst 布局</td></tr>
+  <tr><td>556-587</td><td>spmd_types 后端分支</td><td>要求显式 <code>in_src</code>（否则报错）；typecheck 开启时 <code>assert_type</code>；dst 为 None 保持原值；否则 <code>spmd_redistribute_per_axis</code></td></tr>
+  <tr><td>589-591</td><td><code>mesh = resolve_shared_mesh([src, dst])</code>；None → continue</td><td>解析涉及轴的 mesh；<b>轴不在 mesh 上就跳过</b>（如声明了 CP 轴但没开 CP）</td></tr>
+  <tr><td>593-597</td><td><code>not DTensor and spmd_backend=="full_dtensor"</code> → raise</td><td>full_dtensor 模式要求全链路 DTensor，普通张量直接报错</td></tr>
+  <tr><td>599-606</td><td><code>DTensor.from_local(value, mesh, layout, run_check=False)</code></td><td><b>普通张量 → 包成 DTensor</b>（声明「当前就是这个切分」）；<code>run_check=False</code> 跳过一致性校验</td></tr>
+  <tr><td>608-617</td><td>校验 <code>value.placements == in_src</code>，不一致 → ValueError</td><td>已是 DTensor 的输入必须与 <code>in_src</code> 声明吻合，防止声明与事实不符</td></tr>
+  <tr><td>619-624</td><td><code>value.redistribute(placements=desired, async_op=True)</code></td><td>与 <code>in_dst</code> 不符才搬；<b>异步</b>发起通信，不阻塞</td></tr>
+  <tr><td>626-629</td><td>写回、按位置参数名还原 args 返回</td><td>保持 forward 调用签名不变</td></tr>
+</table>
+
+<h3>`_redistribute_outputs`（module.py:631-707）</h3>
+<table>
+  <tr><th>行</th><th>代码</th><th>含义</th></tr>
+  <tr><td>643-644</td><td><code>out_src</code>、<code>out_dst</code></td><td>输出侧一对布局</td></tr>
+  <tr><td>645-680</td><td>spmd_types 分支</td><td>非 Tensor 直接返回；要求显式 <code>out_src</code>；<b>只支持单 Tensor 输出</b>（tuple 报错）；typecheck 核对；有 <code>out_dst</code> 才重切分</td></tr>
+  <tr><td>682-683</td><td><code>isinstance(out_src, tuple)</code> → 原样返回</td><td>TODO：多输出（Flux、MoE）的嵌套重切分还没支持</td></tr>
+  <tr><td>685-687</td><td><code>mesh = resolve_shared_mesh([out_src, out_dst])</code>；None → return</td><td>同输入侧</td></tr>
+  <tr><td>689-698</td><td>校验 <code>outputs.placements == out_src</code></td><td>输出必须符合本地区 <code>from_local</code> 包回的布局（即 <code>out_src_shardings</code>）</td></tr>
+  <tr><td>700-705</td><td><code>outputs.redistribute(placements=desired, async_op=True)</code></td><td>搬到 <code>out_dst</code>（如 SP 下 reduce-scatter 到 <code>Shard(1)</code>），<b>异步</b></td></tr>
+</table>
+<div class="box">
+<p><b>语义总结</b>：<code>src</code> = 「当前/声称是什么布局」，<code>dst</code> = 「要变成什么布局」。输入侧只搬到本地区需要的 <code>in_dst</code>（这正是 local_map 的 <code>in_placements</code>）；输出侧 local_map 已按 <code>out_src</code> 包回 DTensor，再搬到 <code>out_dst</code> 交给下一个模块。src 侧还承担「声明事实」职责——普通张量靠 <code>from_local</code> 标注、DTensor 靠校验确认。</p>
+</div>
+
+<!-- ================= 图 7 ================= -->
+<h2>⑨ 深挖 Q3：local_map 怎么实现的？最终调的是 PyTorch 接口吗？</h2>
+<p><b>是。</b> torchtitan 自己没有实现 local_map —— 它只是把参数包装好，最终调用 PyTorch 的 <code>torch.distributed.tensor.experimental.local_map</code>（<span class="loc">module.py:20</span> import、<span class="loc">module.py:490</span> 调用）。PyTorch 2.12.1 的实现就在 <span class="loc">torch/distributed/tensor/experimental/_func_map.py</span>：</p>
+<figure>
+<svg viewBox="0 0 920 600" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr7" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#0284c7"/>
+    </marker>
+    <marker id="arr7p" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#db2777"/>
+    </marker>
+  </defs>
+
+  <!-- 右侧：torchtitan 填参说明 -->
+  <rect x="640" y="24" width="260" height="150" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.3"/>
+  <text x="770" y="50" text-anchor="middle" fill="#0284c7" font-size="12.5" font-weight="700">torchtitan 只负责填参数</text>
+  <text x="656" y="74" fill="#1e293b" font-size="11">module.py:479-495（_apply_local_map）</text>
+  <text x="656" y="96" fill="#047857" font-size="10.5">· in_dst_shardings → in_placements</text>
+  <text x="656" y="114" fill="#047857" font-size="10.5">· out_src_shardings → out_placements</text>
+  <text x="656" y="132" fill="#047857" font-size="10.5">· LocalMapConfig.in_grad_placements</text>
+  <text x="656" y="148" fill="#047857" font-size="10.5">  → in_grad_placements</text>
+  <text x="656" y="166" fill="#64748b" font-size="10">· 不传 redistribute_inputs</text>
+
+  <!-- 主流程 -->
+  <rect x="330" y="24" width="260" height="36" rx="8" fill="#ffffff" stroke="#0284c7"/>
+  <text x="460" y="47" text-anchor="middle" fill="#1e293b" font-size="12">输入：DTensor + 普通张量混合</text>
+
+  <rect x="330" y="80" width="260" height="36" rx="8" fill="#ffffff" stroke="#0284c7"/>
+  <text x="460" y="103" text-anchor="middle" fill="#1e293b" font-size="12">pytree 展开输入（:170-177）</text>
+
+  <rect x="330" y="136" width="260" height="40" rx="8" fill="#ffffff" stroke="#d97706"/>
+  <text x="460" y="161" text-anchor="middle" fill="#d97706" font-size="12" font-weight="700">对每个输入：是 DTensor？</text>
+
+  <!-- 左分支：非张量 -->
+  <rect x="40" y="150" width="220" height="36" rx="8" fill="#ffffff" stroke="#64748b"/>
+  <text x="150" y="173" text-anchor="middle" fill="#1e293b" font-size="11.5">非 Tensor 输入</text>
+  <rect x="40" y="206" width="220" height="58" rx="8" fill="#f1f5f9" stroke="#64748b"/>
+  <text x="150" y="228" text-anchor="middle" fill="#1e293b" font-size="11">原样透传（:234-240）</text>
+  <text x="150" y="246" text-anchor="middle" fill="#64748b" font-size="10">in_placements 对应位必须 None</text>
+  <line x1="330" y1="156" x2="264" y2="166" stroke="#64748b" stroke-width="1.6" marker-end="url(#arr7)"/>
+  <line x1="264" y1="186" x2="264" y2="204" stroke="#64748b" stroke-width="1.6" marker-end="url(#arr7)"/>
+
+  <!-- 右分支：DTensor -->
+  <rect x="330" y="200" width="260" height="66" rx="8" fill="#fce7f3" stroke="#db2777"/>
+  <text x="460" y="222" text-anchor="middle" fill="#be185d" font-size="11.5" font-weight="700">in_placements 检查（:193-214）</text>
+  <text x="460" y="240" text-anchor="middle" fill="#1e293b" font-size="10.5">不匹配：redistribute_inputs=False</text>
+  <text x="460" y="256" text-anchor="middle" fill="#1e293b" font-size="10.5">→ ValueError；True → redistribute()</text>
+  <line x1="460" y1="176" x2="460" y2="198" stroke="#db2777" stroke-width="1.6" marker-end="url(#arr7p)"/>
+
+  <rect x="330" y="286" width="260" height="46" rx="8" fill="#fce7f3" stroke="#db2777"/>
+  <text x="460" y="306" text-anchor="middle" fill="#be185d" font-size="11.5" font-weight="700">to_local(grad_placements)（:216-226）</text>
+  <text x="460" y="323" text-anchor="middle" fill="#64748b" font-size="10">grad_placements = torchtitan 的 in_grad_placements</text>
+  <line x1="460" y1="266" x2="460" y2="284" stroke="#db2777" stroke-width="1.6" marker-end="url(#arr7p)"/>
+
+  <rect x="330" y="352" width="260" height="40" rx="8" fill="#fce7f3" stroke="#db2777"/>
+  <text x="460" y="376" text-anchor="middle" fill="#be185d" font-size="11.5" font-weight="700">AsyncCollectiveTensor → wait()（:228-229）</text>
+  <line x1="460" y1="332" x2="460" y2="350" stroke="#db2777" stroke-width="1.6" marker-end="url(#arr7p)"/>
+
+  <!-- 合并 -->
+  <rect x="330" y="412" width="260" height="44" rx="8" fill="#ffffff" stroke="#059669"/>
+  <text x="460" y="439" text-anchor="middle" fill="#047857" font-size="12" font-weight="700">func(*local_args) 本地计算（:247）</text>
+  <line x1="264" y1="264" x2="264" y2="434" stroke="#64748b" stroke-width="1.6"/>
+  <line x1="264" y1="434" x2="328" y2="434" stroke="#64748b" stroke-width="1.6" marker-end="url(#arr7)"/>
+  <line x1="460" y1="392" x2="460" y2="410" stroke="#059669" stroke-width="1.6" marker-end="url(#arr7)"/>
+
+  <!-- 输出分支 -->
+  <rect x="330" y="476" width="260" height="40" rx="8" fill="#ffffff" stroke="#d97706"/>
+  <text x="460" y="500" text-anchor="middle" fill="#d97706" font-size="12" font-weight="700">有 DTensor 输入？（:249）</text>
+  <line x1="460" y1="456" x2="460" y2="474" stroke="#059669" stroke-width="1.6" marker-end="url(#arr7)"/>
+
+  <rect x="600" y="540" width="300" height="44" rx="8" fill="#d1fae5" stroke="#059669"/>
+  <text x="750" y="558" text-anchor="middle" fill="#047857" font-size="11.5" font-weight="700">是：DTensor.from_local(out, mesh,</text>
+  <text x="750" y="574" text-anchor="middle" fill="#047857" font-size="11.5" font-weight="700">out_placements, run_check=False)（:270-273）</text>
+  <rect x="80" y="540" width="220" height="44" rx="8" fill="#f1f5f9" stroke="#64748b"/>
+  <text x="190" y="565" text-anchor="middle" fill="#1e293b" font-size="11.5">否：原样返回普通输出（:285）</text>
+  <line x1="460" y1="516" x2="460" y2="538" stroke="#059669" stroke-width="1.6"/>
+  <line x1="460" y1="538" x2="598" y2="562" stroke="#059669" stroke-width="1.6" marker-end="url(#arr7)"/>
+  <line x1="460" y1="538" x2="302" y2="562" stroke="#64748b" stroke-width="1.6" marker-end="url(#arr7)"/>
+
+  <!-- 底部：底层三原语 -->
+  <rect x="20" y="552" width="620" height="32" rx="8" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="330" y="573" text-anchor="middle" fill="#0369a1" font-size="11.5">底层三原语（torch/distributed/tensor/_api.py）：to_local :576 · from_local :450 · redistribute :613</text>
+</svg>
+<figcaption><b>图 7 · PyTorch local_map 内部结构。</b> 本质 = <code>to_local</code>（进边界）→ 用户函数（本地算）→ <code>from_local</code>（出边界）；<code>in_grad_placements</code> 就是 <code>to_local(grad_placements=...)</code> 的落点；<code>in_placements</code> 默认只检查不重切分。右侧：torchtitan 的 <code>_apply_local_map</code> 只负责填这四组参数。</figcaption>
+</figure>
+
+<div class="box">
+<p><b>结论</b>：torchtitan 的 <code>local_map</code> 最终调用的就是 PyTorch 接口（<code>torch.distributed.tensor.experimental.local_map</code>），它自己只做「参数装配」（把 <code>in_dst/out_src/in_grad_placements</code> 解析成 placement 元组并解析 mesh，module.py:473-495）。PyTorch 侧 <code>_local_map_wrapped</code> 再走 <code>to_local → fn → from_local</code> 三步，底层原语仍是 DTensor 的 <code>to_local / from_local / redistribute</code>。另外当 <code>spmd_backend == "spmd_types"</code> 时走的是另一套 <code>torch.distributed.tensor.experimental.spmd.local_map</code>（按类型字典 <code>in_types/out_types</code> 声明，module.py:498-516），机制类似但基于类型系统。</p>
+</div>
+
+<!-- ================= 图 8 ================= -->
+<h2>⑩ 深挖 Q4：什么时候该用 local_map？谁会真的变成本地张量？</h2>
+
+<div class="box">
+<p><b>先纠一个常见误解</b>：<code>_redistribute_inputs</code> <b>不负责</b>「DTensor → 本地张量」。它做的只是 <b>DTensor 布局之间的搬运</b>（如 <code>Shard(1)</code> → <code>Replicate</code>），张量全程保持 DTensor 身份；「卸成本地」是 <code>local_map</code> 边界里 <code>to_local()</code> 的职责（<code>_func_map.py:216-226</code>）。两者是不同概念、不同代码路径。</p>
+</div>
+
+<figure>
+<svg viewBox="0 0 920 500" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr8" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#0284c7"/>
+    </marker>
+    <marker id="arr8g" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#059669"/>
+    </marker>
+    <marker id="arr8p" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#db2777"/>
+    </marker>
+  </defs>
+
+  <!-- 左：决策树 -->
+  <text x="240" y="30" text-anchor="middle" fill="#0f172a" font-size="14" font-weight="700">声明期决策：这个模块的 forward 用什么算子？</text>
+  <rect x="60" y="48" width="360" height="40" rx="8" fill="#ffffff" stroke="#0284c7"/>
+  <text x="240" y="73" text-anchor="middle" fill="#1e293b" font-size="12">模型作者写 sharding helper 时逐模块判断</text>
+
+  <line x1="240" y1="88" x2="140" y2="112" stroke="#059669" stroke-width="1.6" marker-end="url(#arr8g)"/>
+  <line x1="240" y1="88" x2="340" y2="112" stroke="#db2777" stroke-width="1.6" marker-end="url(#arr8p)"/>
+
+  <rect x="20" y="116" width="240" height="150" rx="10" fill="#d1fae5" stroke="#059669" stroke-width="1.6"/>
+  <text x="140" y="140" text-anchor="middle" fill="#059669" font-size="12.5" font-weight="700">纯 DTensor 可分发算子</text>
+  <text x="140" y="160" text-anchor="middle" fill="#64748b" font-size="10.5">matmul / elementwise / softmax / norm</text>
+  <text x="36" y="182" fill="#1e293b" font-size="11">→ <b>不需要 local_map</b></text>
+  <text x="36" y="200" fill="#64748b" font-size="10.5">计算直接由 DTensor 分发完成，</text>
+  <text x="36" y="216" fill="#64748b" font-size="10.5">通信由边界 redistribute 处理</text>
+  <text x="36" y="240" fill="#047857" font-size="10.5">例：w1/w2/w3 线性层、norm</text>
+  <text x="36" y="256" fill="#047857" font-size="10.5">colwise/rowwise_config 无 local_map</text>
+  <text x="36" y="266" fill="#64748b" font-size="9.5">decoder_sharding.py:65-111,244-250</text>
+
+  <rect x="300" y="116" width="240" height="170" rx="10" fill="#fce7f3" stroke="#db2777" stroke-width="1.6"/>
+  <text x="420" y="140" text-anchor="middle" fill="#db2777" font-size="12.5" font-weight="700">DTensor 不支持 / 不适合</text>
+  <text x="420" y="160" text-anchor="middle" fill="#64748b" font-size="10.5">注意力内核 · scatter/gather 索引</text>
+  <text x="420" y="176" text-anchor="middle" fill="#64748b" font-size="10.5">变长 grouped GEMM · 插值采样</text>
+  <text x="316" y="198" fill="#1e293b" font-size="11">→ <b>需要 local_map</b>（本地区零通信）</text>
+  <text x="316" y="216" fill="#047857" font-size="10.5">例：inner_attention（kernel）</text>
+  <text x="316" y="232" fill="#047857" font-size="10.5">RoutedExperts（dispatcher 索引 +</text>
+  <text x="316" y="248" fill="#047857" font-size="10.5">变长分组 GEMM）· embedding · loss</text>
+  <text x="316" y="270" fill="#64748b" font-size="9.5">附加动机：想控制通信点 / compile 友好</text>
+  <text x="316" y="282" fill="#64748b" font-size="9.5">（GroupedExperts:68-75 注释：动态形状</text>
+  <text x="316" y="294" fill="#64748b" font-size="9.5">无法用 DTensor 表达）</text>
+
+  <!-- 右：谁被转成本地 -->
+  <text x="700" y="30" text-anchor="middle" fill="#0f172a" font-size="14" font-weight="700">谁会被 to_local？（进入 local_map 后）</text>
+  <rect x="500" y="48" width="400" height="210" rx="12" fill="#f0f9ff" stroke="#db2777" stroke-width="1.6"/>
+
+  <rect x="516" y="62" width="368" height="40" rx="6" fill="#f1f5f9" stroke="#059669"/>
+  <text x="700" y="78" text-anchor="middle" fill="#047857" font-size="11" font-weight="700">① 输入参数（in_dst_shardings 声明的）</text>
+  <text x="700" y="94" text-anchor="middle" fill="#64748b" font-size="10">local_map 自动 to_local（_func_map.py:216-226）✅</text>
+
+  <rect x="516" y="110" width="368" height="52" rx="6" fill="#f1f5f9" stroke="#d97706"/>
+  <text x="700" y="128" text-anchor="middle" fill="#d97706" font-size="11" font-weight="700">② 模块参数（forward 内访问 self.weight）</text>
+  <text x="700" y="144" text-anchor="middle" fill="#1e293b" font-size="10">local_map 不碰！模块自己转：</text>
+  <text x="700" y="158" text-anchor="middle" fill="#1e293b" font-size="10">Embedding.forward:49-51 · GroupedExperts.forward:68-75 ⚠️</text>
+
+  <rect x="516" y="170" width="368" height="38" rx="6" fill="#f1f5f9" stroke="#64748b"/>
+  <text x="700" y="188" text-anchor="middle" fill="#1e293b" font-size="11" font-weight="700">③ 非张量参数（BlockMask / bool / 索引）</text>
+  <text x="700" y="203" text-anchor="middle" fill="#64748b" font-size="10">原样透传，不转换（_func_map.py:234-240）⏭️</text>
+
+  <rect x="516" y="216" width="368" height="34" rx="6" fill="#f1f5f9" stroke="#059669"/>
+  <text x="700" y="238" text-anchor="middle" fill="#047857" font-size="11" font-weight="700">④ 输出 → from_local 按 out_src 包回 DTensor ✅</text>
+
+  <!-- 底部条 -->
+  <rect x="20" y="320" width="880" height="160" rx="10" fill="#f1f5f9" stroke="#0284c7" stroke-width="1.2"/>
+  <text x="40" y="346" fill="#0284c7" font-size="13" font-weight="700">「也可能不需要」—— 四种跳过 / 空转情形</text>
+  <text x="40" y="372" fill="#1e293b" font-size="12">· <b>非张量参数</b>：直接 continue（module.py:550-552）</text>
+  <text x="40" y="394" fill="#1e293b" font-size="12">· <b>没声明</b> in_src/in_dst 的输入：原样返回（module.py:535-539）</text>
+  <text x="40" y="416" fill="#1e293b" font-size="12">· <b>mesh 解析为 None</b>（轴不在 mesh 上，如没开 CP）：跳过（module.py:589-591）</text>
+  <text x="40" y="438" fill="#1e293b" font-size="12">· <b>布局已匹配</b>：check_dtensor_placements_match 为真 → 不调 redistribute → no-op（module.py:619-624）</text>
+  <text x="40" y="462" fill="#64748b" font-size="11">设计目标：相邻模块的 out_dst 与下一模块 in_dst 本就一致 → 运行时大部分 redistribute 是零开销 no-op</text>
+</svg>
+<figcaption><b>图 8 · 决策树 + 转换边界。</b> 判断标准只有一个：forward 的算子 DTensor 分发支不支持。支持 → 不设 local_map（纯分发）；不支持或想隔离通信 → 设 local_map；且注意 local_map 只自动转换「输入参数」，模块参数要自己在 forward 里 to_local。</figcaption>
+</figure>
+
+<!-- ================= 图 9 ================= -->
+<h2>⑪ 深挖 Q5：用户在哪儿设置？转换在哪儿发生？啥也不设置会怎样？</h2>
+
+<figure>
+<svg viewBox="0 0 920 560" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="arr9" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#0284c7"/>
+    </marker>
+    <marker id="arr9g" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#059669"/>
+    </marker>
+  </defs>
+
+  <!-- 阶段 1：声明 -->
+  <rect x="20" y="24" width="880" height="96" rx="10" fill="#ffffff" stroke="#0284c7" stroke-width="1.4"/>
+  <circle cx="48" cy="50" r="12" fill="#0284c7"/><text x="48" y="55" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="700">1</text>
+  <text x="70" y="55" fill="#0f172a" font-size="13.5" font-weight="700">声明（模型代码 · 写模型的人填）</text>
+  <text x="40" y="80" fill="#047857" font-family="Consolas, monospace" font-size="11">llama3/sharding.py:67 → set_gqa_inner_attention_local_map(layer_cfg.attention.inner_attention)</text>
+  <text x="40" y="98" fill="#047857" font-family="Consolas, monospace" font-size="11">decoder_sharding.py:214-229 → inner_attention.sharding_config = ShardingConfig(in_dst, out_src, local_map=LocalMapConfig(...))</text>
+  <text x="40" y="114" fill="#64748b" font-size="10.5">对比：线性层只填 colwise_config()（只有 state + out_src，<b>没有 local_map</b>）→ 该模块就不需要本地计算区</text>
+
+  <!-- 阶段 2：传递 -->
+  <rect x="20" y="136" width="880" height="56" rx="10" fill="#ffffff" stroke="#0284c7" stroke-width="1.4"/>
+  <circle cx="48" cy="158" r="12" fill="#0284c7"/><text x="48" y="163" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="700">2</text>
+  <text x="70" y="163" fill="#0f172a" font-size="13.5" font-weight="700">传递（Config.build）</text>
+  <text x="40" y="184" fill="#047857" font-family="Consolas, monospace" font-size="11">module.py:61-70 → instance._sharding_config = self.sharding_config（Config 上的声明拷到模块实例）</text>
+
+  <line x1="460" y1="120" x2="460" y2="134" stroke="#0284c7" stroke-width="1.6" marker-end="url(#arr9)"/>
+  <line x1="460" y1="192" x2="460" y2="206" stroke="#0284c7" stroke-width="1.6" marker-end="url(#arr9)"/>
+
+  <!-- 阶段 3：触发（一次性） -->
+  <rect x="20" y="208" width="880" height="104" rx="10" fill="#ffffff" stroke="#db2777" stroke-width="1.4"/>
+  <circle cx="48" cy="234" r="12" fill="#db2777"/><text x="48" y="239" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="700">3</text>
+  <text x="70" y="239" fill="#0f172a" font-size="13.5" font-weight="700">触发（初始化时一次 · parallelize）</text>
+  <text x="40" y="264" fill="#047857" font-family="Consolas, monospace" font-size="11">parallelize_llama() → model.parallelize(parallel_dims)（llama3/parallelize.py:45）递归全部子模块</text>
+  <text x="40" y="284" fill="#1e293b" font-size="11">· _distribute_states：参数 → DTensor（module.py:331-411）</text>
+  <text x="40" y="300" fill="#1e293b" font-size="11">· _maybe_wrap_with_local_region：有 local_map 才包，没有就返回原 fn（module.py:427-428）</text>
+
+  <line x1="460" y1="312" x2="460" y2="326" stroke="#0284c7" stroke-width="1.6" marker-end="url(#arr9)"/>
+
+  <!-- 阶段 4：运行时转换（每次 forward） -->
+  <rect x="20" y="328" width="880" height="110" rx="10" fill="#f0f9ff" stroke="#059669" stroke-width="2"/>
+  <circle cx="48" cy="354" r="12" fill="#059669"/><text x="48" y="359" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="700">4</text>
+  <text x="70" y="359" fill="#0f172a" font-size="13.5" font-weight="700">转换发生处（每次 forward 调用都执行）</text>
+  <text x="40" y="384" fill="#047857" font-family="Consolas, monospace" font-size="11">forward_with_redistribution（module.py:289-294）＝</text>
+  <text x="40" y="402" fill="#1e293b" font-size="11.5">① _redistribute_inputs：DTensor 布局对齐（不匹配才搬，module.py:619-624）</text>
+  <text x="40" y="420" fill="#1e293b" font-size="11.5">② fn（local_map 包装）：to_local 卸成本地 → 本地计算 → from_local 包回 DTensor（_func_map.py）</text>
+  <text x="40" y="436" fill="#1e293b" font-size="11.5">③ _redistribute_outputs：输出搬到下一模块要的布局（module.py:700-705）</text>
+
+  <!-- 阶段 5：啥也不设置 -->
+  <rect x="20" y="462" width="880" height="84" rx="10" fill="#f1f5f9" stroke="#d97706" stroke-width="1.6"/>
+  <circle cx="48" cy="486" r="12" fill="#d97706"/><text x="48" y="491" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="700">5</text>
+  <text x="70" y="491" fill="#d97706" font-size="13.5" font-weight="700">啥也不设置 = 不干预（不是 local 也不是 DTensor 的强制转换）</text>
+  <text x="40" y="514" fill="#1e293b" font-size="11.5">· _sharding_config is None → parallelize() 直接 return（module.py:280-281）→ 参数保持普通张量、forward 原样、不包装</text>
+  <text x="40" y="532" fill="#1e293b" font-size="11.5">· 输入输出原样透传：<b>上游给的 DTensor 就还是 DTensor</b>（依赖算子分发跑），<b>给的 plain 就还是 plain</b></text>
+  <text x="40" y="544" fill="#64748b" font-size="10">→ 「是 local 还是 DTensor」不由模块自己决定，由「上游给了什么 + 自己声明了什么」共同决定</text>
+</svg>
+<figcaption><b>图 9 · 端到端五步。</b> 用户在模型 sharding helper 里声明（①）→ Config.build 传递（②）→ parallelize() 一次性施加（③）→ 之后每次 forward 自动走「布局对齐 → 本地计算区 → 输出对齐」（④）；没填配置的模块走⑤：完全不干预。</figcaption>
+</figure>
+
+<div class="box">
+<p><b>最小示例 —— 你自己写模型时怎么声明 local_map：</b></p>
+<pre><span class="c"># 模型作者的 sharding helper（如 my_model/sharding.py）</span>
+<span class="k">def</span> <span class="s">set_my_model_sharding</span>(config, ...):
+    <span class="c"># 需要本地计算区的模块：填 in_dst + out_src + local_map 三件套</span>
+    config.inner_attn.sharding_config = ShardingConfig(
+        in_dst_shardings={<span class="s">"q"</span>: q_layout, <span class="s">"k"</span>: k_layout, <span class="s">"v"</span>: v_layout},
+        out_src_shardings=out_layout,
+        local_map=LocalMapConfig(in_grad_placements=(q_layout, k_grad, v_grad)),
+    )
+    <span class="c"># 纯算子模块：不填 local_map，靠 DTensor 分发</span>
+    config.linear1.sharding_config = colwise_config()   <span class="c"># 只有 state + out_src</span>
+    <span class="c"># 不填的模块：不参与这套体系，原样运行</span></pre>
+</div>
+
+<footer>
+  核心链路：<span class="loc">protocols/sharding.py（声明）→ protocols/module.py（施加）→ torch.distributed.tensor.experimental.local_map（执行）</span>。
+  全文自包含（内联 SVG + CSS），无任何外部依赖，可直接双击打开。
+</footer>
+
+</div>
+</body>
+</html>

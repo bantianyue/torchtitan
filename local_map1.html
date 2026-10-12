@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>local_map 是什么 · 在哪儿用（torchtitan）</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #16233d; --panel2: #1b2c4a; --line: #2c3f63;
+    --fg: #dbe4f3; --dim: #8b94a3; --acc: #38bdf8; --acc2: #34d399;
+    --warn: #fbbf24; --pink: #f472b6; --code-bg: #0b1526;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    line-height: 1.65; font-size: 15px;
+  }
+  .wrap { max-width: 1020px; margin: 0 auto; padding: 32px 28px 80px; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 26px; }
+  header h1 { margin: 0 0 6px; font-size: 27px; color: #fff; }
+  header h1 code { color: var(--acc); font-size: 24px; }
+  header p { margin: 4px 0 0; color: var(--dim); }
+  h2 {
+    font-size: 19px; color: var(--acc); margin: 40px 0 12px;
+    padding-left: 10px; border-left: 4px solid var(--acc);
+  }
+  h3 { font-size: 16px; color: #e8eefb; margin: 22px 0 8px; }
+  p { margin: 8px 0; }
+  code {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 6px; font-family: "Cascadia Code", Consolas, monospace; font-size: 13px;
+    color: #9be0a3;
+  }
+  .loc { color: var(--pink); font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; }
+  .tag {
+    display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px;
+    margin-right: 6px; vertical-align: 1px; font-weight: 600;
+  }
+  .t-core { background: #0e3a52; color: var(--acc); border: 1px solid #155e75; }
+  .t-attn { background: #3b2416; color: var(--warn); border: 1px solid #7c4a12; }
+  .t-moe  { background: #2e1238; color: var(--pink); border: 1px solid #701a75; }
+  .t-loss { background: #14331f; color: var(--acc2); border: 1px solid #166534; }
+  .t-kern { background: #1e1b4b; color: #a5b4fc; border: 1px solid #3730a3; }
+  .t-vision{ background: #291a33; color: #e9d5ff; border: 1px solid #6b21a8; }
+
+  .box {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; margin: 14px 0;
+  }
+  .flow { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin: 14px 0; }
+  .fstep {
+    flex: 1 1 160px; background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; min-width: 150px;
+  }
+  .fstep .num {
+    display: inline-block; width: 20px; height: 20px; line-height: 20px; text-align: center;
+    background: var(--acc); color: #062033; border-radius: 50%; font-weight: 700; font-size: 12px;
+    margin-right: 6px;
+  }
+  .fstep .t { font-weight: 600; color: #e8eefb; font-size: 14px; }
+  .fstep .d { color: var(--dim); font-size: 12.5px; margin-top: 4px; }
+  .arrow { align-self: center; color: var(--acc); font-weight: 700; font-size: 18px; }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 5px 0; }
+  li b { color: #e8eefb; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: #e8eefb; white-space: nowrap; }
+  tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+  .warn {
+    background: #2b2110; border: 1px solid #7c4a12; border-radius: 8px;
+    padding: 12px 16px; margin: 14px 0; color: #fde68a;
+  }
+  .warn b { color: var(--warn); }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.55;
+    font-family: "Cascadia Code", Consolas, monospace;
+  }
+  pre .c { color: #64748b; } pre .k { color: #c4b5fd; } pre .s { color: #a5b4fc; }
+  pre .p { color: var(--pink); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  footer { margin-top: 40px; color: var(--dim); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1><code>local_map</code> 是什么 · 在哪儿用</h1>
+  <p>torchtitan 声明式并行（declarative sharding）中的「本地计算区」机制 —— DTensor 边界与原语，源码基于 <span class="loc">D:\02_source\torchtitan</span></p>
+</header>
+
+<h2>① 一句话定义</h2>
+<div class="box">
+<p><code>local_map</code>（PyTorch <code>torch.distributed.tensor.experimental.local_map</code>）把一个<b>只接受普通本地张量（plain tensor）的函数</b>包成一个可接收/产出 <b>DTensor</b> 的函数：</p>
+<pre><span class="k">前向</span>： DTensor 输入 → <span class="p">(边界) 按 in_placements 取本地分片</span> → 在本地张量上执行 fn（无 DTensor 分发） → <span class="p">(边界) 按 out_placements 包回 DTensor</span> 输出
+<span class="k">反向</span>： 输出梯度 → 按 out_placements 反推本地梯度 → 在本地执行反向 → <span class="p">(边界) 按 in_grad_placements 包回 DTensor</span> 输入梯度</pre>
+<p>在 torchtitan 里，它就是 <code>ShardingConfig.local_map</code>（<span class="loc">protocols/sharding.py:108-119</span>）声明、<code>Module.parallelize()</span> 施加的「forward 包装」：<b>输入重切分 → [local_map 本地计算] → 输出重切分</b>（<span class="loc">protocols/module.py:248-294</span>）。</p>
+</div>
+
+<h2>② 它解决什么问题（为什么需要它）</h2>
+<div class="grid2">
+  <div class="box">
+    <h3 style="margin-top:0">1. 跑不了 DTensor 的算子也能并行</h3>
+    <p>很多算子/内核不支持 DTensor 分发：FlexAttention、自研 CUDA kernel、<code>grid_sample</code>、<code>F.interpolate</code>、高级索引（scatter/gather）、<code>Conv1d</code> 等。用 <code>local_map</code> 把 DTensor 在边界「卸」成本地张量，函数体照常写普通张量代码，并行语义由边界的 placements 声明。</p>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">2. 通信位置显式化、可控</h3>
+    <p>所有需要的 all-gather / reduce-scatter 都发生在 <code>local_map</code> <b>边界</b>（由 in/out placements 驱动），函数体内零通信。比如 GQA 内注意力的 k/v 在 CP 轴 all-gather 到 <code>Replicate</code>、行并行输出 <code>Partial</code> 归约，都在边界一次完成，语义清晰。</p>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">3. 性能：省掉 DTensor 算子分发开销</h3>
+    <p>函数体在本地张量上跑，没有逐算子 DTensor placement 匹配与规约的开销；且本地张量区域对 torch.compile 更友好，局部逻辑（如 MoE 的 token dispatcher、融合 SwiGLU kernel）可以被编译器整段优化。</p>
+  </div>
+  <div class="box">
+    <h3 style="margin-top:0">4. 反向梯度布局一并声明</h3>
+    <p><code>in_grad_placements</code> 保证反向时输入梯度按正确布局回流（如行并行权重的梯度来自 Partial 输入梯度的归约、CP 下 k/v 本地梯度以 <code>Partial</code> 累积再在边界归约），避免手写梯度通信。</p>
+  </div>
+</div>
+
+<h2>③ torchtitan 里的实现链（谁包谁）</h2>
+<div class="flow">
+  <div class="fstep"><span class="num">1</span><span class="t">声明</span><div class="d">sharding.py 的 <code>ShardingConfig</code>：<code>in_dst/out_src_shardings</code> + <code>local_map</code>(<code>LocalMapConfig.in_grad_placements</code>)</div></div>
+  <div class="arrow">→</div>
+  <div class="fstep"><span class="num">2</span><span class="t">施加</span><div class="d"><code>Module.parallelize()</code> 递归分发参数后，调 <code>_maybe_wrap_with_local_region</code>（module.py:413-450）</div></div>
+  <div class="arrow">→</div>
+  <div class="fstep"><span class="num">3</span><span class="t">包装</span><div class="d">DTensor 后端：<code>_apply_local_map</code>（module.py:452-496）→ <code>local_map(fn, in/out/in_grad_placements, mesh)</code>；spmd_types 后端：<code>_spmd_apply_local_map</code>（:498-516）→ <code>spmd.local_map</code></div></div>
+  <div class="arrow">→</div>
+  <div class="fstep"><span class="num">4</span><span class="t">运行</span><div class="d"><code>forward_with_redistribution</code>：输入先 <code>_redistribute_inputs</code>，再进本地区，输出 <code>_redistribute_outputs</code>（module.py:289-294）</div></div>
+</div>
+
+<pre><span class="c"># protocols/module.py:452-496（DTensor 路径核心）</span>
+lm = sharding_config.local_map
+resolved_mesh = parallel_dims.resolve_shared_mesh(in_named + out_named + grad_named)
+<span class="k">return</span> local_map(
+    fn,                                        <span class="c"># 模块原 forward：只碰本地张量</span>
+    in_placements=tuple(resolve_placements(p, resolved_mesh) <span class="k">for</span> p <span class="k">in</span> in_named),   <span class="c"># 来自 in_dst_shardings</span>
+    out_placements=out_placements,             <span class="c"># 来自 out_src_shardings</span>
+    in_grad_placements=in_grad_placements,     <span class="c"># 来自 LocalMapConfig</span>
+    device_mesh=resolved_mesh,
+)</pre>
+
+<h2>④ 在哪儿用（全部使用点）</h2>
+
+<h3>核心机制（框架层）</h3>
+<table>
+  <tr><th>位置</th><th>用途</th></tr>
+  <tr><td><span class="loc">protocols/sharding.py:39-59, 108-119</span></td><td><code>LocalMapConfig</code> / <code>ShardingConfig.local_map</code>：声明入口，所有模块级 local_map 都从这里驱动</td></tr>
+  <tr><td><span class="loc">protocols/module.py:413-516</span></td><td><code>_maybe_wrap_with_local_region</code> / <code>_apply_local_map</code> / <code>_spmd_apply_local_map</code>：统一的施加逻辑，支持 DTensor 与 spmd_types 双后端（由 <code>parallel_dims.spmd_backend</code> 选择）</td></tr>
+  <tr><td><span class="loc">models/common/decoder_sharding.py:190-229</span></td><td><span class="tag t-attn">GQA 内注意力</span><code>set_gqa_inner_attention_local_map()</code>：最典型用法，见下方「重点拆解」</td></tr>
+  <tr><td><span class="loc">models/common/moe_sharding.py:200-264</span></td><td><span class="tag t-moe">MoE</span>RoutedExperts（token_dispatcher + GroupedExperts）本地计算区：EP/SP 下激活重切分 + local_map，专家 kernel 在本地张量上跑（<code>local_map</code> 配置在 :250）</td></tr>
+</table>
+
+<h3>模型内使用点（声明在 sharding.py，运行时由 module.py 施加）</h3>
+<table>
+  <tr><th>模型 / 位置</th><th>用途</th></tr>
+  <tr><td><span class="loc">llama3/sharding.py:67 · qwen3/sharding.py:79 · deepseek_v3/sharding.py:121 · gpt_oss/sharding.py:118 · kimi_k2_7/sharding.py:135 · muse_glimmer/sharding.py:221,323 · qwen3_5/sharding.py:237,272</span></td><td><span class="tag t-attn">注意力</span>各解码器 GQA 内注意力统一挂 <code>set_gqa_inner_attention_local_map</code>：q/k/v 头维切分后卸成本地张量给 FlexAttention/SDPA 内核</td></tr>
+  <tr><td><span class="loc">decoder_sharding.py:272-279</span></td><td><span class="tag t-core">嵌入</span>词表并行 <code>tok_embeddings</code>：<code>local_map=LocalMapConfig(in_grad_placements=None)</code>（embedding 查表在本地分片执行）</td></tr>
+  <tr><td><span class="loc">components/loss.py:224-280</span></td><td><span class="tag t-loss">损失</span><code>_cross_entropy_via_local_map</code>：词表并行交叉熵在本地张量上 flatten 计算，<code>out_placements</code> 按 sum 归约语义推导（Partial/Replicate），避免 DTensor 逐算子归约</td></tr>
+  <tr><td><span class="loc">overrides/fused_swiglu.py:399-413</span></td><td><span class="tag t-kern">融合 kernel</span>TP 权重切分下的融合 SwiGLU kernel：<code>local_map</code> 把输入卸成本地，kernel 在本地跑（另有 <code>spmd.local_map</code> 变体）</td></tr>
+  <tr><td><span class="loc">models/common/rope.py:348</span></td><td><span class="tag t-kern">RoPE</span><code>_reshape_for_broadcast</code> 用 <code>@spmd.local_map(out_types={...})</code>：cache reshape 在本地做，DP/CP/TP 布局在类型里声明</td></tr>
+  <tr><td><span class="loc">models/qwen3_5/model.py:269-294</span></td><td><span class="tag t-vision">视觉</span><code>_local_map_conv</code>：通道维切分的 depthwise <code>Conv1d</code> 在本地分片上执行，权重 <code>Shard(0)</code>，附加参数（cu_seqlens）用 <code>None</code> placement 原样透传</td></tr>
+  <tr><td><span class="loc">models/qwen3_5/vision_encoder.py:75,383</span></td><td><span class="tag t-vision">视觉</span><code>F.interpolate</code> 与 rope cache 生成通过 <code>local_map</code> 在本地执行（interpolate 不支持 DTensor）</td></tr>
+  <tr><td><span class="loc">models/muse_glimmer/vision_encoder.py:84-129,329-345</span></td><td><span class="tag t-vision">视觉</span><code>grid_sample</code>、高级索引（pos_param 查表）等不支持 DTensor 的算子：<code>local_map</code> 卸成本地执行，必要时声明 <code>in_grad_placements</code></td></tr>
+  <tr><td><span class="loc">models/muse_glimmer/sharding.py:119-130</span></td><td><span class="tag t-core">查询</span>embedding 查表在 <code>Shard(0)</code> 权重上输出 Partial，<code>local_map</code> 本地化后规避 DTensor 不支持的索引路径</td></tr>
+  <tr><td><span class="loc">models/flux/sharding.py:39-70 · flux/model/model.py:159 · flux/model/layers.py:21,263</span></td><td><span class="tag t-vision">扩散</span>Flux 内部注意力 local_map（<code>set_flux_inner_attention_local_map</code>）+ 层上 <code>@spmd.local_map</code> 装饰</td></tr>
+  <tr><td><span class="loc">components/quantization/nvfp4.py:78-152</span></td><td><span class="tag t-kern">量化</span>不透明 <code>nvfp4_linear</code> 算子用 local_map 围成本地区（SPMD 类型检查标记 local-safe），基座线性层也走 local_map</td></tr>
+  <tr><td><span class="loc">experiments/transformers_modeling_backend/hf_sharding.py:151-235 · model.py:39-73</span></td><td><span class="tag t-core">实验</span>HuggingFace 模型后端：flex-attention kernel 通过 local_map 附着，q/k/v 头切分在本地计算</td></tr>
+  <tr><td><span class="loc">overrides/helion_rope.py:843-845,888-890</span></td><td><span class="tag t-kern">overlay</span>Helion RoPE 用 <code>spmd.local_map</code> 做本地变体（TODO 注释：待迁移到自定义 op SPMD）</td></tr>
+</table>
+
+<h3>CP（上下文并行）与 local_map 的协作</h3>
+<table>
+  <tr><th>位置</th><th>用途</th></tr>
+  <tr><td><span class="loc">distributed/context_parallel/api.py:35-51</span></td><td><code>apply_cp_to_forward()</code> 把内注意力 forward 替换成 CP 版本（K/V all-gather）。<b>必须在 <code>Module.parallelize()</code> 之前调用</b>，这样 CP 包装会被 parallelize 的 <code>local_map</code> 捕获，在本地张量上执行（拿到的是本地张量而非 DTensor，CP 逻辑才能正确工作）</td></tr>
+  <tr><td><span class="loc">decoder_sharding.py:202-207（docstring）</span></td><td>full_dtensor + CP 下：q 在 CP 轴保持 <code>Shard(1)</code>，k/v 在 CP 轴 <code>Replicate</code> —— DTensor 在 local_map 边界对 k/v 做 all-gather，kernel 看到全长 K/V（与 BlockMask 的 kv 维一致）；k/v 本地梯度以 CP 轴 <code>Partial</code> 累积、出边界归约</td></tr>
+</table>
+
+<h2>⑤ 重点拆解：GQA 内注意力（最典型用法）</h2>
+<pre><span class="c"># models/common/decoder_sharding.py:190-229</span>
+<span class="k">def</span> <span class="s">set_gqa_inner_attention_local_map</span>(inner_attention_cfg):
+    q_placements    = dense_activation_placement(tp=<span class="p">S(2)</span>)                      <span class="c"># 头维 TP 切分</span>
+    kv_src_placements = dense_activation_placement(tp=<span class="p">S(2)</span>)
+    kv_dst_placements = dense_activation_placement(tp=<span class="p">S(2)</span>, cp=<span class="p">R</span>)               <span class="c"># CP 下 k/v all-gather 成 Replicate</span>
+    kv_grad_placements= dense_activation_placement(tp=<span class="p">S(2)</span>, cp=<span class="p">P</span>)               <span class="c"># 反向 k/v 梯度 Partial 累积</span>
+    inner_attention_cfg.sharding_config = ShardingConfig(
+        in_dst_shardings={ <span class="s">"q_BLNH"</span>: q_placements, <span class="s">"k_BLNH"</span>: kv_dst_placements, <span class="s">"v_BLNH"</span>: kv_dst_placements },
+        out_src_shardings=q_placements,
+        local_map=LocalMapConfig(in_grad_placements=(q_placements, kv_grad_placements, kv_grad_placements)),
+    )</pre>
+<ul>
+  <li><b>为什么这里需要 local_map：</b>FlexAttention / SDPA kernel 不在 DTensor 分发支持范围内（或按 local 实现性能更好），且 q/k/v 已是头维切分的 DTensor —— 在边界卸成本地，kernel 直接消费本地分片。</li>
+  <li><b>CP 叠加：</b>k/v 的 <code>in_dst</code> 是 CP 轴 Replicate，local_map 边界自动 all-gather 全长 K/V；q 保持 CP 切分 —— 一套声明同时表达 TP + CP 两层并行。</li>
+  <li><b>反向：</b><code>in_grad_placements</code> 让 q 梯度保持 seq 切分、k/v 梯度以 Partial 累积后在边界归约，梯度布局与正向完全对称。</li>
+</ul>
+
+<h2>⑥ 注意事项</h2>
+<div class="warn">
+  <b>① 顺序约束：</b>CP 包装（<code>apply_cp_to_forward</code>）必须在 <code>parallelize()</code> <b>之前</b>调用；否则 CP 逻辑跑在 local_map 边界外，拿到的是 DTensor 而非本地张量，直接出错（context_parallel/api.py:41-42、llama3/parallelize.py:47-54 注释）。
+</div>
+<div class="warn">
+  <b>② 声明完整性：</b>设了 <code>local_map</code> 就必须有 <code>in_dst_shardings</code>（覆盖 forward 全部位置参数，否则 <code>_maybe_wrap_with_local_region</code> 抛 AssertionError）和 <code>out_src_shardings</code>（module.py:435-445）。
+</div>
+<div class="warn">
+  <b>③ 非张量参数：</b>非张量参数在 <code>in_grad_placements</code> 里用 <code>None</code> 占位（local_map 原样透传），mesh 解析时会被过滤（module.py:469-471）；MoE 里路由元数据（<code>num_local_tokens_per_expert_E</code>）虽是元数据仍是 DTensor 输入，也必须给 placement（moe_sharding.py:256-259）。
+</div>
+<div class="warn">
+  <b>④ 双后端：</b>DTensor 后端用 <code>torch.distributed.tensor.experimental.local_map</code>（placement 元组），spmd_types 后端用 <code>torch.distributed.tensor.experimental.spmd.local_map</code>（<code>in_types/out_types</code> 字典），二者由 <code>parallel_dims.spmd_backend</code> 选择，别混用。
+</div>
+
+<footer>
+  生成时间基于当前仓库源码（torchtitan 声明式并行重构后）。核心链路：<span class="loc">protocols/sharding.py → protocols/module.py → torch.distributed.tensor.experimental.local_map</span>。全文自包含，无外部依赖。
+</footer>
+
+</div>
+</body>
+</html>

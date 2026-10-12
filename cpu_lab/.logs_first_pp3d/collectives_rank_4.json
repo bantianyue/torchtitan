@@ -1,0 +1,1359 @@
+{
+  "steps": 60,
+  "per_step": [
+    {
+      "step": 1,
+      "calls": {
+        "all_reduce@aten": 103,
+        "p2p_recv@python": 30,
+        "all_gather@python": 10,
+        "p2p_send@python": 30,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 18888216,
+        "p2p_recv@python": 6292537,
+        "all_gather@python": 27299840,
+        "p2p_send@python": 6292538,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 2,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 3,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 4,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 5,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 6,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 7,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 8,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 9,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 10,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 11,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 12,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 13,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 14,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 15,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 16,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 17,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 18,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 19,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 20,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 21,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 22,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 23,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 24,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 25,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 26,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 27,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 28,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 29,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 30,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 31,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 32,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 33,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 34,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 35,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 36,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 37,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 38,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 39,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 40,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 41,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 42,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 43,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 44,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 45,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 46,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 47,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 48,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 49,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 50,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 51,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 52,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 53,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 54,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 55,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 56,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 57,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 58,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 59,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    },
+    {
+      "step": 60,
+      "calls": {
+        "all_reduce@aten": 92,
+        "all_gather@python": 5,
+        "p2p_recv@python": 24,
+        "p2p_send@python": 24,
+        "reduce_scatter@python": 5,
+        "all_reduce@python": 1
+      },
+      "bytes": {
+        "all_reduce@aten": 16789528,
+        "all_gather@python": 13649920,
+        "p2p_recv@python": 6291456,
+        "p2p_send@python": 6291456,
+        "reduce_scatter@python": 27299840,
+        "all_reduce@python": 4
+      }
+    }
+  ],
+  "ops": [
+    {
+      "op": "all-reduce",
+      "bucket": "all_reduce",
+      "raw": "_c10d_functional.all_reduce",
+      "layer": "aten",
+      "calls": 5531,
+      "bytes_per_rank": 1009470368,
+      "calls_per_step": 92.18,
+      "bytes_per_step": 16824506.1
+    },
+    {
+      "op": "P2P recv",
+      "bucket": "p2p_recv",
+      "raw": "P2POp[recv]",
+      "layer": "python",
+      "calls": 1446,
+      "bytes_per_rank": 377488441,
+      "calls_per_step": 24.1,
+      "bytes_per_step": 6291474.0
+    },
+    {
+      "op": "P2P send",
+      "bucket": "p2p_send",
+      "raw": "P2POp[send]",
+      "layer": "python",
+      "calls": 1446,
+      "bytes_per_rank": 377488442,
+      "calls_per_step": 24.1,
+      "bytes_per_step": 6291474.0
+    },
+    {
+      "op": "all-gather",
+      "bucket": "all_gather",
+      "raw": "dist.all_gather_into_tensor",
+      "layer": "python",
+      "calls": 305,
+      "bytes_per_rank": 832645120,
+      "calls_per_step": 5.08,
+      "bytes_per_step": 13877418.7
+    },
+    {
+      "op": "reduce-scatter",
+      "bucket": "reduce_scatter",
+      "raw": "dist.reduce_scatter_tensor",
+      "layer": "python",
+      "calls": 300,
+      "bytes_per_rank": 1637990400,
+      "calls_per_step": 5.0,
+      "bytes_per_step": 27299840.0
+    },
+    {
+      "op": "all-reduce",
+      "bucket": "all_reduce",
+      "raw": "dist.all_reduce",
+      "layer": "python",
+      "calls": 60,
+      "bytes_per_rank": 240,
+      "calls_per_step": 1.0,
+      "bytes_per_step": 4.0
+    },
+    {
+      "op": "broadcast",
+      "bucket": "broadcast",
+      "raw": "c10d.broadcast_",
+      "layer": "aten",
+      "calls": 9,
+      "bytes_per_rank": 1080200,
+      "calls_per_step": 0.15,
+      "bytes_per_step": 18003.3
+    },
+    {
+      "op": "broadcast",
+      "bucket": "broadcast",
+      "raw": "dist.broadcast",
+      "layer": "python",
+      "calls": 1,
+      "bytes_per_rank": 8,
+      "calls_per_step": 0.02,
+      "bytes_per_step": 0.1
+    }
+  ],
+  "by_bucket": [
+    {
+      "op": "all-reduce",
+      "bucket": "all_reduce",
+      "calls": 5591,
+      "bytes_per_rank": 1009470608,
+      "calls_per_step": 93.18,
+      "bytes_per_step": 16824510.1,
+      "sources": [
+        {
+          "raw": "_c10d_functional.all_reduce",
+          "layer": "aten",
+          "calls": 5531
+        },
+        {
+          "raw": "dist.all_reduce",
+          "layer": "python",
+          "calls": 60
+        }
+      ],
+      "calls_during_steps": 5591,
+      "calls_outside_steps": 0,
+      "bytes_during_steps": 1009470608
+    },
+    {
+      "op": "P2P recv",
+      "bucket": "p2p_recv",
+      "calls": 1446,
+      "bytes_per_rank": 377488441,
+      "calls_per_step": 24.1,
+      "bytes_per_step": 6291474.0,
+      "sources": [
+        {
+          "raw": "P2POp[recv]",
+          "layer": "python",
+          "calls": 1446
+        }
+      ],
+      "calls_during_steps": 1446,
+      "calls_outside_steps": 0,
+      "bytes_during_steps": 377488441
+    },
+    {
+      "op": "P2P send",
+      "bucket": "p2p_send",
+      "calls": 1446,
+      "bytes_per_rank": 377488442,
+      "calls_per_step": 24.1,
+      "bytes_per_step": 6291474.0,
+      "sources": [
+        {
+          "raw": "P2POp[send]",
+          "layer": "python",
+          "calls": 1446
+        }
+      ],
+      "calls_during_steps": 1446,
+      "calls_outside_steps": 0,
+      "bytes_during_steps": 377488442
+    },
+    {
+      "op": "all-gather",
+      "bucket": "all_gather",
+      "calls": 305,
+      "bytes_per_rank": 832645120,
+      "calls_per_step": 5.08,
+      "bytes_per_step": 13877418.7,
+      "sources": [
+        {
+          "raw": "dist.all_gather_into_tensor",
+          "layer": "python",
+          "calls": 305
+        }
+      ],
+      "calls_during_steps": 305,
+      "calls_outside_steps": 0,
+      "bytes_during_steps": 832645120
+    },
+    {
+      "op": "reduce-scatter",
+      "bucket": "reduce_scatter",
+      "calls": 300,
+      "bytes_per_rank": 1637990400,
+      "calls_per_step": 5.0,
+      "bytes_per_step": 27299840.0,
+      "sources": [
+        {
+          "raw": "dist.reduce_scatter_tensor",
+          "layer": "python",
+          "calls": 300
+        }
+      ],
+      "calls_during_steps": 300,
+      "calls_outside_steps": 0,
+      "bytes_during_steps": 1637990400
+    },
+    {
+      "op": "broadcast",
+      "bucket": "broadcast",
+      "calls": 10,
+      "bytes_per_rank": 1080208,
+      "calls_per_step": 0.17,
+      "bytes_per_step": 18003.5,
+      "sources": [
+        {
+          "raw": "c10d.broadcast_",
+          "layer": "aten",
+          "calls": 9
+        },
+        {
+          "raw": "dist.broadcast",
+          "layer": "python",
+          "calls": 1
+        }
+      ],
+      "calls_during_steps": 0,
+      "calls_outside_steps": 10,
+      "bytes_during_steps": 0
+    }
+  ],
+  "schemas": {
+    "c10d.broadcast_": "c10d::broadcast_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group, int root_rank, int root_tensor, bool async_op=True, int timeout=-1) -> (Tensor[], __torch__.torch.classes.c10d.Work)",
+    "_c10d_functional.all_reduce": "_c10d_functional::all_reduce(Tensor input, str reduce_op, Any group_name) -> Tensor",
+    "P2POp[recv]": "dist.P2POp(op, tensor, peer, group, tag, group_peer)",
+    "P2POp[send]": "dist.P2POp(op, tensor, peer, group, tag, group_peer)",
+    "c10d._reduce_scatter_base_": "c10d::_reduce_scatter_base_(Tensor output_tensor, Tensor input_tensor, __torch__.torch.classes.c10d.ProcessGroup process_group, __torch__.torch.classes.c10d.ReduceOp reduce_op, bool async_op=True, int timeout=-1) -> (Tensor, __torch__.torch.classes.c10d.Work)"
+  },
+  "unknown_payload": {},
+  "zero_payload": {},
+  "payload_debug": {},
+  "total_calls": 9098,
+  "total_bytes_per_rank": 4236163219
+}

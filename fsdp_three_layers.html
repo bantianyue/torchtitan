@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FSDP（数据并行）实现详解 —— 三层视角</title>
+<style>
+  :root {
+    --user:   #1f6feb; --titan: #2da44e; --torch: #bf3989;
+    --ink: #1f2328; --muted: #59636e; --bg: #ffffff; --panel: #f6f8fa;
+    --border: #d1d9e0; --code-bg: #0d1117; --code-ink: #e6edf3;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif; color: var(--ink); background: var(--bg); line-height: 1.65; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.hero { border-bottom: 3px solid var(--ink); padding-bottom: 18px; margin-bottom: 26px; }
+  header.hero h1 { font-size: 26px; margin: 0 0 8px; line-height: 1.35; }
+  header.hero p.sub { color: var(--muted); margin: 0; font-size: 14.5px; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .legend .chip { padding: 5px 12px; border-radius: 20px; color: #fff; font-size: 13px; font-weight: 600; }
+  .chip.user { background: var(--user); } .chip.titan { background: var(--titan); } .chip.torch { background: var(--torch); }
+  nav.toc { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 20px; margin-bottom: 30px; font-size: 14px; }
+  nav.toc ol { margin: 6px 0 0; padding-left: 22px; } nav.toc a { color: var(--user); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.sites { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 26px; font-size: 13px; }
+  nav.sites a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 20px; color: var(--ink); text-decoration: none; background: var(--panel); }
+  nav.sites a.cur { background: var(--ink); color: #fff; }
+  h2.section { font-size: 21px; margin: 44px 0 12px; padding: 10px 14px; background: var(--panel); border-left: 5px solid var(--ink); border-radius: 6px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  p { margin: 8px 0; } ul, ol { margin: 8px 0; padding-left: 24px; }
+  code { font-family: "Cascadia Code",Consolas,"JetBrains Mono",monospace; font-size: 13px; background: #eef1f4; padding: 1px 6px; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 12.7px; line-height: 1.55; font-family: "Cascadia Code",Consolas,monospace; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  .cmt { color: #8b949e; } .kw { color: #ff7b72; } .fn { color: #d2a8ff; } .st { color: #a5d6ff; } .nu { color: #79c0ff; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.4px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; } tr:nth-child(even) td { background: #fafbfc; }
+  .callout { border: 1px solid var(--border); border-left: 4px solid var(--user); background: #f0f6ff; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .callout.green { border-left-color: var(--titan); background: #f0faf1; } .callout.purple { border-left-color: var(--torch); background: #faf0f6; }
+  .callout b.tag { display: inline-block; font-size: 12px; margin-right: 6px; }
+  .layers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0; }
+  .layer { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel); font-size: 13.4px; }
+  .layer .lhead { font-weight: 700; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 2px solid; }
+  .layer.user .lhead { color: var(--user); border-color: var(--user); } .layer.titan .lhead { color: var(--titan); border-color: var(--titan); } .layer.torch .lhead { color: var(--torch); border-color: var(--torch); }
+  .layer ul { padding-left: 18px; margin: 6px 0 0; }
+  .flow { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 13px; }
+  .flow .step { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  .flow .step .n { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+  .flow .step .who { font-size: 11.5px; font-weight: 700; margin-right: 8px; padding: 1px 8px; border-radius: 10px; color: #fff; flex: 0 0 auto; }
+  .who.user { background: var(--user); } .who.titan { background: var(--titan); } .who.torch { background: var(--torch); }
+  .chip-s { background:#2f81f7; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .chip-r { background:#d4a72c; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .foot { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 760px) { .layers { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>FSDP（数据并行）如何实现 —— 用户 / torchtitan / PyTorch 三层详解</h1>
+  <p class="sub">以本仓库 <code>torchtitan/distributed/fsdp.py</code> 与 <code>full_dtensor.py</code> 为准，所有数值取自 DeepSeek-V3 真实配置。</p>
+  <div class="legend">
+    <span class="chip user">第 1 层 · 用户（模型作者）—— 声明意图</span>
+    <span class="chip titan">第 2 层 · torchtitan —— 编排 FSDP</span>
+    <span class="chip torch">第 3 层 · PyTorch FSDP2 —— 物理执行</span>
+  </div>
+</header>
+
+<nav class="sites">
+  <a class="cur">FSDP 数据并行</a>
+  <a href="cp_three_layers.html">CP 上下文并行</a>
+  <a href="pp_three_layers.html">PP 流水并行</a>
+  <a href="ep_three_layers.html">EP 专家并行</a>
+</nav>
+
+<nav class="toc">
+  <b>本页目录</b>
+  <ol>
+    <li><a href="#scene">场景设定（真实值）</a></li>
+    <li><a href="#user">第 1 层 · 用户层：FSDP 不需要写分片，声明在 ParallelismConfig</a></li>
+    <li><a href="#titan">第 2 层 · Titan 层：apply_fsdp_to_decoder 逐行走查</a></li>
+    <li><a href="#moe">第 2 层特例 · MoE 层：shard_placement_fn 双网格切分</a></li>
+    <li><a href="#prefetch">第 2 层特例 · EP 启用时的显式 prefetch</a></li>
+    <li><a href="#torch">第 3 层 · Torch 层：fully_shard 的物理动作与通信</a></li>
+    <li><a href="#flow">全链路流转 + 真实值汇总</a></li>
+  </ol>
+</nav>
+
+<h2 class="section" id="scene">0. 场景设定（真实值）</h2>
+<table>
+  <tr><th>维度</th><th>取值</th><th>说明</th></tr>
+  <tr><td>world_size</td><td><code>16</code></td><td>总卡数</td></tr>
+  <tr><td>DP（dp_replicate + dp_shard）</td><td><code>2 + 8 = 16</code></td><td>HSDP：2 组 × 每组 8 张卡做 FSDP</td></tr>
+  <tr><td>TP / CP / EP</td><td><code>1 / 1 / 1</code></td><td>只跑 FSDP，无其它并行</td></tr>
+  <tr><td>backend</td><td><code>full_dtensor</code></td><td>dense storage mesh 走 DTensor 路径</td></tr>
+  <tr><td>tok_embeddings.weight</td><td><code>(102400, 5120)</code></td><td>DeepSeek-V3：vocab=102400，dim=5120</td></tr>
+  <tr><td>模型层数</td><td><code>60</code></td><td>DeepSeek-V3 Transformer 层</td></tr>
+</table>
+
+<h2 class="section" id="user">1. 第 1 层 · 用户层：FSDP 不需要写分片</h2>
+<div class="callout">
+  <b class="tag">🧩 和 TP/EP 最大的不同</b>
+  TP/EP 需要在 <code>models/&lt;模型名&gt;/sharding.py</code> 里逐个权重写 <code>ShardingConfig</code>；
+  <strong>FSDP 完全不需要</strong>——它不关心"哪个参数怎么切"，它只关心"把整层的<strong>所有</strong>参数沿 DP 网格切一份"。
+  所以用户层没有 per-param 声明，只有两道开关。
+</div>
+<p>用户要配的只有 <code>ParallelismConfig</code>（配置里）和模型入口里的一次函数调用。真正能由用户拨动的开关有
+<strong>3 个</strong>，都从配置字段流进 <code>apply_fsdp_to_decoder</code> 的对应形参：</p>
+<pre><code><span class="cmt"># ① 配置文件（ParallelismConfig / TrainingConfig）—— 用户能拨动的 3 个开关</span>
+<span class="st">enable_symm_mem</span>  = parallelism.<span class="st">enable_fsdp_symm_mem</span>        <span class="cmt"># → enable_symm_mem</span>
+<span class="st">cpu_offload</span>      = training.<span class="st">enable_cpu_offload</span>            <span class="cmt"># → cpu_offload</span>
+<span class="st">fsdp_reshard_after_forward</span> = parallelism.<span class="st">fsdp_reshard_after_forward</span>  <span class="cmt"># → reshard_after_forward_policy</span>
+
+<span class="cmt"># ② models/deepseek_v3/parallelize.py —— 把 3 个开关传给第 2 层函数</span>
+<span class="fn">apply_fsdp_to_mtp_decoder</span>(
+    model, dp_mesh,
+    param_dtype=..., reduce_dtype=...,
+    <span class="st">cpu_offload</span>=training.enable_cpu_offload,
+    <span class="st">reshard_after_forward_policy</span>=parallelism.fsdp_reshard_after_forward,
+    <span class="st">enable_symm_mem</span>=parallelism.enable_fsdp_symm_mem,
+    <span class="st">ep_degree</span>=parallel_dims.ep, <span class="st">edp_mesh</span>=edp_mesh,
+)</code></pre>
+<p><strong>结论：FSDP 的用户层没有 per-param 分片配置，只有"3 个开关 + 1 次调用"。</strong>
+轴（网格）也不是用户写的——见下一层，由 <code>resolve_fsdp_mesh</code> 从 <code>parallel_dims</code> 推出。</p>
+
+<h3>1.1 这 3 个参数：用户到底控制了什么</h3>
+<table>
+  <tr><th>参数</th><th>用户配置字段</th><th>功能用途</th><th>内部实现</th></tr>
+  <tr>
+    <td><code>reshard_after_forward_policy</code></td>
+    <td><code>fsdp_reshard_after_forward</code></td>
+    <td><b>权衡显存 vs 通信。</b>控制前向<b>之后</b>是否立刻把参数重新切回 1/DP（释放全量副本）。<br>
+      <code>"always"</code>=每次都 reshard（最省显存，但每次前向都要 all-gather）；<br>
+      <code>"never"</code>=从不 reshard（显存常驻，前向免通信，但占用大）；<br>
+      <code>"default"</code>=无 PP 时 reshard，有 PP 时不 reshard。</td>
+    <td><code>get_fsdp_reshard_after_forward_policy()</code>（fsdp.py:54-79）把字符串解析成布尔，传给 <code>fully_shard(..., reshard_after_forward=)</code></td>
+  </tr>
+  <tr>
+    <td><code>cpu_offload</code></td>
+    <td><code>enable_cpu_offload</code></td>
+    <td><b>用 CPU 内存换 GPU 显存。</b>让模型参数驻留在 CPU 内存，前向时再搬到 GPU 参与计算。<br>
+      面向超大模型显存不够的场景——代价是每次前向/反向都有 GPU↔CPU 搬运。</td>
+    <td><code>if cpu_offload: fsdp_config["offload_policy"]=CPUOffloadPolicy()</code>（fsdp.py:173-174），插进 <code>fully_shard</code> 配置</td>
+  </tr>
+  <tr>
+    <td><code>enable_symm_mem</code></td>
+    <td><code>enable_fsdp_symm_mem</code></td>
+    <td><b>优化通信带宽/延迟。</b>启用 PyTorch 的<b>对称内存（SymmetricMemory）</b>通信：为 all-gather / reduce-scatter
+      分配对称缓冲，减少 host 拷贝、提高聚合通信效率。<br>
+      面向通信瓶颈场景，是纯性能优化、不影响语义。</td>
+    <td><code>enable_fsdp_symm_mem(model)</code>（fsdp.py:44-52）：遍历 FSDPModule，
+      调 <code>set_force_sum_reduction_for_comms(True)</code> + <code>set_symm_mem_for_comm()</code></td>
+  </tr>
+</table>
+<div class="callout">
+  <b class="tag">💡 三者一句话记住</b>
+  <code>reshard_after_forward</code> = <b>省显存还是免通信</b>（默认按有无 PP 智能取舍）；
+  <code>cpu_offload</code> = <b>把参数放 CPU 换 GPU 显存</b>（默认关）；
+  <code>enable_symm_mem</code> = <b>通信性能优化</b>（默认关，纯提效不影响结果）。<br>
+  前两个影响"显存"，第三个只影响"通信速度"。
+</div>
+
+<h2 class="section" id="titan">2. 第 2 层 · Titan 层：apply_fsdp_to_decoder</h2>
+<h3>2.1 先解析出 FSDP 网格（full_dtensor.py:70-106）</h3>
+<p>用户没写网格，Titan 从 <code>parallel_dims</code> 里算出 dense storage mesh，并告诉 FSDP"哪些轴是数据并行轴"：</p>
+<pre><code><span class="kw">def</span> <span class="fn">resolve_fsdp_mesh</span>(parallel_dims) -> (DeviceMesh, DataParallelMeshDims):
+    storage_mesh = parallel_dims.get_activated_mesh([<span class="st">"dp_replicate"</span>, <span class="st">"dp_shard"</span>, <span class="st">"cp"</span>, <span class="st">"tp"</span>])
+    <span class="cmt"># 真实值（本例）：storage_mesh = (dp_replicate=2, dp_shard=8, cp=1, tp=1)</span>
+    shard_axes = [<span class="st">"dp_shard"</span>];  shard = <span class="st">"dp_shard"</span>
+    <span class="kw">return</span> storage_mesh, DataParallelMeshDims(shard=shard, replicate=<span class="st">"dp_replicate"</span>)
+<span class="cmt">#           ↑ 2 组 × 8 卡：replicate 轴"dp_replicate"(2 组)，shard 轴"dp_shard"(每组 8 卡)</span></code></pre>
+
+<h3>2.2 逐层 fully_shard（fsdp.py:110-310）</h3>
+<pre><code><span class="kw">for</span> layer_id, transformer_block <span class="kw">in</span> model.layers.items():
+    <span class="cmt"># 真实值：transformer_block = layers.{layer_id}（一个完整的 decoder 层）</span>
+    fsdp_config = { <span class="st">"mesh"</span>: dp_mesh, <span class="st">"mp_policy"</span>: mp_policy,
+                    <span class="st">"dp_mesh_dims"</span>: dp_mesh_dims }   <span class="cmt"># dp_mesh_dims(shard="dp_shard", replicate="dp_replicate")</span>
+    reshard_after_forward = get_fsdp_reshard_after_forward_policy(
+        reshard_after_forward_policy, pp_enabled=pp_enabled)   <span class="cmt"># 参数从用户开关流进来</span>
+    <span class="cmt"># 本例 "default" + 无PP → not pp_enabled = True（forward 后 reshard，省显存）
+    #       "default" + 有PP → False（避免每个 microbatch 都 all-gather）</span>
+
+    <span class="kw">if</span> getattr(transformer_block, <span class="st">"moe_enabled"</span>, <span class="kw">False</span>):
+        <span class="cmt"># MoE 层：用 shard_placement_fn 把"专家权重"和"其他权重"分配到不同 mesh</span>
+        ...
+    <span class="kw">else</span>:
+        <span class="fn">fully_shard</span>(transformer_block, **fsdp_config, reshard_after_forward=reshard_after_forward)
+    <span class="cmt"># 真实值：60 层各调用一次 fully_shard，每次把该层所有参数沿 dp_shard 轴切分</span>
+
+<span class="fn">fully_shard</span>(model, **fsdp_config)   <span class="cmt"># 最后整模型兜底</span>
+<span class="fn">disable_fsdp_gradient_division</span>(model)   <span class="cmt"># 关闭 FSDP 自动梯度均分，用全局 token 数自己算</span>
+<span class="kw">if</span> <span class="st">"dp_replicate"</span> <span class="kw">in</span> (dp_mesh.mesh_dim_names or ()):
+    logger.info(<span class="st">"Applied HSDP to the model"</span>)   <span class="cmt"># 有 replicate 轴 → HSDP</span></code></pre>
+<p>注意加了一个转折：<strong>FSDP 的"切"发生在每层内部</strong>。以 <code>layers.0.attention.wo.weight</code>（<code>(24576, 24576)</code>）为例，
+Titan 不会为它写分片配置，而是把它整层交给 <code>fully_shard</code>，由 FSDP2 自己决定沿 <code>dp_shard</code> 轴切第 0 维。</p>
+
+<h3 id="moe">2.3 MoE 层到底特殊在哪（关键点 1）</h3>
+<div class="callout">
+  <b class="tag">⚠️ 问题：MoE 层不是"一个整体"可以按同一把刀切</b>
+  一个 MoE Transformer 层里有<strong>两类来源不同、角色不同的参数</strong>：
+  <b>普通参数</b>（attention、norm、router、shared experts 的 w1/w2/w3）和
+  <b>路由专家权重</b>（<code>inner_experts</code> 的 w1/w2/w3 GroupedExperts）。
+  这两类要么走<b>不同的 FSDP 网格</b>，要么走<b>不同的切分维度</b>——这就是 MoE 层在 FSDP 里必须特判的原因。
+</div>
+<pre><code><span class="cmt"># fsdp.py:216-308 —— 每个 MoE 层单独处理</span>
+<span class="kw">if</span> getattr(transformer_block, <span class="st">"moe_enabled"</span>, <span class="kw">False</span>):
+    experts = transformer_block.moe.routed_experts.inner_experts   <span class="cmt"># GroupedExperts</span>
+    expert_params = <span class="kw">set</span>(experts.parameters())   <span class="cmt"># 专家权重集合（区别于普通参数）</span>
+    num_experts = experts.num_experts                            <span class="cmt"># 160</span>
+
+    <span class="cmt"># ① 决定专家权重沿哪个维度切（关键：Shard(0) vs Shard(1)）</span>
+    <span class="kw">if</span> ep_degree > <span class="nu">1</span>:
+        efsdp_ep_size = edp_mesh[<span class="st">"efsdp"</span>].size() * ep_degree   <span class="cmt"># 专家权重的数据并行规模</span>
+    <span class="kw">else</span>:
+        efsdp_ep_size = fsdp_config[<span class="st">"mesh"</span>].size()
+    <span class="kw">if</span> efsdp_ep_size > num_experts:
+        expert_shard_placement = <span class="kw">Shard</span>(<span class="nu">1</span>)   <span class="cmt"># 卡数 > 专家数 → 切专家内部维，避免空 shard/padding</span>
+    <span class="kw">else</span>:
+        expert_shard_placement = <span class="kw">Shard</span>(<span class="nu">0</span>)   <span class="cmt"># 否则沿专家维切（EP 的经典做法）</span>
+
+    <span class="cmt"># ② 按 ep_degree 选不同策略</span>
+    <span class="kw">if</span> ep_degree == <span class="nu">1</span> <span class="kw">and</span> expert_shard_placement == <span class="kw">Shard</span>(<span class="nu">0</span>):
+        <span class="fn">fully_shard</span>(transformer_block, **fsdp_config, ...)      <span class="cmt"># 最简：整层一刀切</span>
+    <span class="kw">elif</span> ep_degree == <span class="nu">1</span>:
+        <span class="kw">def</span> <span class="fn">_experts_shard_placement_fn</span>(param, _expert_params=expert_params):
+            <span class="kw">return</span> <span class="kw">Shard</span>(<span class="nu">1</span>) <span class="kw">if</span> param <span class="kw">in</span> _expert_params <span class="kw">else</span> <span class="kw">None</span>   <span class="cmt"># 只把专家权重切 dim1</span>
+        <span class="fn">fully_shard</span>(transformer_block, ..., shard_placement_fn=_experts_shard_placement_fn)
+    <span class="kw">else</span>:   <span class="cmt"># ep_degree > 1：专家权重分到稀疏 mesh（edp_mesh），其它参数分到普通 dp_mesh</span>
+        <span class="kw">def</span> <span class="fn">_shard_placement_fn</span>(param, ...):
+            <span class="kw">if</span> param <span class="kw">in</span> expert_params:
+                <span class="kw">return</span> ShardPlacementResult(placement=_expert_placement, mesh_info=_edp_mesh_info) <span class="cmt"># → 稀疏 mesh</span>
+            <span class="kw">else</span>:
+                <span class="kw">return</span> ShardPlacementResult(placement=<span class="kw">Shard</span>(<span class="nu">0</span>), mesh_info=_dp_mesh_info) <span class="cmt"># → 稠密 mesh</span>
+        <span class="fn">fully_shard</span>(transformer_block, ..., shard_placement_fn=_shard_placement_fn)</code></pre>
+<table>
+  <tr><th>情形</th><th>专家权重切法</th><th>解决的问题</th></tr>
+  <tr><td>EP=1，且卡数 ≤ 专家数</td><td>和整层一起，普通 <code>Shard(0)</code></td><td>最简单，不需要特判</td></tr>
+  <tr><td>EP=1，但卡数 &gt; 专家数</td><td>专家权重 <code>Shard(1)</code>，其它参数照旧</td><td>避免专家维切不完导致某些卡拿到空 shard（padding 浪费）</td></tr>
+  <tr><td>EP &gt; 1</td><td>专家权重 → <b>稀疏 mesh</b> <code>(dp_replicate, efsdp, ep)</code>；其它参数 → 稠密 mesh</td><td>专家权重要走 EP 的 all-to-all，必须在 ep/efsdp 轴上单独分，不能和普通参数混在 dp_mesh 上</td></tr>
+</table>
+<div class="callout green">
+  <b class="tag">💡 一句话：MoE 特判解决什么</b>
+  MoE 层里有一块"<b>按专家切</b>"的参数（路由专家）和一块"<b>普通切</b>"的参数（其余）。
+  两者角色不同，<code>shard_placement_fn</code> 就是"<b>按参数名/归属，逐个决定用哪个 mesh、切哪个维</b>"的钩子——
+  这样专家权重跟 EP 走、其它参数跟普通 FSDP 走，互不干扰。
+</div>
+
+<h3 id="prefetch">2.4 显式 prefetch（EP 启用时的通信重叠优化）</h3>
+<p>FSDP 默认有<b>隐式 prefetch</b>：根据运行时模块执行顺序提前预判"下一层要 all-gather 哪些参数"，把通信和前向计算重叠。
+但 <b>EP 启用时 token 的 D2H 同步会打乱这个预判</b>，导致隐式 prefetch 失效。</p>
+<pre><code><span class="cmt"># fsdp.py:326-366 —— 仅 EP 启用时（ep_degree > 1）走显式 prefetch</span>
+<span class="kw">if</span> ep_degree == <span class="nu">1</span>:
+    <span class="kw">return</span>   <span class="cmt"># EP 关：交给 FSDP 隐式 prefetch，不需要手动</span>
+
+<span class="cmt"># 前向：每层提前声明"我要预取下一层的参数"</span>
+transformer_blocks = <span class="kw">list</span>(model.layers.values())
+next = transformer_blocks[<span class="nu">1</span>:] + [<span class="kw">None</span>]
+<span class="kw">for</span> block, nblock <span class="kw">in</span> zip(transformer_blocks, next):
+    <span class="kw">if</span> nblock <span class="kw">is</span> <span class="kw">not</span> <span class="kw">None</span>:
+        block.set_modules_to_forward_prefetch([nblock])     <span class="cmt"># 前向预取下一层参数</span>
+    <span class="kw">elif</span> model.norm <span class="kw">is</span> <span class="kw">not</span> <span class="kw">None</span>:
+        block.set_modules_to_forward_prefetch([model.norm, model.lm_head])
+
+<span class="cmt"># 反向：同理，从后往前预取</span>
+reversed_blocks = <span class="kw">list</span>(reversed(model.layers.values()))
+prev = reversed_blocks[<span class="nu">1</span>:] + [<span class="kw">None</span>]
+<span class="kw">for</span> block, pblock <span class="kw">in</span> zip(reversed_blocks, prev):
+    <span class="kw">if</span> pblock <span class="kw">is</span> <span class="kw">not</span> <span class="kw">None</span>:
+        block.set_modules_to_backward_prefetch([pblock])</code></pre>
+<div class="callout purple">
+  <b class="tag">⚙️ 显式 prefetch vs 隐式 prefetch</b>
+  <b>隐式</b>（EP 关）：FSDP 靠运行时顺序自己猜下一层，自动预取——无需用户管，但对 D2H 同步敏感。<br>
+  <b>显式</b>（EP 开）：torchtitan 用 <code>set_modules_to_forward_prefetch / set_modules_to_backward_prefetch</code>
+  把"下一层是谁"<b>显式写死</b>，让 all-gather 稳定地与计算重叠，免受 EP 的 host 同步干扰。<br>
+  这是 FSDP + EP 组合下特有的性能修补，普通 FSDP 或非 EP 的 MoE 不需要。
+</div>
+
+<h2 class="section" id="torch">3. 第 3 层 · Torch 层：fully_shard 的物理动作</h2>
+<p>PyTorch 的 <code>torch.distributed.fsdp.fully_shard</code>（FSDP2 可组合 API）收到一个 nn.Module 和一个
+<code>DeviceMesh</code>，做三件事：<strong>切参数、前向 all-gather、反向 reduce-scatter</strong>。</p>
+<pre><code><span class="cmt"># 以 tok_embeddings.weight (102400, 5120) 为例，dp_shard 组内 8 卡：</span>
+<span class="cmt"># ① 参数切分（注册时）</span>
+<span class="fn">fully_shard</span>(model.tok_embeddings, mesh=dp_mesh, dp_mesh_dims=DataParallelMeshDims(shard="dp_shard"))
+<span class="cmt">#    → weight 变成 DTensor，placements = (Shard(0) 于 dp_shard, Replicate 于 dp_replicate)</span>
+<span class="cmt">#    → 每卡全局形状 (102400, 5120)，每卡局部 (102400/8, 5120) = (12800, 5120)</span>
+
+<span class="cmt"># ② 前向：参数全量 all-gather</span>
+<span class="cmt">#    每卡把 1/8 的参数片段广播给组内 8 卡（AllGather），临时合成完整 (102400, 5120) 参与 matmul</span>
+<span class="cmt">#    真实值：每次前向触发 8 卡 AllGather，每卡 12800×5120 的 shard → 全局 102400×5120</span>
+
+<span class="cmt"># ③ 反向：梯度 reduce-scatter</span>
+<span class="cmt">#    每卡算出自己那段的梯度后，做 ReduceScatter 把 8 卡梯度求和并按段切回</span>
+<span class="cmt">#    → 每卡持有 (12800, 5120) 的完整梯度 shard</span></code></pre>
+<div class="callout purple">
+  <b class="tag">⚙️ FSDP vs TP 通信的本质区别</b>
+  <b>TP</b> 把<strong>计算维度</strong>切了——每卡只算一部分特征，卡间靠 matmul 的并行自然协作；
+  <b>FSDP</b> 把<strong>参数本身</strong>切了——每卡只存 1/DP 的参数，但<strong>每张卡都要算完整的数据</strong>，
+  所以靠"前向 all-gather 参数 + 反向 reduce-scatter 梯度"来交换。<br>
+  FSDP 从不关心权重是 colwise 还是 rowwise——它只按数据并行轴切第 0 维，是"最笨但最通用"的切分。
+</div>
+
+<h2 class="section" id="flow">4. 全链路流转 + 真实值汇总</h2>
+<div class="flow">
+  <div class="step"><div class="n">1</div><div><span class="who user">用户</span><b>3 个开关</b>：<code>fsdp_reshard_after_forward</code>、<code>enable_cpu_offload</code>、<code>enable_fsdp_symm_mem</code>；调用一次 <code>apply_fsdp_to_mtp_decoder</code>。无 per-param 分片。</div></div>
+  <div class="step"><div class="n">2</div><div><span class="who titan">Titan</span><b>算网格</b>：<code>resolve_fsdp_mesh</code> 从 parallel_dims 得到 storage mesh <code>(dp_replicate=2, dp_shard=8, cp=1, tp=1)</code> + DSDP 轴声明。</div></div>
+  <div class="step"><div class="n">3</div><div><span class="who titan">Titan</span><b>逐层 shard</b>：<code>apply_fsdp_to_decoder</code> 对 60 层每层调 <code>fully_shard</code>；MoE 层用 <code>shard_placement_fn</code> 单独处理专家权重。</div></div>
+  <div class="step"><div class="n">4</div><div><span class="who titan">Titan</span><b>（MoE+EP）显式 prefetch</b>：EP 启用时用 <code>set_modules_to_forward/backward_prefetch</code> 把前向/反向预取下一层写死（绕过隐式 prefetch 的 D2H 干扰）。</div></div>
+  <div class="step"><div class="n">5</div><div><span class="who torch">Torch</span><b>切参数</b>：每层参数沿 <code>dp_shard</code> 轴切成 <code>Shard(0)</code>，每卡只存 1/8。</div></div>
+  <div class="step"><div class="n">6</div><div><span class="who torch">Torch</span><b>前向 AllGather</b>：每步前向，把 8 卡参数片段拼回完整权重再计算。</div></div>
+  <div class="step"><div class="n">7</div><div><span class="who torch">Torch</span><b>反向 ReduceScatter</b>：梯度求和并切回，每卡拿到自己参数 shard 的完整梯度。</div></div>
+</div>
+
+<table>
+  <tr><th>关键量</th><th>真实值</th></tr>
+  <tr><td>FSDP 网格</td><td><code>(dp_replicate=2, dp_shard=8, cp=1, tp=1)</code></td></tr>
+  <tr><td>tok_embeddings.weight 全局/局部</td><td><code>(102400, 5120)</code> / <code>(12800, 5120)</code></td></tr>
+  <tr><td>参数 placement</td><td><code>Shard(0)</code>@dp_shard，<code>Replicate</code>@dp_replicate</td></tr>
+  <tr><td>前向通信</td><td>AllGather（8 卡一组）</td></tr>
+  <tr><td>反向通信</td><td>ReduceScatter（8 卡一组）</td></tr>
+  <tr><td>reshard_after_forward</td><td><code>True</code>（default 且无 PP）</td></tr>
+  <tr><td>cpu_offload</td><td><code>False</code>（默认）</td></tr>
+  <tr><td>enable_symm_mem</td><td><code>False</code>（默认，纯通信优化）</td></tr>
+  <tr><td>MoE 层特判</td><td>专家权重走 <code>shard_placement_fn</code>：EP=1 时按 <code>Shard(0/1)</code> 切，EP&gt;1 时分到稀疏 mesh</td></tr>
+  <tr><td>显式 prefetch</td><td><b>仅 EP 启用时</b>：<code>set_modules_to_forward/backward_prefetch</code>，绕过隐式 prefetch 的 D2H 干扰</td></tr>
+  <tr><td>是否写 per-param 分片</td><td><b>不写</b>（区别于 TP/EP）</td></tr>
+</table>
+
+<div class="callout">
+  <b class="tag">💡 一句话串起三层</b>
+  <b>用户</b>只开关；<b>Titan</b>算网格并逐层 <code>fully_shard</code>（MoE 层拆开处理）；
+  <b>Torch</b> 的 <code>fully_shard</code> 切参数 + 前向 AllGather + 反向 ReduceScatter。
+  FSDP 的"笨而通用"恰恰是它和 TP/EP 最大的分界。
+</div>
+
+<div class="foot">
+  本页基于 <code>torchtitan/distributed/fsdp.py</code>、<code>torchtitan/distributed/full_dtensor.py:70-106</code>；
+  数值取自 <code>torchtitan/models/deepseek_v3/__init__.py</code>（dim=5120, vocab=102400, 60 层）。
+  <br>配套页面：<a href="x_attn_sharding_three_layers.html">TP 激活/Attention 详解</a> · <a href="cp_three_layers.html">CP</a> · <a href="pp_three_layers.html">PP</a> · <a href="ep_three_layers.html">EP</a>
+</div>
+
+</div>
+</body>
+</html>

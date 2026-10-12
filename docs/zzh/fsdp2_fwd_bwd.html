@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}</style><title>FSDP2 前向/反向全流程与原理：从 fully_shard 到 Pre/Post-Bwd</title>
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f6f8fa; --ink:#1f2328; --muted:#59636e;
+    --line:#d0d7de; --blue:#0969da; --purple:#8250df; --green:#1a7f37;
+    --orange:#bc4c00; --red:#cf222e; --code-bg:#0d1117; --code-fg:#e6edf3;
+    --mono:"Cascadia Code","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.72;font-size:15px}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 26px 90px}
+  header.hero{border-bottom:3px solid var(--ink);padding-bottom:16px;margin-bottom:22px}
+  header.hero h1{margin:0 0 8px;font-size:26px;line-height:1.35}
+  header.hero .sub{margin:0;color:var(--muted);font-size:13.5px}
+  .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .chip{font-size:12px;font-weight:600;padding:4px 11px;border-radius:20px;color:#fff}
+  .c-fwd{background:#0969da}.c-bwd{background:#bc4c00}
+  .c-comm{background:#8250df}.c-code{background:#1a7f37}
+  nav.toc{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:12px 18px;margin:18px 0 8px;font-size:13.5px}
+  nav.toc ol{margin:6px 0 0;padding-left:22px}
+  nav.toc a{color:var(--blue);text-decoration:none}
+  h2{font-size:21px;margin:42px 0 12px;padding:9px 14px;background:var(--panel);
+    border-left:5px solid var(--purple);border-radius:6px}
+  h2.g{border-left-color:#1a7f37} h2.b{border-left-color:#0969da}
+  h2.o{border-left-color:#bc4c00} h2.r{border-left-color:#cf222e}
+  h3{font-size:17px;margin:24px 0 8px;color:#0a0c10}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0;padding-left:24px}
+  code{font-family:var(--mono);font-size:12.8px;background:#eef1f4;padding:1px 6px;border-radius:4px}
+  pre{background:var(--code-bg);color:var(--code-fg);border-radius:8px;padding:13px 15px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.2px;line-height:1.55}
+  pre code{background:none;padding:0;color:inherit;font-size:inherit}
+  .cmt{color:#8b949e}.kw{color:#ff7b72}.fn{color:#d2a8ff}.st{color:#a5d6ff}
+  .nu{color:#79c0ff}.cl{color:#fcd34d}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel);font-weight:600}
+  tr:nth-child(even) td{background:#fbfcfe}
+  .callout{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;
+    background:#f0f6ff;padding:9px 13px;margin:13px 0;font-size:13.5px}
+  .callout.p{border-left-color:var(--purple);background:#faf0ff}
+  .callout.o{border-left-color:var(--orange);background:#fff4e8}
+  .callout.g{border-left-color:var(--green);background:#effbf2}
+  .callout.r{border-left-color:var(--red);background:#fff0f0}
+  .callout b.t{display:inline-block;font-size:12px;margin-right:5px}
+  figure{margin:16px 0;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  figure svg{display:block;width:100%;height:auto;max-width:1100px;margin:0 auto}
+  figcaption{text-align:center;color:var(--muted);font-size:12.5px;margin-top:6px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;margin-right:4px}
+  .t-fwd{background:#ddf4ff;color:#0969da}.t-bwd{background:#fff1e5;color:#bc4c00}
+  .t-comm{background:#f1defa;color:#6f42c1}.t-code{background:#e7f3e7;color:#1a7f37}
+  .foot{margin-top:50px;padding-top:14px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:12.5px}
+  @media (max-width:820px){.wrap{padding:16px 12px 70px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>FSDP2 前向/反向全流程与原理：从 fully_shard 到 Pre/Post-Bwd</h1>
+  <p class="sub">以本地仓库 <code>D:\02_source\torchtitan</code>（main @ 229fa0bd5）+ 本地 PyTorch
+    <code>D:\02_source\pytorch\torch\distributed\fsdp\_fully_shard\</code> 为准；默认按 dense、full_dtensor、无 PP 描述。</p>
+  <div class="legend">
+    <span class="chip c-fwd">Forward 流程</span>
+    <span class="chip c-bwd">Backward 流程</span>
+    <span class="chip c-comm">unshard / reshard / reduce-scatter</span>
+    <span class="chip c-code">代码位置</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <b>本页目录</b>
+  <ol>
+    <li><a href="#model">先建立心智模型：FSDP2 到底“动”什么</a></li>
+    <li><a href="#lifecycle">一个参数组的 fwd/bwd 生命周期（图 1）</a></li>
+    <li><a href="#fwd">Forward：unshard → 计算 → reshard → 挂输出 hook</a></li>
+    <li><a href="#bwd">Backward：Pre-Bwd 重新 unshard → 算梯度 → Post-Bwd reshard + reduce-scatter</a></li>
+    <li><a href="#hookmap">Hook 到底挂在哪：FSDP2 vs FSDP1（图 2）</a></li>
+    <li><a href="#multi">多层训练：prefetch 让 AG / 计算 / RS 重叠（图 3）</a></li>
+    <li><a href="#titan">对应回 torchtitan：full_dtensor + 每 block 一个 fully_shard</a></li>
+    <li><a href="#summary">代码级一句话流程图</a></li>
+    <li><a href="#faq">常见误解与 FAQ</a></li>
+  </ol>
+</nav>
+
+<h2 id="model">1. 先建立心智模型：FSDP2 到底“动”什么</h2>
+
+<p>FSDP（Fully Sharded Data Parallel）的思想是：<b>权重、梯度、优化器状态这三样，都只在一部分 DP rank 上各存 1/DP 份</b>。
+torchtitan 的 full_dtensor 模式下，这份“分片”用 <code>DTensor Shard(0)</code> 表示；TP/CP 造成的那部分切分在
+<code>Module.parallelize()</code> 阶段已经做完，FSDP 只负责数据并行轴上的分片与恢复。</p>
+
+<p>因此 FSDP2 每轮训练反复做三件事，理解 fwd/bwd 只需要这三件事：</p>
+<table>
+  <tr><th>动作</th><th>方向</th><th>做什么</th><th>发生在哪</th></tr>
+  <tr>
+    <td><b>unshard</b></td>
+    <td>分片 → 完整</td>
+    <td>发起 <b>all-gather</b>，把各 rank 手里的 1/DP 份拼成完整参数；完整副本放在 all-gather 输出 buffer 里</td>
+    <td>Pre-Forward、Pre-Backward（反向要再算一次梯度，所以前向结束后释放过的话，反向要重新恢复）</td>
+  </tr>
+  <tr>
+    <td><b>reshard</b></td>
+    <td>完整 → 分片</td>
+    <td>释放完整参数 buffer，把模块属性重新指回 sharded 参数，省显存</td>
+    <td>Post-Forward（可选）、Post-Backward</td>
+  </tr>
+  <tr>
+    <td><b>reduce-scatter 梯度</b></td>
+    <td>完整梯度 → 本地分片梯度</td>
+    <td>把完整梯度跨 DP rank 求和后，每个 rank 只留下属于自己那 1/DP 份（HSDP 时先沿 replicate 轴 all-reduce）</td>
+    <td>Post-Backward</td>
+  </tr>
+</table>
+
+<div class="callout g">
+  <b class="t">关键前提</b>
+  反向传播不会“自动知道”参数现在是不是完整的。torchtitan 只是把每个 TransformerBlock 交给
+  <code>fully_shard()</code>，让 FSDP2 用“围绕模块 forward/backward 的钩子”在正确时机执行上表的动作——这就是本文要讲清的 fwd/bwd 流程与原理。
+</div>
+
+<h2 id="lifecycle">2. 一个参数组的 fwd/bwd 生命周期（图 1）</h2>
+
+<p>先固定符号：下面图里 <b>W 指“当前这个 block（FSDP 参数组）的全部模型参数”</b>，例如 attention 的 q/k/v/o 和 FFN 的
+weight；<b>∂L/∂W（或简写 grad）指这些参数的梯度</b>。凡是 all-gather，通信的都是“W 的 1/DP 分片”；
+凡是 reduce-scatter，通信的都是“完整梯度 ∂L/∂W”；reshard 只是本地释放显存，不是集合通信。
+图 1 把“一个 FSDP2 参数组”（dense 场景下 = 一个 TransformerBlock）在一轮训练里的状态变化串起来：
+蓝色是 forward 阶段（自左向右），橙色是 backward 阶段（自右向左，与计算图逆向一致）。</p>
+
+<figure>
+<svg viewBox="0 0 1100 540" font-family="Segoe UI,PingFang SC,Microsoft YaHei,sans-serif" font-size="12.5">
+  <defs>
+    <marker id="fb1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <text x="26" y="40" font-size="14" font-weight="700" fill="#0969da">Forward 阶段（每层 block 一次）</text>
+
+  <!-- row1 forward cards -->
+  <g>
+    <rect x="24" y="62" width="236" height="172" rx="10" fill="#f0f6ff" stroke="#0969da"/>
+    <text x="38" y="90" font-weight="700" fill="#0969da">① 初始 / 空闲</text>
+    <text x="38" y="116" fill="#1f2328">W = 本 block 全部参数</text>
+    <text x="38" y="139" fill="#59636e">（attention / FFN 的</text>
+    <text x="38" y="160" fill="#59636e">weight 等）</text>
+    <text x="38" y="185" fill="#1f2328">每 rank 只存 1/DP 分片</text>
+    <text x="38" y="210" fill="#59636e">DTensor Shard(0)；优化器同切</text>
+  </g>
+  <g>
+    <rect x="288" y="62" width="236" height="172" rx="10" fill="#f0f6ff" stroke="#0969da"/>
+    <text x="302" y="90" font-weight="700" fill="#0969da">② Pre-Forward unshard</text>
+    <text x="302" y="116" font-weight="700" fill="#6f42c1">【通信①】all-gather</text>
+    <text x="302" y="139" fill="#1f2328">通信对象：W 的 1/DP 分片</text>
+    <text x="302" y="162" fill="#1f2328">结果：每 rank 都有完整 W</text>
+    <text x="302" y="187" fill="#59636e">完整 W 写入 AG buffer</text>
+    <text x="302" y="210" fill="#59636e">同时插 Post-Bwd 节点</text>
+  </g>
+  <g>
+    <rect x="552" y="62" width="236" height="172" rx="10" fill="#f0f6ff" stroke="#0969da"/>
+    <text x="566" y="90" font-weight="700" fill="#0969da">③ Forward 计算</text>
+    <text x="566" y="116" fill="#1f2328">用完整 W 跑 attention / FFN</text>
+    <text x="566" y="139" fill="#1f2328">autograd 图在此构建</text>
+    <text x="566" y="162" fill="#1f2328">产生全新输出张量</text>
+    <text x="566" y="187" fill="#59636e">（无 FSDP 集合通信）</text>
+    <text x="566" y="210" fill="#59636e">输入侧已插入后向节点</text>
+  </g>
+  <g>
+    <rect x="816" y="62" width="254" height="172" rx="10" fill="#f0f6ff" stroke="#0969da"/>
+    <text x="830" y="90" font-weight="700" fill="#0969da">④ Post-Forward</text>
+    <text x="830" y="116" fill="#1f2328">reshard：释放完整 W</text>
+    <text x="830" y="139" fill="#59636e">（本地显存操作，不是通信）</text>
+    <text x="830" y="162" fill="#1f2328">模块属性指回 1/DP 的 W</text>
+    <text x="830" y="187" fill="#1f2328">输出张量挂 Pre-Bwd hook</text>
+    <text x="830" y="212" fill="#59636e">记录 post_forward_order</text>
+  </g>
+
+  <path d="M260 148 L284 148" stroke="#57606a" stroke-width="2" marker-end="url(#fb1)"/>
+  <path d="M524 148 L548 148" stroke="#57606a" stroke-width="2" marker-end="url(#fb1)"/>
+  <path d="M788 148 L812 148" stroke="#57606a" stroke-width="2" marker-end="url(#fb1)"/>
+  <path d="M943 234 C943 278 905 292 900 318" fill="none" stroke="#bc4c00"
+        stroke-width="2" stroke-dasharray="5 4" marker-end="url(#fb1)"/>
+  <text x="806" y="270" font-size="11" fill="#bc4c00">loss.backward()：梯度从输出张量流回 → Pre-Bwd</text>
+
+  <text x="26" y="302" font-size="14" font-weight="700" fill="#bc4c00">Backward 阶段（自右向左，与计算图逆向一致）</text>
+
+  <!-- row2 backward cards: right -> left -->
+  <g>
+    <rect x="816" y="322" width="254" height="178" rx="10" fill="#fff4e8" stroke="#bc4c00"/>
+    <text x="830" y="350" font-weight="700" fill="#bc4c00">⑤ Pre-Bwd（反向起点）</text>
+    <text x="830" y="376" fill="#1f2328">触发：梯度到达输出张量</text>
+    <text x="830" y="400" font-weight="700" fill="#6f42c1">【通信②】all-gather W 分片</text>
+    <text x="830" y="423" fill="#1f2328">unshard 的是参数 W，不是梯度</text>
+    <text x="830" y="448" fill="#1f2328">wait AG 完成后：</text>
+    <text x="830" y="471" fill="#1f2328">prefetch 前一个 block 的 W</text>
+  </g>
+  <g>
+    <rect x="552" y="322" width="236" height="178" rx="10" fill="#fff4e8" stroke="#bc4c00"/>
+    <text x="566" y="350" font-weight="700" fill="#bc4c00">⑥ 本 block 反向计算</text>
+    <text x="566" y="376" fill="#1f2328">用完整 W 算 ∂L/∂W</text>
+    <text x="566" y="400" fill="#1f2328">梯度先累积到完整 W 的 grad</text>
+    <text x="566" y="425" fill="#59636e">（无 FSDP 集合通信）</text>
+    <text x="566" y="450" fill="#59636e">autograd 逆序执行算子</text>
+    <text x="566" y="473" fill="#59636e">完成后梯度流向输入边</text>
+  </g>
+  <g>
+    <rect x="288" y="322" width="236" height="178" rx="10" fill="#fff4e8" stroke="#bc4c00"/>
+    <text x="302" y="350" font-weight="700" fill="#bc4c00">⑦ Post-Bwd 收尾</text>
+    <text x="302" y="376" fill="#1f2328">触发：梯度到输入边节点</text>
+    <text x="302" y="400" fill="#59636e">先收拢/累积 unsharded 梯度</text>
+    <text x="302" y="425" fill="#1f2328">reshard：释放完整 W（本地）</text>
+    <text x="302" y="450" font-weight="700" fill="#6f42c1">【通信③】reduce-scatter</text>
+    <text x="302" y="473" fill="#1f2328">对象=梯度 ∂L/∂W，不是 W</text>
+  </g>
+  <g>
+    <rect x="24" y="322" width="236" height="178" rx="10" fill="#fff4e8" stroke="#bc4c00"/>
+    <text x="38" y="350" font-weight="700" fill="#bc4c00">⑧ 反向结束 → Optimizer</text>
+    <text x="38" y="376" fill="#1f2328">梯度已是 1/DP 的</text>
+    <text x="38" y="399" fill="#1f2328">sharded DTensor</text>
+    <text x="38" y="425" fill="#1f2328">只更新本地 W 分片</text>
+    <text x="38" y="450" fill="#59636e">整步所有 block 的 RS 完成后</text>
+    <text x="38" y="473" fill="#59636e">下一轮 forward 回到 ①</text>
+  </g>
+
+  <!-- backward arrows point left -->
+  <path d="M812 410 L792 410" stroke="#57606a" stroke-width="2" marker-end="url(#fb1)"/>
+  <path d="M548 410 L528 410" stroke="#57606a" stroke-width="2" marker-end="url(#fb1)"/>
+  <path d="M284 410 L264 410" stroke="#57606a" stroke-width="2" marker-end="url(#fb1)"/>
+  <text x="40" y="520" font-size="11" fill="#bc4c00">← Backward 推进方向：本 block 处理完，梯度继续流向更早的 block</text>
+</svg>
+<figcaption>图 1：FSDP2 一个参数组（一个 TransformerBlock）在一轮训练里的 fwd/bwd 生命周期。
+Forward 自左向右；Backward 自右向左。三种通信分别是：②⑤ all-gather W 分片（得到完整参数 W）、
+prefetch=提前 all-gather 前一个 block 的 W、⑦ reduce-scatter 梯度 ∂L/∂W（只留本地 1/DP）；reshard 只是本地释放显存。</figcaption>
+</figure>
+
+<table>
+  <tr><th>图中的通信</th><th>通信的是“什么”</th><th>方向 / 结果</th></tr>
+  <tr>
+    <td>② all-gather（unshard）</td>
+    <td>本 block 参数 W 的 1/DP 分片（weight 张量，不是激活、不是梯度）</td>
+    <td>每个 rank 把分片发给全体 → 每 rank 得到完整 W，供 forward 计算</td>
+  </tr>
+  <tr>
+    <td>⑤ all-gather（unshard）</td>
+    <td>同样是本 block 参数 W 的分片</td>
+    <td>forward 完已 reshard，反向要算梯度前再恢复完整 W</td>
+  </tr>
+  <tr>
+    <td>⑤ 里的 prefetch</td>
+    <td>“前一个 block（forward 顺序上相邻）”的参数 W 分片</td>
+    <td>提前发起它的 all-gather，等轮到它反向时往往已 ready</td>
+  </tr>
+  <tr>
+    <td>⑦ reduce-scatter</td>
+    <td>本 block 的完整梯度 ∂L/∂W（不是 W）</td>
+    <td>跨 DP rank 求和后，每 rank 只留属于自己的 1/DP 梯度分片</td>
+  </tr>
+</table>
+
+<div class="callout o">
+  <b class="t">注意 ⑤ 与 ④ 的区别</b>
+  若 <code>reshard_after_forward=True</code>（dense + 无 PP 的默认值），④ 已经把完整参数 W 释放，所以 ⑤ 必须
+  <b>对参数 W 再 all-gather 一次</b>才能供反向计算梯度。torchtitan 对最后一组（norm+lm_head）和 FSDP 根模块会刻意少做这次释放，
+  因为“释放后马上又会被 prefetch/再用”不划算。
+</div>
+
+<h2 id="fwd">3. Forward：unshard → 计算 → reshard → 挂输出 hook</h2>
+
+<p>torchtitan 不会自己实现这些钩子，它只按模块粒度调用 <code>fully_shard()</code>（见第 7 节）。hook 骨架在 PyTorch FSDP2：
+<code>fully_shard()</code> 初始化时给模块注册一次 <b>forward pre-hook 与 forward hook</b>
+（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_state.py:105">_fsdp_state.py:105-130</a>）。这两层钩子不是“每轮现挂”，而是
+“注册一次、每轮 forward 都会触发”。</p>
+
+<h3>3.1 Pre-Forward（模块 forward 之前）</h3>
+<ul>
+  <li>第一次进入时做 lazy init：确定 FSDP 根、共享通信流、初始化所有参数组。</li>
+  <li>每个参数组执行 <code>pre_forward()</code>：<b>unshard()（all-gather）→ wait_for_unshard()</b>，
+      把参数恢复到完整状态（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:550">_fsdp_param_group.py:550-568</a>）。</li>
+  <li>本轮第一次进入 forward pass 时，把 <b>RegisterPostBackwardFunction</b> 这个自定义 autograd 节点包到
+      模块输入里 requires_grad 的张量上（同段代码 567 行调用 <code>_register_post_backward_hook(args, kwargs)</code>，
+      实现在 <a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:917">_fsdp_param_group.py:917-934</a>）。</li>
+</ul>
+
+<h3>3.2 模块真实 forward</h3>
+<p>参数已经完整，attention / FFN / 归一化等真实算子正常执行；autograd 图在这段计算中被构建。
+full_dtensor 下输入输出都是 DTensor，但这不影响 FSDP2 的流程。</p>
+
+<h3>3.3 Post-Forward（模块 forward 之后）</h3>
+<ul>
+  <li>参数组执行 <code>post_forward()</code>：若 <code>reshard_after_forward</code> 为真，立即 <b>reshard</b> 释放完整参数，
+      并记录一次 <code>post_forward_order</code>（作用见下，供 backward 默认 prefetch 使用）
+      （<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:570">_fsdp_param_group.py:570-583</a>）。</li>
+  <li>FSDPState 随后调用 <code>_register_pre_backward_hook(output)</code>：从输出结构里收集 requires_grad 的张量，
+      对每个张量执行 <code>t.register_hook(self._pre_backward)</code>
+      （<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_state.py:328">_fsdp_state.py:328-344</a> 与
+      <a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_state.py:440">:440-466</a>，register_hook 在 458 行）。</li>
+</ul>
+
+<div class="callout b">
+  <b class="t">记录 post_forward_order 是干什么的</b>
+  <code>post_forward_order</code> 是 FSDP2 每个训练迭代里、按“各参数组 forward 完成的先后”记录的一张顺序表：
+  dense 场景下大致是 <code>[block0, block1, ..., norm/lm_head]</code>。它的唯一用途是给<b>默认 backward prefetch</b>当“调度表”。
+  反向时参数组按 forward 的逆序被使用，所以当第 <code>i</code> 个组的 Pre-Bwd 触发时，
+  <code>_backward_prefetch()</code> 会从 <code>post_forward_order</code> 取第 <code>i-1</code> 个组，
+  提前对它发起参数 all-gather——这样等上一层的梯度真到输出时，参数往往已经就绪，只差 wait
+  （实现见 <a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:821">_fsdp_param_group.py:821-857</a>）。
+  如果 torchtitan 显式调了 <code>set_modules_to_backward_prefetch</code>（MoE+EP 路径），就改用显式列表，不再走这张默认表。
+</div>
+
+<div class="callout b">
+  <b class="t">为什么 Pre-Bwd hook 要“每轮 forward 后”挂</b>
+  autograd hook 是挂在张量上的，而每次 forward 都会产生<b>全新的输出张量</b>。只能在张量刚诞生、还在计算图里时把 hook 挂上，
+  反向梯度流经它时才能拦截到“本模块的参数马上要被求梯度”这个时机。
+</div>
+
+<h2 id="bwd">4. Backward：Pre-Bwd 重新 unshard → 算梯度 → Post-Bwd reshard + reduce-scatter</h2>
+
+<p>反向不是“FSDP 自己从头再跑一遍 forward”，而是 autograd 沿着 forward 构建的计算图逆向执行。
+FSDP2 只在图的边界安插触发器，让参数在需要时是完整的、用完立刻被释放。</p>
+
+<h3>4.1 Pre-Bwd Hook 触发（模块反向开始前）</h3>
+<p>loss 的梯度沿图回流，到达本模块 forward 时产生的输出张量时，<code>_pre_backward(grad)</code> 被调用
+（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_state.py:386">_fsdp_state.py:386-399</a>）：</p>
+<ol>
+  <li>训练状态置为 <code>PRE_BACKWARD</code>，并注册 root 级“最终收尾回调”（防止某些参数组漏掉 Post-Bwd）；</li>
+  <li>每个参数组执行 <code>pre_backward()</code>：<b>unshard() + wait_for_unshard()</b>。
+      这里 unshard 的是<b>本参数组的参数 W</b>（再次 all-gather W 分片），<b>不是梯度</b>。
+      若该组参数已被 prefetch（all-gather 已发出、只差等待），这里就是 no-op（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:592">_fsdp_param_group.py:592-605</a>）；</li>
+  <li>随后按需 prefetch：默认实现 <code>_backward_prefetch()</code> 取 <code>post_forward_order</code> 中“forward 顺序上一个”的参数组，
+      也就是<b>前一个 block 的参数 W</b>（不是梯度），提前把它的 all-gather 发出去（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:821">:821-857</a>）；若 torchtitan 在 MoE+EP 下用
+      <code>set_modules_to_backward_prefetch</code> 指定了显式列表，则改 prefetch 显式指定的 block。</li>
+</ol>
+
+<h3>4.2 模块内部反向计算</h3>
+<p>autograd 逆序执行本模块内的算子，完整参数上产生梯度，先累积到 unsharded 参数（或 <code>unsharded_accumulated_grad</code>）。
+这段不需要 FSDP 干预——它只保证参数此刻是完整的。</p>
+
+<h3>4.3 Post-Bwd 触发（模块反向结束后）</h3>
+<p>反向继续流到“模块输入边”时，4.1 之前插入的 <code>RegisterPostBackwardFunction</code> 的 backward 被执行，调用
+<code>ctx.param_group.post_backward()</code>（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:1141">_fsdp_param_group.py:1141-1163</a>）。
+<code>post_backward()</code> 内部（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:607">:607-790</a>）：</p>
+<ol>
+  <li>若需要，把已计算的梯度累积进 unsharded 梯度状态（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:625">:625</a>）；</li>
+  <li>取出 unsharded 梯度引用；</li>
+  <li><b>reshard 参数</b>（释放完整副本，模块属性指回分片参数）；</li>
+  <li><b>reduce-scatter 梯度</b>：跨 FSDP rank 归约后只留本地 1/DP 份（HSDP 时先沿 replicate 轴 all-reduce）。</li>
+</ol>
+
+<div class="callout p">
+  <b class="t">为什么输入边节点能保证“梯度已经算完”</b>
+  <code>RegisterPostBackwardFunction</code> 位于本模块输入张量上。autograd 执行到它时，本模块内所有算子（也就是会往参数上累积梯度的算子）
+  的反向都已执行完；它再把自己的 backward 结果（原样梯度）放行给前一个 block。这正是 FSDP2 把“Post-Bwd 触发点”放在输入边、
+  而不是参数边的原因。
+</div>
+
+<h3>4.4 root final callback 兜底</h3>
+<p>有些参数组的输入张量 requires_grad=False，autograd 节点不会插入，Post-Bwd 就不会在图中被触发。因此 4.1 注册的 root 收尾回调在整次
+backward 结束时，对仍处于 <code>PRE_BACKWARD/FORWARD</code> 状态的组补执行 <code>post_backward()</code>、清状态、等待 reduce-scatter 事件
+（<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_state.py:401">_fsdp_state.py:401-438</a>）。</p>
+
+<h2 id="hookmap">5. Hook 到底挂在哪：FSDP2 vs FSDP1（图 2）</h2>
+
+<p>这是最容易写混的一节。用代码说话，FSDP2 里：</p>
+<table>
+  <tr><th>名字</th><th>常被误解为</th><th>FSDP2 的真实实现</th><th>代码位置</th></tr>
+  <tr>
+    <td>Pre-Bwd 触发器</td>
+    <td>模块 forward 前挂的参数 hook</td>
+    <td>forward 结束后挂到<b>输出张量</b>上的 <code>register_hook</code>（每轮输出张量都是新的，所以每轮都挂）</td>
+    <td><a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_state.py:440">_fsdp_state.py:440-466</a></td>
+  </tr>
+  <tr>
+    <td>Post-Bwd 触发器</td>
+    <td>挂在 nn.Parameter 上、初始化时注册一次</td>
+    <td>pre-forward 阶段插入到<b>模块输入张量</b>上的 <code>RegisterPostBackwardFunction</code>（autograd 图节点，每轮 forward 都要重新插入）</td>
+    <td><a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:550">_fsdp_param_group.py:550-568</a>、<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:917">:917-934</a></td>
+  </tr>
+  <tr>
+    <td>兜底收尾</td>
+    <td>（不常被提到）</td>
+    <td>第一次 Pre-Bwd 时 queue 的 root final callback，backward 全部结束后统一补跑并复位状态</td>
+    <td><a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_state.py:401">_fsdp_state.py:401-438</a></td>
+  </tr>
+  <tr>
+    <td>FSDP1 的参数 hook</td>
+    <td>（对照）</td>
+    <td>FSDP1 才是把 hook 挂在 <code>FlatParameter</code> 的 <code>AccumulateGrad</code> 上（<code>register_post_accumulate_grad_hook</code>）</td>
+    <td><a href="D:/02_source/pytorch/torch/distributed/fsdp/_runtime_utils.py:1416">_runtime_utils.py:1416-1451</a></td>
+  </tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 1100 540" font-family="Segoe UI,PingFang SC,Microsoft YaHei,sans-serif" font-size="12">
+  <defs>
+    <marker id="hm1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#0969da"/>
+    </marker>
+    <marker id="hm2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#bc4c00"/>
+    </marker>
+  </defs>
+
+  <text x="26" y="34" font-size="15" font-weight="700" fill="#0969da">A. Forward 阶段：搭好 autograd 图的“两个触发器”</text>
+
+  <rect x="40" y="62" width="200" height="88" rx="9" fill="#f6f8fa" stroke="#57606a"/>
+  <text x="54" y="86" font-weight="700" fill="#1f2328">模块输入 x</text>
+  <text x="54" y="106" fill="#59636e">激活 / residual</text>
+  <text x="54" y="124" fill="#59636e">requires_grad=True</text>
+
+  <rect x="290" y="55" width="230" height="52" rx="26" fill="#faf0ff" stroke="#8250df"/>
+  <text x="302" y="75" font-weight="700" fill="#6f42c1">RegisterPostBackwardFunction</text>
+  <text x="302" y="93" fill="#6f42c1">pre_forward 里包到输入上</text>
+
+  <rect x="570" y="46" width="340" height="118" rx="9" fill="#f0f6ff" stroke="#0969da"/>
+  <text x="584" y="74" font-weight="700" fill="#0969da">FSDPModule 包装的 TransformerBlock</text>
+  <text x="584" y="96" fill="#1f2328">forward pre/post hook：fully_shard 初始化注册一次</text>
+  <text x="584" y="116" fill="#59636e">内部：attention / FFN / norm 真实算子</text>
+  <text x="584" y="136" fill="#59636e">模块参数此刻是 unshard（完整）</text>
+
+  <rect x="940" y="62" width="140" height="88" rx="9" fill="#f6f8fa" stroke="#57606a"/>
+  <text x="954" y="86" font-weight="700" fill="#1f2328">输出 y</text>
+  <text x="954" y="106" fill="#59636e">每轮全新张量</text>
+  <text x="954" y="124" fill="#59636e">传给下一层</text>
+
+  <path d="M240 106 L286 106" stroke="#0969da" stroke-width="2" marker-end="url(#hm1)"/>
+  <path d="M520 92 L566 92" stroke="#0969da" stroke-width="2" marker-end="url(#hm1)"/>
+  <path d="M910 92 L936 92" stroke="#0969da" stroke-width="2" marker-end="url(#hm1)"/>
+
+  <rect x="860" y="168" width="240" height="52" rx="26" fill="#ddf4ff" stroke="#0969da"/>
+  <text x="872" y="188" font-weight="700" fill="#0969da">输出挂 register_hook(_pre_backward)</text>
+  <text x="872" y="206" fill="#0969da">post_forward 阶段执行</text>
+  <path d="M980 154 L980 164" stroke="#0969da" stroke-width="2"/>
+
+  <text x="26" y="274" font-size="15" font-weight="700" fill="#bc4c00">B. Backward 阶段：梯度沿反方向触发这两个节点</text>
+
+  <path d="M1010 244 C1010 296 900 314 870 326" fill="none" stroke="#bc4c00"
+        stroke-width="2.5" marker-end="url(#hm2)" stroke-dasharray="6 4"/>
+  <rect x="720" y="330" width="300" height="64" rx="10" fill="#fff4e8" stroke="#bc4c00"/>
+  <text x="734" y="354" font-weight="700" fill="#bc4c00">① 梯度到达输出 y → Pre-Bwd Hook</text>
+  <text x="734" y="374" fill="#1f2328">unshard（AG）+ wait；prefetch 前一个 block</text>
+
+  <path d="M760 394 L760 412" stroke="#bc4c00" stroke-width="2"/>
+  <rect x="570" y="418" width="340" height="58" rx="9" fill="#fff4e8" stroke="#bc4c00"/>
+  <text x="584" y="442" font-weight="700" fill="#bc4c00">② 本模块反向算子执行，完整参数上累积梯度</text>
+  <text x="584" y="460" fill="#59636e">autograd 逆序跑完模块内部，再流向输入边</text>
+
+  <path d="M570 447 L405 447 L405 452" fill="none" stroke="#bc4c00" stroke-width="2.5"
+        marker-end="url(#hm2)"/>
+  <rect x="230" y="418" width="340" height="58" rx="26" fill="#faf0ff" stroke="#8250df"/>
+  <text x="244" y="442" font-weight="700" fill="#6f42c1">③ 梯度到达输入边 → Post-Bwd</text>
+  <text x="244" y="460" fill="#1f2328">RegisterPostBackwardFunction.backward → post_backward()</text>
+
+  <path d="M250 476 L250 494" stroke="#bc4c00" stroke-width="2"/>
+  <rect x="60" y="494" width="510" height="34" rx="8" fill="#f0f6ff" stroke="#0969da"/>
+  <text x="74" y="515" fill="#1f2328">post_backward()：累积梯度 → reshard 参数 → reduce-scatter 梯度（HSDP 先 all-reduce）</text>
+</svg>
+<figcaption>图 2：FSDP2 的两个“反向触发器”。蓝色节点在 forward 阶段搭好：Post-Bwd 节点插在输入边、Pre-Bwd hook 挂在输出边；反向时 ① 先触发 unshard，② 算梯度，③ 再触发 reshard + reduce-scatter。</figcaption>
+</figure>
+
+<h2 id="multi">6. 多层训练：prefetch 让 AG / 计算 / RS 重叠（图 3）</h2>
+
+<p>真正的训练里有很多个 block。forward 自下而上（0→N-1），backward 自上而下（N-1→0）。
+每个 block 被 <code>fully_shard</code> 包成独立 FSDP 参数组后，FSDP2 维护一个 <code>post_forward_order</code>，
+backward 中 block i 的 Pre-Bwd 一旦触发，就立刻给“forward 顺序上的上一个 block”（即反向顺序的下一个）
+发起 prefetch all-gather——这里 prefetch 的是<b>那个 block 的参数 W_{i-1}</b>，不是梯度：
+让 AG W_{i-1} 和 block i 的反向计算重叠。等 block i-1 的梯度真到输出时，它的参数往往已经 prefetch 完，只差 wait。</p>
+
+<figure>
+<svg viewBox="0 0 1100 470" font-family="Segoe UI,PingFang SC,Microsoft YaHei,sans-serif" font-size="12">
+  <defs>
+    <marker id="mt1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <text x="26" y="38" font-size="14" font-weight="700" fill="#0969da">Forward：先 AG 再算，逐层向上</text>
+  <g>
+    <rect x="40" y="58" width="260" height="64" rx="9" fill="#f0f6ff" stroke="#0969da"/>
+    <text x="54" y="80" font-weight="700" fill="#0969da">block 0：AG₀ → forward</text>
+    <text x="54" y="100" fill="#59636e">forward 后 reshard，显存只留 1/DP</text>
+  </g>
+  <g>
+    <rect x="40" y="136" width="260" height="64" rx="9" fill="#f0f6ff" stroke="#0969da"/>
+    <text x="54" y="158" font-weight="700" fill="#0969da">block 1：AG₁ → forward</text>
+    <text x="54" y="178" fill="#59636e">输出继续传给 block 2</text>
+  </g>
+  <g>
+    <rect x="40" y="214" width="260" height="64" rx="9" fill="#f0f6ff" stroke="#0969da"/>
+    <text x="54" y="236" font-weight="700" fill="#0969da">block 2：AG₂ → forward</text>
+    <text x="54" y="256" fill="#59636e">最后一组可能保留完整（norm/head）</text>
+  </g>
+  <path d="M170 122 L170 132" stroke="#0969da" stroke-width="2" marker-end="url(#mt1)"/>
+  <path d="M170 200 L170 210" stroke="#0969da" stroke-width="2" marker-end="url(#mt1)"/>
+
+  <text x="610" y="38" font-size="14" font-weight="700" fill="#bc4c00">Backward：自顶向下，AG/RS 与计算重叠</text>
+  <g>
+    <rect x="590" y="214" width="310" height="64" rx="9" fill="#fff4e8" stroke="#bc4c00"/>
+    <text x="604" y="236" font-weight="700" fill="#bc4c00">block 2：AG W₂ +wait → 反向算</text>
+    <text x="604" y="256" fill="#59636e">反向算完 → RS 梯度₂</text>
+  </g>
+  <g>
+    <rect x="590" y="136" width="310" height="64" rx="9" fill="#fff4e8" stroke="#bc4c00"/>
+    <text x="604" y="158" font-weight="700" fill="#bc4c00">block 1：AG W₁ 已 prefetch → 反向算</text>
+    <text x="604" y="178" fill="#59636e">block 2 的 Pre-Bwd 已提前发起 W₁ 的 all-gather</text>
+  </g>
+  <g>
+    <rect x="590" y="58" width="310" height="64" rx="9" fill="#fff4e8" stroke="#bc4c00"/>
+    <text x="604" y="80" font-weight="700" fill="#bc4c00">block 0：AG W₀ 已 prefetch → 反向算</text>
+    <text x="604" y="100" fill="#59636e">最后触发 tok_embeddings / 根组的 W</text>
+  </g>
+  <path d="M745 278 L745 288 L1000 288 L1000 205" fill="none" stroke="#8250df"
+        stroke-width="2" stroke-dasharray="5 4" marker-end="url(#mt1)"/>
+  <text x="925" y="252" font-size="11" fill="#6f42c1">prefetch：AG W₁（block 1 参数）</text>
+  <path d="M745 200 L745 210 L1000 210 L1000 127" fill="none" stroke="#8250df"
+        stroke-width="2" stroke-dasharray="5 4" marker-end="url(#mt1)"/>
+  <text x="900" y="175" font-size="11" fill="#6f42c1">prefetch：AG W₀（block 0 参数）</text>
+
+  <rect x="40" y="330" width="1020" height="118" rx="10" fill="#f6f8fa" stroke="#8250df"/>
+  <text x="56" y="354" font-weight="700" fill="#6f42c1">为什么能重叠：两个“串行”被拆到不同时间/流上</text>
+  <text x="56" y="376" fill="#1f2328">block i 的 Pre-Bwd：等自己的 AG_i 完成（或 wait prefetch），开始反向计算；</text>
+  <text x="56" y="396" fill="#1f2328">与此同时把前一个 block 的参数 W_{i-1} 的 all-gather 扔进通信流；block i 反向算完，RS_i 再与 block i-1 的反向重叠；</text>
+  <text x="56" y="416" fill="#1f2328">prefetch 的是参数（W），不是梯度；默认路径由 post_forward_order 反查；torchtitan MoE+EP 用显式列表。</text>
+</svg>
+<figcaption>图 3：多层训练下 backward 的 prefetch 时序（示意图）。prefetch 的对象是“参数 W”：每个 block 的参数 all-gather 不必等到“轮到它”才发起，而是由前一个进入 backward 的 block 提前发起；reduce-scatter 的才是梯度。</figcaption>
+</figure>
+
+<h2 id="titan">7. 对应回 torchtitan：full_dtensor + 每 block 一个 fully_shard</h2>
+
+<p>full_dtensor 是一种“所有参数/输入都是多维 SPMD 网格上的 DTensor”的后端。数据并行只是其中一部分：
+FSDP 通过 <code>DataParallelMeshDims(shard=..., replicate=...)</code> 被告知哪些轴归自己管
+（<a href="D:/02_source/torchtitan/torchtitan/distributed/full_dtensor.py:70">full_dtensor.py:70-107</a>）。</p>
+
+<table>
+  <tr><th>torchtitan 位置</th><th>做什么</th><th>与本文流程的关系</th></tr>
+  <tr>
+    <td><a href="D:/02_source/torchtitan/torchtitan/models/llama3/parallelize.py:43">parallelize.py:43-50</a></td>
+    <td>full_dtensor 下先 <code>model.parallelize(parallel_dims)</code></td>
+    <td>TP/CP 分片和输入输出重分布在这里完成，参数成为多维 DTensor</td>
+  </tr>
+  <tr>
+    <td><a href="D:/02_source/torchtitan/torchtitan/models/llama3/parallelize.py:69">parallelize.py:69-88</a></td>
+    <td>调 <code>apply_fsdp_to_decoder()</code> 并传入 <code>dp_mesh / dp_mesh_dims</code></td>
+    <td>把“哪些轴是 FSDP 数据并行轴”传给 <code>fully_shard</code></td>
+  </tr>
+  <tr>
+    <td><a href="D:/02_source/torchtitan/torchtitan/distributed/fsdp.py:238">distributed/fsdp.py:238</a></td>
+    <td>每个 dense TransformerBlock 一次 <code>fully_shard(...)</code></td>
+    <td>每个 block 成为独立 FSDP 参数组——第 4/6 节的“一个组 = 一个 block”</td>
+  </tr>
+  <tr>
+    <td><a href="D:/02_source/torchtitan/torchtitan/distributed/fsdp.py:200">distributed/fsdp.py:200-206</a></td>
+    <td>最后一组 norm+lm_head 默认不 reshard_after_forward</td>
+    <td>避免“释放后马上被 prefetch”的浪费，即 3.3 的例外</td>
+  </tr>
+  <tr>
+    <td><a href="D:/02_source/torchtitan/torchtitan/distributed/fsdp.py:310">distributed/fsdp.py:310</a></td>
+    <td>根模型再 <code>fully_shard(model)</code></td>
+    <td>FSDP 根不负责新增分片组，负责共享通信流与 lazy init/收尾回调</td>
+  </tr>
+  <tr>
+    <td><a href="D:/02_source/torchtitan/torchtitan/distributed/fsdp.py:326">distributed/fsdp.py:326-366</a></td>
+    <td>仅 MoE+EP 时用 <code>set_modules_to_forward/backward_prefetch</code> 显式指定</td>
+    <td>dense 走 FSDP2 默认 prefetch；EP 因 D2H 同步干扰默认策略而改为显式列表</td>
+  </tr>
+</table>
+
+<div class="callout g">
+  <b class="t">一个常见困惑</b>
+  “full_dtensor 下参数本来就有 TP/CP 分片，unshard 会不会把它们也 all-gather 回来？”不会。
+  FSDP2 的 unshard 只针对自己的数据并行 shard 轴；参数完整指的是“沿 DP 轴完整”。本文图中为讲清 FSDP 机制只画了 DP 轴。
+</div>
+
+<h2 id="summary">8. 代码级一句话流程图</h2>
+
+<pre><code><span class="cmt"># fully_shard(block) 初始化：state.init 给模块注册一次 forward pre/post hook
+# ------------------------------------------------------------------
+#   forward:
+#     _pre_forward():
+#       fsdp_param_group.pre_forward()
+#         unshard(); wait_for_unshard()                    # all-gather 恢复完整参数
+#         args = _register_post_backward_hook(args)        # 输入边插 RegisterPostBackwardFunction
+#     out = block.forward(args)
+#     _post_forward():
+#       fsdp_param_group.post_forward()                    # reshard（按 reshard_after_forward）
+#       _register_pre_backward_hook(out)                   # 输出张量 register_hook(_pre_backward)
+#
+#   backward:
+#     输出 y 的梯度 -> _pre_backward(grad):
+#       fsdp_param_group.pre_backward()                    # unshard（已 prefetch 则 no-op）+ wait
+#       _backward_prefetch() / 显式列表                    # prefetch forward 顺序上一个 block
+#     autograd 逆序执行模块内算子 -> 参数梯度累积到 unsharded 参数
+#     梯度到输入边 -> RegisterPostBackwardFunction.backward:
+#       fsdp_param_group.post_backward()
+#         accumulate_unsharded_grad_if_needed()
+#         收集 unsharded 梯度 -> reshard()
+#         reduce-scatter 梯度                              # 只留本地 1/DP 份
+#     root final callback:                                 # 兜底
+#       所有未触发 post_backward 的组补跑 + 状态复位 + wait RS</span></code></pre>
+
+<h2 id="faq">9. 常见误解与 FAQ</h2>
+
+<table>
+  <tr><th>问题</th><th>答案（以 FSDP2 代码为准）</th></tr>
+  <tr>
+    <td>Post-Bwd Hook 是挂在 nn.Parameter 上吗？</td>
+    <td>不是。<code>register_post_accumulate_grad_hook</code> 是 FSDP1 对 FlatParameter/AccumulateGrad 的做法；
+        FSDP2 的触发点是 pre-forward 插入在模块<b>输入张量</b>上的 <code>RegisterPostBackwardFunction</code>，另有 root final callback 兜底。</td>
+  </tr>
+  <tr>
+    <td>为什么 Pre/Post-Bwd 的“挂载”似乎每轮 forward 都要做？</td>
+    <td>模块级 forward pre/post hook 只在 <code>fully_shard</code> 初始化时注册一次；每轮要做的是把 <b>autograd 图节点</b>插进
+        本轮的图（输入边）以及给<b>本轮新的输出张量</b>挂 hook——图和张量都是每轮新建的。</td>
+  </tr>
+  <tr>
+    <td>初始化时参数是 sharded 的，会不会“挂错、通信错乱”？</td>
+    <td>不会。FSDP2 初始化时参数本来就处于 sharded（甚至 meta/未物化）状态；unshard/reshard 由参数组在 forward 时统一切换。
+        “必须在参数完整后才能挂 hook”是 FSDP1 式说法，不是 FSDP2 的约束。</td>
+  </tr>
+  <tr>
+    <td>reshard_after_forward 对流程影响大吗？</td>
+    <td>只影响显存与通信次数，不影响正确性。True = 前向完释放、反向重新 AG（dense 无 PP 默认）；False = 参数保留到反向，
+        反向 Pre-Bwd 的 unshard 变成 no-op（torchtitan 最后一组/PP 默认等场景）。</td>
+  </tr>
+  <tr>
+    <td>激活重计算（AC）会重复挂 hook 吗？</td>
+    <td>FSDP2 对 PRE_BACKWARD 状态下的重计算 forward 做了特判：跳过 reshard 与重复注册，只做输出 dtype 转换
+        （<a href="D:/02_source/pytorch/torch/distributed/fsdp/_fully_shard/_fsdp_state.py:290">_fsdp_state.py:290-344</a>）。</td>
+  </tr>
+  <tr>
+    <td>HSDP 与这里讲的有差别吗？</td>
+    <td>本文按纯 FSDP 讲。HSDP 多一个 replicate 轴，Post-Bwd 的归约先沿 replicate 轴 all-reduce，再沿 shard 轴 reduce-scatter；
+        hook 挂载位置与 fwd/bwd 时机完全相同。</td>
+  </tr>
+</table>
+
+<div class="foot">
+  本页基于 <code>D:\02_source\torchtitan</code>（main @ 229fa0bd5）与本地 PyTorch
+  <code>D:\02_source\pytorch\torch\distributed\fsdp\_fully_shard\</code> 核验。
+  torchtitan 侧：<code>models/llama3/parallelize.py</code>、<code>distributed/fsdp.py</code>、<code>full_dtensor.py</code>；
+  torch 侧：<code>_fully_shard/_fsdp_state.py</code>、<code>_fsdp_param_group.py</code>、<code>_fully_shard.py</code>。
+  图中 rank 数 / 分片份数为示意；dense 场景默认“每 TransformerBlock 一个 FSDP 参数组”。
+</div>
+
+</div>
+</body>
+</html>

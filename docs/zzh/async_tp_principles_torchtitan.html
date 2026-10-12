@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Async TP 异步张量并行详解：原理与实现</title>
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f6f8fa; --ink:#1f2328; --muted:#59636e;
+    --line:#d0d7de; --blue:#0969da; --purple:#8250df; --green:#1a7f37;
+    --orange:#bc4c00; --red:#cf222e; --code-bg:#0d1117; --code-fg:#e6edf3;
+    --mono:"Cascadia Code","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.7;font-size:15px}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 26px 90px}
+  header.hero{border-bottom:3px solid var(--ink);padding-bottom:16px;margin-bottom:22px}
+  header.hero h1{margin:0 0 8px;font-size:27px;line-height:1.35}
+  header.hero .sub{margin:0;color:var(--muted);font-size:13.5px}
+  .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .chip{font-size:12px;font-weight:600;padding:4px 11px;border-radius:20px;color:#fff}
+  .c-purple{background:var(--purple)} .c-blue{background:var(--blue)}
+  .c-green{background:var(--green)} .c-orange{background:var(--orange)}
+  .c-red{background:var(--red)}
+  nav.toc{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:12px 18px;margin:18px 0 8px;font-size:13.5px}
+  nav.toc ol{margin:6px 0 0;padding-left:22px}
+  nav.toc a{color:var(--blue);text-decoration:none}
+  h2{font-size:21px;margin:42px 0 12px;padding:9px 14px;background:var(--panel);
+    border-left:5px solid var(--blue);border-radius:6px}
+  h2.g{border-left-color:var(--green)} h2.o{border-left-color:var(--orange)}
+  h2.r{border-left-color:var(--red)} h2.n{border-left-color:var(--purple)}
+  h3{font-size:17px;margin:24px 0 8px;color:#0a0c10}
+  h4{font-size:15px;margin:18px 0 6px}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0;padding-left:24px}
+  code{font-family:var(--mono);font-size:12.8px;background:#eef1f4;padding:1px 6px;border-radius:4px}
+  pre{background:var(--code-bg);color:var(--code-fg);border-radius:8px;padding:13px 15px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.2px;line-height:1.55}
+  pre code{background:none;padding:0;color:inherit;font-size:inherit}
+  .cmt{color:#8b949e}.kw{color:#ff7b72}.fn{color:#d2a8ff}.st{color:#a5d6ff}
+  .nu{color:#79c0ff}.cl{color:#fcd34d}.nm{color:#fdba74}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel);font-weight:600}
+  tr:nth-child(even) td{background:#fbfcfe}
+  .callout{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;
+    background:#f0f6ff;padding:9px 13px;margin:13px 0;font-size:13.5px}
+  .callout.p{border-left-color:var(--purple);background:#faf0ff}
+  .callout.o{border-left-color:var(--orange);background:#fff4e8}
+  .callout.g{border-left-color:var(--green);background:#effbf2}
+  .callout.r{border-left-color:var(--red);background:#fff0f1}
+  .callout b.t{display:inline-block;font-size:12px;margin-right:5px}
+  figure{margin:16px 0;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  figure svg{display:block;width:100%;height:auto;max-width:1100px;margin:0 auto}
+  figcaption{text-align:center;color:var(--muted);font-size:12.5px;margin-top:6px}
+  .shape{font-family:var(--mono);font-size:12px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;margin-right:4px}
+  .t-user{background:#e7f3e7;color:#1a7f37}.t-tt{background:#f1defa;color:#6f42c1}
+  .t-torch{background:#ddf4ff;color:#0969da}.t-cuda{background:#fff1e5;color:#bc4c00}
+  .foot{margin-top:50px;padding-top:14px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:12.5px}
+  @media (max-width:820px){.wrap{padding:16px 12px 70px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Async TP（异步张量并行）详解：原理与 torchtitan / PyTorch 实现</h1>
+  <p class="sub">以本地仓库 <code>D:\02_source\torchtitan</code> 为准（<code>main @ 229fa0bd5</code>），
+    PyTorch 端对照 <code>.venv</code> 中 <code>torch 2.12.1</code> 的源码
+    <code>torch/_inductor/fx_passes/micro_pipeline_tp.py</code> 与
+    <code>torch/distributed/_symmetric_memory/__init__.py</code>。</p>
+  <div class="legend">
+    <span class="chip c-blue">为什么需要</span>
+    <span class="chip c-green">micro-pipelining 原理</span>
+    <span class="chip c-purple">TorchTitan 接入</span>
+    <span class="chip c-orange">PyTorch Inductor + symm_mem 实现</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <b>本页目录</b>
+  <ol>
+    <li><a href="#baseline">普通 TP / SP 的通信瓶颈</a></li>
+    <li><a href="#idea">Async TP 的核心思想：通信-计算微流水线</a></li>
+    <li><a href="#code">TorchTitan 接入：一个开关与一次调用</a></li>
+    <li><a href="#pass">PyTorch 实现：Inductor 模式匹配</a></li>
+    <li><a href="#kernel">对称内存与融合算子内部</a></li>
+    <li><a href="#effects">效果、要求与限制</a></li>
+    <li><a href="#faq">对照与 FAQ</a></li>
+  </ol>
+</nav>
+
+<h2 id="baseline">1. 普通 TP / SP 的通信瓶颈</h2>
+
+<p>Tensor Parallelism 把线性层切成 Colwise / Rowwise 两块。为了让 LayerNorm / 激活也分摊到各 TP rank，
+torchtitan 默认叠加 Sequence Parallel（SP）：激活在层与层之间按序列维切分，只有进入/离开某些线性层时才通信。</p>
+
+<table>
+  <tr><th>位置</th><th>典型动作</th><th>语义</th></tr>
+  <tr><td>进入“需要完整输入”的层（如 colwise 线性前）</td><td><code>all-gather</code></td>
+      <td>每个 rank 持有序列的一段 <code>[B, L/TP, D]</code>；下游线性层要看到全序列，故拼成 <code>[B, L, D]</code></td></tr>
+  <tr><td>Rowwise 线性 / 输出投影之后</td><td><code>reduce-scatter</code></td>
+      <td>各 rank 算出完整结果的部分和，需要“先跨 rank 求和，再切回序列分片”</td></tr>
+</table>
+
+<p>在普通写法里，<code>all_gather → wait_tensor → matmul</code> 是串行的：NCCL 把整块数据收齐并 wait 之后，
+matmul 才开始。通信期间计算单元“空等”，或者更准确地说，通信延迟暴露在关键路径上。tensor 越大、TP 度越高、带宽越紧张，这个问题越明显。</p>
+
+<figure>
+<svg viewBox="0 0 1100 330" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <defs><marker id="h1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(26,12)">
+    <text x="0" y="20" fill="#1f2328" font-weight="700" font-size="14">同步 all-gather 为什么慢（TP=4 示意）</text>
+
+    <rect x="0" y="54" width="170" height="74" rx="6" fill="#eef1f4" stroke="#57606a"/>
+    <text x="85" y="76" text-anchor="middle" fill="#24292f" font-weight="700">本 rank 的激活分片</text>
+    <text x="85" y="94" text-anchor="middle" fill="#59636e" font-size="10.5">[B, L/4, D]</text>
+    <text x="85" y="112" text-anchor="middle" fill="#59636e" font-size="10.5">（已经算好）</text>
+
+    <path d="M172 91 L214 91" stroke="#57606a" stroke-width="1.8" marker-end="url(#h1)"/>
+    <rect x="218" y="54" width="250" height="74" rx="6" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="343" y="76" text-anchor="middle" fill="#0969da" font-weight="700">all-gather 整块拼好</text>
+    <text x="343" y="94" text-anchor="middle" fill="#24292f" font-size="10.5">NCCL 从其他 3 个 rank 收数据</text>
+    <text x="343" y="112" text-anchor="middle" fill="#cf222e" font-size="10.5">等待整块完成后才能开始 matmul</text>
+
+    <path d="M470 91 L512 91" stroke="#0969da" stroke-width="1.8" marker-end="url(#h1)"/>
+    <rect x="516" y="54" width="200" height="74" rx="6" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="616" y="76" text-anchor="middle" fill="#1a7f37" font-weight="700">matmul 完整输入</text>
+    <text x="616" y="94" text-anchor="middle" fill="#24292f" font-size="10.5">[B, L, D] @ [D, N]</text>
+    <text x="616" y="112" text-anchor="middle" fill="#59636e" font-size="10.5">整块计算</text>
+
+    <text x="0" y="180" fill="#cf222e" font-weight="700" font-size="13">关键：通信和计算没有重叠</text>
+    <text x="0" y="200" fill="#59636e" font-size="11">“通信时间”对本次 matmul 是完全暴露的。Async TP 要做的就是让 matmul 早开工：每收齐一块就立刻算这一块。</text>
+
+    <text x="0" y="246" fill="#0969da" font-weight="700" font-size="12">vanilla 时间线</text>
+    <rect x="0" y="258" width="120" height="22" rx="4" fill="#eef1f4" stroke="#57606a"/><text x="60" y="273" text-anchor="middle" fill="#59636e" font-size="9.5">前层计算</text>
+    <rect x="122" y="258" width="200" height="22" rx="4" fill="#fff1e5" stroke="#bc4c00"/><text x="222" y="273" text-anchor="middle" fill="#bc4c00" font-size="9.5">all-gather + wait（GPU 等待）</text>
+    <rect x="324" y="258" width="170" height="22" rx="4" fill="#ddf4ff" stroke="#0969da"/><text x="409" y="273" text-anchor="middle" fill="#0969da" font-size="9.5">整块 matmul</text>
+  </g>
+</svg>
+<figcaption>图 1：同步 TP 中 all-gather 把整块输入收齐后才开始 matmul，通信延迟完全暴露。</figcaption>
+</figure>
+
+<h2 id="idea">2. Async TP 的核心思想：通信-计算微流水线</h2>
+
+<p>把 all-gather 想成“从 P 个 rank 各收一块 <code>A_i</code>”，而 <code>A_full @ B</code> 可以按行分块并行算：</p>
+
+<div class="callout">
+  <b class="t">数学直觉（all-gather 沿序列/首维）</b>
+  <code>A_full = [A_0; A_1; …; A_{P-1}]</code>（沿 gather dim 拼接），那么
+  <code>A_full @ B = [A_0@B; A_1@B; …; A_{P-1}@B]</code>。
+  所以<b>不必等 P 块全部到齐再算</b>：每收到一块 <code>A_i</code>，立刻计算 <code>A_i @ B</code> 的对应输出行。
+</div>
+
+<p>把“一整块 all-gather”切成许多小块后，通信与计算按“小块”交替，形成 micro-pipeline。计算流和通信流上的活动交错：
+rank 0 的通信还没结束，前面已到达的块已经开始做 matmul。all-gather 的尾部延迟、以及 reduce-scatter 的尾部，都可以被计算遮住。</p>
+
+<figure>
+<svg viewBox="0 0 1100 400" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <g transform="translate(26,14)">
+    <text x="0" y="20" fill="#1f2328" font-weight="700" font-size="14">Async TP：把 A 切成 4 块，边收边算</text>
+
+    <text x="0" y="66" fill="#bc4c00" font-weight="700">通信流</text>
+    <rect x="0" y="78" width="420" height="30" rx="5" fill="#fff1e5" stroke="#bc4c00"/>
+    <rect x="8" y="86" width="94" height="14" rx="3" fill="#fff" stroke="#bc4c00"/>
+    <text x="55" y="96" text-anchor="middle" fill="#bc4c00" font-size="9.5">收 A_0</text>
+    <rect x="110" y="86" width="94" height="14" rx="3" fill="#fff" stroke="#bc4c00"/>
+    <text x="157" y="96" text-anchor="middle" fill="#bc4c00" font-size="9.5">收 A_1</text>
+    <rect x="212" y="86" width="94" height="14" rx="3" fill="#fff" stroke="#bc4c00"/>
+    <text x="259" y="96" text-anchor="middle" fill="#bc4c00" font-size="9.5">收 A_2</text>
+    <rect x="314" y="86" width="94" height="14" rx="3" fill="#fff" stroke="#bc4c00"/>
+    <text x="361" y="96" text-anchor="middle" fill="#bc4c00" font-size="9.5">收 A_3</text>
+
+    <text x="0" y="146" fill="#0969da" font-weight="700">计算流</text>
+    <rect x="0" y="158" width="480" height="34" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <rect x="8" y="166" width="100" height="18" rx="3" fill="#fff" stroke="#0969da"/>
+    <text x="58" y="178" text-anchor="middle" fill="#0969da" font-size="9.5">mm(A_0)</text>
+    <rect x="118" y="166" width="100" height="18" rx="3" fill="#fff" stroke="#0969da"/>
+    <text x="168" y="178" text-anchor="middle" fill="#0969da" font-size="9.5">mm(A_1)</text>
+    <rect x="228" y="166" width="100" height="18" rx="3" fill="#fff" stroke="#0969da"/>
+    <text x="278" y="178" text-anchor="middle" fill="#0969da" font-size="9.5">mm(A_2)</text>
+    <rect x="338" y="166" width="100" height="18" rx="3" fill="#fff" stroke="#0969da"/>
+    <text x="388" y="178" text-anchor="middle" fill="#0969da" font-size="9.5">mm(A_3)</text>
+
+    <path d="M0 108 L0 156" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <path d="M108 108 L120 156" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <path d="M210 108 L240 156" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <path d="M312 108 L360 156" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+    <text x="560" y="94" fill="#24292f" font-size="11">A_0 到达后立即启动 mm(A_0)，</text>
+    <text x="560" y="112" fill="#24292f" font-size="11">不等 A_1..A_3 全部到达。</text>
+    <text x="560" y="150" fill="#1a7f37" font-weight="700">收益</text>
+    <text x="560" y="170" fill="#59636e" font-size="11">总关键路径 ≈ 第一块到达时间 + 最后一块</text>
+    <text x="560" y="188" fill="#59636e" font-size="11">matmul 完成时间，而不是“全部 gather</text>
+    <text x="560" y="206" fill="#59636e" font-size="11">完成 + 整块 matmul”。</text>
+
+    <text x="0" y="250" fill="#1f2328" font-weight="700" font-size="13">对 reduce-scatter 也做对称优化</text>
+    <text x="0" y="270" fill="#59636e" font-size="11">在 matmul 产出端：不再“算完整个 Y → 再 reduce-scatter”，而是边算边把给每个目标 rank 的分片写进对称缓冲，</text>
+    <text x="0" y="288" fill="#59636e" font-size="11">peer 边收边累加。这样 matmul 尾部与通信重叠，而不是在 matmul 结束之后补一段通信。</text>
+
+    <rect x="0" y="316" width="1000" height="52" rx="7" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="14" y="338" fill="#1a7f37" font-weight="700">实现位置</text>
+    <text x="118" y="338" fill="#24292f" font-size="11">这不是 NCCL 自动做的，也不是 torch.distributed 里一个开关；而是 Inductor 编译时识别出模式，</text>
+    <text x="14" y="358" fill="#24292f" font-size="11">替换成 symm_mem.fused_all_gather_matmul / fused_matmul_reduce_scatter 融合算子，由算子内部切块 + 双流调度实现。</text>
+  </g>
+</svg>
+<figcaption>图 2：Async TP 的 micro-pipelining——每收到一小块 A_i 就立刻执行 mm(A_i)，通信与计算重叠。</figcaption>
+</figure>
+
+<h2 id="code">3. TorchTitan 接入：一个开关与一次调用</h2>
+
+<p>TorchTitan 侧的 Async TP 代码非常少：配置里一个开关，parallelize 时一次调用。真正实现完全在 PyTorch。</p>
+
+<pre><code><span class="cmt"># config/configs.py:137</span>
+enable_async_tensor_parallel: <span class="cl">bool</span> = <span class="kw">False</span>
+
+<span class="cmt"># distributed/tensor_parallel.py:102-115 —— 全部“接入代码”就这些</span>
+<span class="kw">def</span> <span class="fn">maybe_enable_async_tp</span>(parallelism, compile_config, tp_mesh):
+    <span class="kw">if not</span> parallelism.enable_async_tensor_parallel:
+        <span class="kw">return</span>
+    <span class="kw">if not</span> (compile_config.enable <span class="kw">and</span> <span class="st">"model"</span> <span class="kw">in</span> compile_config.components):
+        <span class="kw">raise</span> RuntimeError(
+            <span class="st">"Async TP requires 'model' in --compile.components and --compile.enable"</span>)
+    torch._inductor.config._micro_pipeline_tp = <span class="kw">True</span>   <span class="cmt"># ← 关键动作：打开 Inductor 内部开关</span>
+    logger.info(<span class="st">"Async TP is enabled"</span>)</code></pre>
+
+<p>各模型的 <code>parallelize.py</code> 会在“声明式 TP/EP 并行化之后、torch.compile 之前”调用它：</p>
+
+<pre><code><span class="cmt"># models/deepseek_v3/parallelize.py:53  / models/llama3/parallelize.py:56</span>
+<span class="cmt"># 顺序：CP 包装 → model.parallelize() → async TP → AC → compile → FSDP</span>
+maybe_enable_async_tp(parallelism, compile_config, parallel_dims.<span class="fn">get_mesh</span>(<span class="st">"tp"</span>))</code></pre>
+
+<p>仓库里的典型配置是 Llama 3.1 405B（<code>llama3/config_registry.py:317-320</code>）：</p>
+
+<pre><code>parallelism=ParallelismConfig(
+    tensor_parallel_degree=<span class="nu">8</span>,
+    enable_async_tensor_parallel=<span class="kw">True</span>,
+)</code></pre>
+
+<div class="callout o">
+  <b class="t">为什么必须配 torch.compile？</b>
+  Async TP 需要 Inductor 在 FX 图上做“all-gather → matmul”的模式替换，而模式匹配只发生在 <code>torch.compile</code>
+  的编译图里（eager 模式没有这张图）。<code>maybe_enable_async_tp</code> 因此强制要求
+  <code>compile.enable=True</code> 且 <code>compile.components</code> 含 <code>"model"</code>。
+  qwen3_5 还在自己的 parallelize 里显式再检查一次（<code>qwen3_5/parallelize.py:66</code>）。
+</div>
+
+<figure>
+<svg viewBox="0 0 1100 300" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <defs><marker id="i1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(26,12)">
+    <text x="0" y="20" fill="#1f2328" font-weight="700" font-size="14">Async TP 从“用户开关”到“训练生效”的路径</text>
+
+    <rect x="0" y="50" width="220" height="90" rx="7" fill="#e7f3e7" stroke="#1a7f37"/>
+    <text x="110" y="72" text-anchor="middle" fill="#1a7f37" font-weight="700">用户 / 配置</text>
+    <text x="110" y="92" text-anchor="middle" fill="#24292f" font-size="10.5">enable_async_tensor_parallel</text>
+    <text x="110" y="110" text-anchor="middle" fill="#24292f" font-size="10.5">= True</text>
+    <text x="110" y="128" text-anchor="middle" fill="#59636e" font-size="10">+ compile model</text>
+
+    <path d="M222 95 L270 95" stroke="#57606a" stroke-width="1.6" marker-end="url(#i1)"/>
+    <rect x="274" y="50" width="250" height="90" rx="7" fill="#f1defa" stroke="#8250df"/>
+    <text x="399" y="72" text-anchor="middle" fill="#6f42c1" font-weight="700">parallelize 初始化</text>
+    <text x="399" y="92" text-anchor="middle" fill="#24292f" font-size="10.5">model.parallelize() 先声明 TP 布局</text>
+    <text x="399" y="110" text-anchor="middle" fill="#24292f" font-size="10.5">maybe_enable_async_tp()</text>
+    <text x="399" y="128" text-anchor="middle" fill="#8250df" font-size="10">改的是 Inductor 配置，不搬权重</text>
+
+    <path d="M526 95 L574 95" stroke="#57606a" stroke-width="1.6" marker-end="url(#i1)"/>
+    <rect x="578" y="50" width="250" height="90" rx="7" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="703" y="72" text-anchor="middle" fill="#0969da" font-weight="700">torch.compile(model)</text>
+    <text x="703" y="92" text-anchor="middle" fill="#24292f" font-size="10.5">FX 图里有 redistribute 产生的</text>
+    <text x="703" y="110" text-anchor="middle" fill="#24292f" font-size="10.5">all_gather / reduce_scatter 节点</text>
+    <text x="703" y="128" text-anchor="middle" fill="#0969da" font-size="10">micro_pipeline_tp pass 做替换</text>
+
+    <path d="M830 95 L878 95" stroke="#57606a" stroke-width="1.6" marker-end="url(#i1)"/>
+    <rect x="882" y="50" width="192" height="90" rx="7" fill="#fff1e5" stroke="#bc4c00"/>
+    <text x="978" y="72" text-anchor="middle" fill="#bc4c00" font-weight="700">symm_mem 融合算子</text>
+    <text x="978" y="92" text-anchor="middle" fill="#24292f" font-size="10.5">CUDA 自定义算子</text>
+    <text x="978" y="110" text-anchor="middle" fill="#24292f" font-size="10.5">双流 + 对称内存</text>
+    <text x="978" y="128" text-anchor="middle" fill="#bc4c00" font-size="10">训练期每次 forward 生效</text>
+
+    <text x="0" y="190" fill="#59636e" font-size="11">TorchTitan 只做前两格；第三格之后的“怎么融合、怎么双流、怎么搬数据”都属于 PyTorch 内部实现。</text>
+    <text x="0" y="208" fill="#59636e" font-size="11">这一步不改模型权重、不改 TP 语义，因此开启与否在数学结果上应当一致（只是执行方式不同）。</text>
+  </g>
+</svg>
+<figcaption>图 3：Async TP 的启用路径——TorchTitan 只负责打开 Inductor 开关，图形替换与融合算子全在 PyTorch。</figcaption>
+</figure>
+
+<h2 id="pass">4. PyTorch 实现：Inductor 模式匹配</h2>
+
+<p>在 <code>torch 2.12.1</code> 中，<code>torch/_inductor/config.py:1107</code> 定义了私有开关
+<code>_micro_pipeline_tp = False</code>。打开后，Inductor 的
+<code>torch/_inductor/fx_passes/micro_pipeline_tp.py</code> 会对编译图运行一个 pass：</p>
+
+<pre><code><span class="cmt"># micro_pipeline_tp.py:1087</span>
+<span class="kw">def</span> <span class="fn">micro_pipeline_tp_pass</span>(graph: torch.fx.Graph):
+    all_gathers    = find_all_gather_patterns(graph)      <span class="cmt"># 找 all_gather → matmul 消费者</span>
+    reduce_scatters = find_reduce_scatter_patterns(graph) <span class="cmt"># 找 matmul → reduce_scatter 生产者</span>
+    ...
+    <span class="kw">for</span> all_gather <span class="kw">in</span> all_gathers:
+        <span class="fn">fuse_all_gather_matmul</span>(all_gather)         <span class="cmt"># :614</span>
+    <span class="kw">for</span> reduce_scatter <span class="kw">in</span> reduce_scatters:
+        <span class="fn">fuse_matmul_reduce_scatter</span>(reduce_scatter) <span class="cmt"># :862</span></code></pre>
+
+<p><code>find_all_gather_patterns</code> 匹配编译图里的
+<code>_c10d_functional.all_gather_into_tensor → wait_tensor</code>（0 维 gather），以及
+<code>all_gather → split → cat</code>（非 0 维 gather，DTensor 的常见表达）；
+然后只挑出下游是 matmul（或 reshape→mm→reshape、scaled_mm）的模式。</p>
+
+<figure>
+<svg viewBox="0 0 1100 330" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <defs><marker id="j1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(26,12)">
+    <text x="0" y="20" fill="#1f2328" font-weight="700" font-size="14">编译图改写：all_gather + 多个 matmul → 一个融合算子</text>
+
+    <text x="60" y="62" fill="#0969da" font-weight="700">改写前（同步）</text>
+    <rect x="8" y="76" width="145" height="46" rx="6" fill="#eef1f4" stroke="#57606a"/>
+    <text x="80" y="94" text-anchor="middle" fill="#24292f">A_shard</text>
+    <text x="80" y="110" text-anchor="middle" fill="#59636e" font-size="10">[M/P, K]</text>
+    <path d="M155 99 L190 99" stroke="#57606a" stroke-width="1.5" marker-end="url(#j1)"/>
+    <rect x="194" y="76" width="180" height="46" rx="6" fill="#fff1e5" stroke="#bc4c00"/>
+    <text x="284" y="94" text-anchor="middle" fill="#bc4c00">all_gather + wait</text>
+    <text x="284" y="110" text-anchor="middle" fill="#bc4c00" font-size="10">A = [M, K]</text>
+    <path d="M376 88 L430 88" stroke="#bc4c00" stroke-width="1.5" marker-end="url(#j1)"/>
+    <path d="M376 112 L430 112" stroke="#bc4c00" stroke-width="1.5" marker-end="url(#j1)"/>
+    <rect x="434" y="68" width="170" height="34" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="519" y="89" text-anchor="middle" fill="#0969da">mm(A, B_0) → C_0</text>
+    <rect x="434" y="108" width="170" height="34" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="519" y="129" text-anchor="middle" fill="#0969da">mm(A, B_1) → C_1</text>
+
+    <path d="M80 160 L80 182" stroke="#57606a" stroke-width="1.5" marker-end="url(#j1)"/>
+
+    <text x="60" y="210" fill="#1a7f37" font-weight="700">改写后（micro-pipelined）</text>
+    <rect x="8" y="224" width="180" height="54" rx="6" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="98" y="244" text-anchor="middle" fill="#1a7f37">symm_mem.</text>
+    <text x="98" y="262" text-anchor="middle" fill="#1a7f37">fused_all_gather_matmul</text>
+    <path d="M190 251 L240 251" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#j1)"/>
+    <rect x="244" y="218" width="180" height="32" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="334" y="238" text-anchor="middle" fill="#0969da">A（需要时返回）</text>
+    <rect x="244" y="256" width="180" height="32" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="334" y="276" text-anchor="middle" fill="#0969da">C_0, C_1, …</text>
+
+    <text x="470" y="238" fill="#59636e" font-size="11">一个 op 内部完成“收 A_i 小块 → mm(A_i)”，</text>
+    <text x="470" y="258" fill="#59636e" font-size="11">而不是 Python 层一个个 all_gather / matmul。</text>
+    <text x="470" y="296" fill="#cf222e" font-size="11">reduce-scatter 侧同理：</text>
+    <text x="640" y="296" fill="#59636e" font-size="11">reduce_scatter(A@B) → symm_mem.fused_matmul_reduce_scatter(A, B)</text>
+  </g>
+</svg>
+<figcaption>图 4：Inductor 的 micro_pipeline_tp pass 把“整块 all-gather + matmul”改写成融合算子。</figcaption>
+</figure>
+
+<p>pass 不是无脑替换，只有满足条件才融合，否则保持原样（正确性不变）：</p>
+<ul>
+  <li>对应通信组必须已启用 symmetric memory（<code>is_symm_mem_enabled_for_group</code>）；</li>
+  <li>all-gather 结果必须确实被 matmul 消费；若还有其他用户，则需要保留完整 A；</li>
+  <li>matmul 类型必须一致（普通 mm 或 scaled mm），matmul 的其他输入不能依赖 all-gather 结果；</li>
+  <li>gather/scatter 是最后维时要求分片维 ≥1024，且 scaled_mm 暂不支持最后维融合；</li>
+  <li>matmul → reduce-scatter 融合要求 matmul 结果只有 reduce-scatter 一个用户。</li>
+</ul>
+
+<h2 id="kernel">5. 对称内存与融合算子内部</h2>
+
+<p>Inductor 替换出的目标是 <code>torch.ops.symm_mem.*</code> 自定义算子，实现在
+<code>torch/distributed/_symmetric_memory/__init__.py</code>。主要算子：</p>
+
+<table>
+  <tr><th>算子</th><th>改写前语义</th><th>内部做了什么</th></tr>
+  <tr>
+    <td><code>symm_mem.fused_all_gather_matmul</code><br>（含 scaled_mm 变体）</td>
+    <td><code>A = all_gather(A_shard); C_i = A @ B_i</code></td>
+    <td>按 gather dim 切块，每收到一块 A_i 就执行对应 matmul；可同时服务多个 B</td>
+  </tr>
+  <tr>
+    <td><code>symm_mem.fused_matmul_reduce_scatter</code><br>（含 scaled_mm 变体）</td>
+    <td><code>Y = A @ B; rs = reduce_scatter(Y)</code></td>
+    <td>边算边把给每个 rank 的结果分片发出去，通信与 matmul 尾部重叠</td>
+  </tr>
+</table>
+
+<p>内部实现有两类关键布局：</p>
+<ul>
+  <li><b>gather_dim 不是最后维</b>（最常见：all-gather 沿序列维，再 <code>@ B</code>）：
+      A_full 按源 rank 切成 <code>A_0…A_{P-1}</code>，每个输出块 <code>A_i @ B</code> 独立。
+      实现里把 <code>A_shard</code> 的 gather dim 移到最前并展平成 2D，为每个输出块分配
+      <code>output_shards[rank]</code>，然后调用 <code>_pipelined_all_gather_and_consume</code>。</li>
+  <li><b>gather_dim 是最后维</b>：A_full 是“列拼接”，结果需要把各分片的部分和累加。
+      实现把 B 按 rank 切成 <code>B_shards</code>，每收一块就 <code>mm.out / addmm_</code> 累加进输出，
+      用 CUDA event 保证累加顺序正确。</li>
+</ul>
+
+<h3>5.1 双流 + 对称内存的微观调度</h3>
+<p><code>_pipelined_all_gather_and_consume</code> 的流程大致是：</p>
+
+<figure>
+<svg viewBox="0 0 1100 390" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <g transform="translate(26,14)">
+    <text x="0" y="20" fill="#1f2328" font-weight="700" font-size="14">fused_all_gather_matmul 的微观调度（示意，rank r 视角）</text>
+
+    <rect x="0" y="50" width="1030" height="54" rx="7" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="12" y="70" fill="#24292f" font-weight="700">0 准备</text>
+    <text x="120" y="70" fill="#59636e" font-size="11">拿 symmetric memory workspace；barrier(channel=0)；backend_stream.wait_stream(当前流)</text>
+    <text x="12" y="92" fill="#59636e" font-size="11">把自己的 A_shard 拷进本地 p2p buffer → barrier —— 之后其他 rank 才能安全读它</text>
+
+    <text x="0" y="140" fill="#bc4c00" font-weight="700">通信流</text>
+    <rect x="0" y="150" width="1030" height="46" rx="6" fill="#fff1e5" stroke="#bc4c00"/>
+    <rect x="10" y="160" width="240" height="26" rx="4" fill="#fff" stroke="#bc4c00"/>
+    <text x="130" y="177" text-anchor="middle" fill="#bc4c00" font-size="10">p2p copy：读 rank(r+1) 的 A 块</text>
+    <rect x="260" y="160" width="240" height="26" rx="4" fill="#fff" stroke="#bc4c00"/>
+    <text x="380" y="177" text-anchor="middle" fill="#bc4c00" font-size="10">p2p copy：读 rank(r+2) 的 A 块</text>
+    <rect x="510" y="160" width="240" height="26" rx="4" fill="#fff" stroke="#bc4c00"/>
+    <text x="630" y="177" text-anchor="middle" fill="#bc4c00" font-size="10">p2p copy：读 rank(r+3) 的 A 块</text>
+
+    <text x="0" y="230" fill="#0969da" font-weight="700">计算流</text>
+    <rect x="0" y="240" width="1030" height="46" rx="6" fill="#ddf4ff" stroke="#0969da"/>
+    <rect x="10" y="250" width="230" height="26" rx="4" fill="#fff" stroke="#0969da"/>
+    <text x="125" y="267" text-anchor="middle" fill="#0969da" font-size="10">mm(A_r 本地块) → out[r]</text>
+    <rect x="250" y="250" width="230" height="26" rx="4" fill="#fff" stroke="#0969da"/>
+    <text x="365" y="267" text-anchor="middle" fill="#0969da" font-size="10">mm(A_{r+1}) → out[r+1]</text>
+    <rect x="490" y="250" width="230" height="26" rx="4" fill="#fff" stroke="#0969da"/>
+    <text x="605" y="267" text-anchor="middle" fill="#0969da" font-size="10">mm(A_{r+2}) → out[r+2]</text>
+
+    <path d="M0 196 L0 238" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <path d="M250 196 L250 238" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <path d="M500 196 L500 238" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+    <rect x="0" y="308" width="1030" height="54" rx="7" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="12" y="328" fill="#1a7f37" font-weight="700">收尾</text>
+    <text x="120" y="328" fill="#24292f" font-size="11">当前流 wait_stream(backend_stream) → barrier(channel=0) → 所有输出块安全</text>
+    <text x="12" y="350" fill="#59636e" font-size="11">两流交替 + barrier 的作用：避免“计算已经读了 buffer，而 buffer 被下一个 copy 覆盖”的竞态；double buffering 出现在 produce/reduce-scatter 路径。</text>
+  </g>
+</svg>
+<figcaption>图 5：对称内存里的一次 all-gather+matmul 调度——p2p copy 与 matmul 交替排到两个 CUDA 流上。</figcaption>
+</figure>
+
+<p>这里的“通信”不是完整等一整次 NCCL all-gather 再继续，而是通过 symmetric memory 的
+<b>peer p2p buffer + barrier</b> 让每个 rank 按块读远端分片：数据一到就执行
+<code>shard_consumer</code>（matmul）。代码里用 <code>symm_mem.barrier(channel=…)</code>
+在“写 buffer / 读 buffer / 覆盖 buffer”之间同步，用两条流交替放 copy 和 matmul，让它们可以同时占用 GPU。
+reduce-scatter 方向则反向用 <code>_pipelined_produce_and_all2all</code>：本地先算好要发给各 rank 的分片，
+写进自己的 p2p buffer，远端边拷边累加。</p>
+
+<div class="callout">
+  <b class="t">与 NCCL 的关系</b>
+  Async TP 不是给 NCCL 增加一种“非阻塞 all-gather 算法”。当融合条件满足时，它绕过整块 collective，
+  改为 symmetric memory 的 p2p 拷贝 + 双流调度；只有未融合的 fallback 或非 symm-mem 路径才回到普通
+  <code>_c10d_functional</code> → NCCL。CUDA 侧真正干活的仍是拷贝 kernel、matmul kernel 和 barrier/event。
+</div>
+
+<h2 id="effects">6. 效果、要求与限制</h2>
+
+<p>仓库自带 <code>benchmarks/asyncTP_llama3_h100_2025-06_torchtitan.md</code> 的实测（H100，NVLink）：
+Async TP 在 bf16 下约 +9~10%，在 FP8 tensor-wise 量化下可达约 +16%。</p>
+
+<table>
+  <tr><th>模型 / 规模</th><th>配置</th><th>量化</th><th>Vanilla TP</th><th>Async TP</th><th>加速</th></tr>
+  <tr><td>Llama 3.1 70B，256×H100</td><td>FSDP=32, TP=8, compile, full AC</td><td>bf16</td><td>597.3 tok/s</td><td>652.4 tok/s</td><td>1.09×</td></tr>
+  <tr><td>同上</td><td>同上</td><td>float8 tensorwise</td><td>809.8 tok/s</td><td>942.4 tok/s</td><td>1.16×</td></tr>
+  <tr><td>同上</td><td>同上</td><td>float8 rowwise</td><td>599.6 tok/s</td><td>624.8 tok/s</td><td>1.04×</td></tr>
+  <tr><td>Llama 3.1 8B，64×H100</td><td>FSDP=8, TP=8, compile, per-op SAC</td><td>bf16</td><td>4378 tok/s</td><td>4809 tok/s</td><td>1.10×</td></tr>
+  <tr><td>同上</td><td>同上</td><td>float8 tensorwise</td><td>5078 tok/s</td><td>5570 tok/s</td><td>1.10×</td></tr>
+</table>
+
+<div class="callout r">
+  <b class="t">前提条件</b>
+  <ul style="margin:6px 0">
+    <li>必须启用 <code>torch.compile</code> 且编译 <code>model</code> 组件；</li>
+    <li>TP 通信组需要可用 symmetric memory（NVLink 或类似直连拓扑）；</li>
+    <li>只有被 Inductor 成功匹配的模式才会融合；其它 all-gather / matmul 保持普通路径；</li>
+    <li>该实现依赖 PyTorch 内部（<code>_micro_pipeline_tp</code>、<code>symm_mem</code>），随版本演进可能变化；</li>
+    <li>切块 matmul / 累加顺序可能与原实现略有不同，结果应在数值容差内一致，但不能承诺逐 bit 相同。</li>
+  </ul>
+</div>
+
+<h2 id="faq">7. 对照与 FAQ</h2>
+
+<table>
+  <tr><th>问题</th><th>答案</th></tr>
+  <tr>
+    <td>TorchTitan 为 Async TP 写了多少代码？</td>
+    <td>只有 <code>ParallelismConfig</code> 开关（configs.py:137）+ <code>maybe_enable_async_tp</code>
+        （tensor_parallel.py:102）把 <code>torch._inductor.config._micro_pipeline_tp</code> 置 True。核心实现全在 PyTorch。</td>
+  </tr>
+  <tr>
+    <td>Async TP 是新的 NCCL 通信算法吗？</td>
+    <td>不是。它是 Inductor 图形级“all-gather + matmul”融合；算子内部用 symmetric memory 的 p2p 拷贝与双流把通信按块和计算重叠。</td>
+  </tr>
+  <tr>
+    <td>和 <code>redistribute(async_op=True)</code> 有什么区别？</td>
+    <td><code>async_op</code> 只是让 collective 异步启动、后置 wait；Async TP 更进一步：通信本身按小块暴露给 matmul，做通信-计算微流水线。</td>
+  </tr>
+  <tr>
+    <td>哪些模型可用？</td>
+    <td>llama3、qwen3、qwen3_5、deepseek_v3、kimi_k2_7、muse_glimmer 等 parallelize 入口都调用
+        <code>maybe_enable_async_tp</code>；开关是否有效取决于具体编译图是否命中融合模式。</td>
+  </tr>
+  <tr>
+    <td>为什么要 symmetric memory？</td>
+    <td>因为要在融合算子内部“收到一块就算一块”。普通 NCCL collective 对外只暴露完整结果；symmetric memory 让 GPU 能直接读写 peer 的共享缓冲区，
+        配合 barrier 才能安全地边收边算。</td>
+  </tr>
+  <tr>
+    <td>开启后数值会完全一致吗？</td>
+    <td>数学语义等价；但 all-gather 沿最后维、reduce-scatter 等场景会改变部分和的顺序，浮点结果可能略有差异。torchtitan 把它当作需要独立收敛验证的优化路径。</td>
+  </tr>
+</table>
+
+<div class="callout g">
+  <b class="t">一句话总结</b>
+  Async TP = “把 TP 边界的一次整块 all-gather/reduce-scatter，拆成通信与 matmul 交替的微流水线”。
+  TorchTitan 只负责开 <code>_micro_pipeline_tp</code>；Inductor 在编译图里把
+  <code>all_gather→matmul</code> / <code>matmul→reduce_scatter</code> 换成 <code>symm_mem</code> 融合算子；
+  算子再用对称内存 + 双 CUDA 流让通信和计算真正重叠。
+</div>
+
+<div class="foot">
+  本页依据 D:\02_source\torchtitan（main @ 229fa0bd5）：
+  torchtitan 侧 <code>config/configs.py:137</code>、<code>distributed/tensor_parallel.py:102-115</code>、
+  各模型 <code>parallelize.py</code> 调用点；PyTorch 2.12.1 源码
+  <code>torch/_inductor/config.py:1107</code>、<code>fx_passes/micro_pipeline_tp.py:614/862/1087</code>、
+  <code>torch/distributed/_symmetric_memory/__init__.py</code>；
+  实测数据见 <code>benchmarks/asyncTP_llama3_h100_2025-06_torchtitan.md</code>。
+</div>
+
+</div>
+</body>
+</html>

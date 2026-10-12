@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dense mesh vs sparse mesh —— 同一批物理卡的两种视图</title>
+<style>
+  :root {
+    --dense: #1f6feb; --sparse: #bf3989; --ink: #1f2328; --muted: #59636e;
+    --bg: #ffffff; --panel: #f6f8fa; --border: #d1d9e0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif; color: var(--ink); background: var(--bg); line-height: 1.65; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 30px 24px 70px; }
+  header.hero { border-bottom: 3px solid var(--ink); padding-bottom: 16px; margin-bottom: 22px; }
+  header.hero h1 { font-size: 24px; margin: 0 0 8px; }
+  header.hero p.sub { color: var(--muted); margin: 0; font-size: 14px; }
+  h2.section { font-size: 19px; margin: 34px 0 10px; padding: 9px 13px; background: var(--panel); border-left: 5px solid var(--ink); border-radius: 6px; }
+  h3 { font-size: 16px; margin: 22px 0 6px; }
+  p { margin: 8px 0; }
+  code { font-family: "Cascadia Code",Consolas,"JetBrains Mono",monospace; font-size: 13px; background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; } tr:nth-child(even) td { background: #fafbfc; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 12px 0; font-size: 13px; }
+  .lg { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 16px; height: 16px; border-radius: 3px; display: inline-block; }
+  .sw.dense { background: var(--dense); } .sw.sparse { background: var(--sparse); } .sw.share { background: #2da44e; }
+
+  /* 拓扑关系图 */
+  .topology { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 16px 0; }
+  .worldbox { border: 2.5px solid var(--ink); border-radius: 10px; padding: 10px 22px; background: var(--panel); font-weight: 700; text-align: center; }
+  .worldbox small { display:block; color: var(--muted); font-weight: 400; font-size: 12px; }
+  .fork { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; width: 100%; margin-top: 6px; }
+  .branch { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .arrow { color: var(--muted); font-size: 22px; }
+  .meshcard { width: 100%; border: 2px solid; border-radius: 10px; padding: 12px 14px; }
+  .meshcard.dense { border-color: var(--dense); background: #f0f6ff; }
+  .meshcard.sparse { border-color: var(--sparse); background: #faf0f6; }
+  .meshcard h4 { margin: 0 0 6px; font-size: 15px; }
+  .meshcard.dense h4 { color: var(--dense); } .meshcard.sparse h4 { color: var(--sparse); }
+  .meshcard ul { margin: 6px 0 0; padding-left: 20px; font-size: 13px; }
+  .meshcard .key { font-family: Consolas,monospace; }
+
+  /* 卡网格 */
+  .grid-cfg { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 12px 0 10px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .grid-cfg label { display: inline-flex; align-items: center; gap: 5px; }
+  .grid-cfg input { width: 58px; }
+  .grid-wrap { display: flex; gap: 26px; flex-wrap: wrap; margin: 14px 0; }
+  .gridview { flex: 1 1 0; min-width: 0; }
+  .gridview.dense, .gridview.sparse { flex-basis: 0; }
+  .gridview h5 { margin: 0 0 6px; font-size: 14px; }
+  .gridview.dense h5 { color: var(--dense); } .gridview.sparse h5 { color: var(--sparse); }
+  .cardgrid { display: grid; gap: 6px; }
+  .card {
+    border: 2px solid var(--border); border-radius: 6px; padding: 5px 7px; background: #fff;
+    font-size: 11.5px; line-height: 1.35; text-align: center; transition: border-color .15s;
+    min-height: 66px; display: flex; flex-direction: column; justify-content: center;
+  }
+  .card .id { font-weight: 700; font-size: 12.5px; white-space: nowrap; }
+  .card .d { color: var(--dense); white-space: nowrap; } .card .s { color: var(--sparse); white-space: nowrap; }
+  .card .which { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+  .card.hl-d0 { border-color:#5e9dff; } .card.hl-d0.hl-d-mid { border-left-width:5px; }
+  .card.hl-d-mid { border-style: dashed; }
+  .card.hl-s0 { border-color:#e088b5; } .card.hl-s-mid { border-style: dotted; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 12px; }
+  .grp { padding: 4px 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--panel); cursor: pointer; font-size: 12.5px; }
+  .grp.on { background: var(--ink); color: #fff; }
+  .callout { border: 1px solid var(--border); border-left: 4px solid var(--dense); background: #f0f6ff; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 13.5px; }
+  .callout.purple { border-left-color: var(--sparse); background: #faf0f6; }
+  .callout.green { border-left-color: #2da44e; background: #f0faf1; }
+  .callout b.tag { font-size: 12px; margin-right: 5px; }
+  .foot { margin-top: 40px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>dense mesh vs sparse mesh —— 同一批物理卡的两种视图</h1>
+  <p class="sub">源码：<code>torchtitan/distributed/parallel_dims.py</code> 的 <code>build_mesh()</code>（真实 key 是 <code>dense</code> 和 <code>sparse</code>，不是"稠密/稀疏"两个字）。</p>
+</header>
+
+<div class="legend">
+  <span class="lg"><span class="sw dense"></span> dense 体系（普通参数 / FSDP / TP）</span>
+  <span class="lg"><span class="sw sparse"></span> sparse 体系（路由专家权重 / EP）</span>
+  <span class="lg"><span class="sw share"></span> 两者共享的 dp_replicate 轴</span>
+</div>
+
+<h2 class="section" id="topo">1. 拓扑：世界 mesh 派生两种视图</h2>
+<div class="topology">
+  <div class="worldbox">world mesh <small>init_device_mesh((world_size,)) —— 物理设备编号 0..15</small></div>
+  <div class="arrow">⬇  build_mesh() 做两次 unflatten ⬇</div>
+  <div class="fork">
+    <div class="branch">
+      <div class="arrow">↘</div>
+      <div class="meshcard dense">
+        <h4>_global_meshes["dense"]</h4>
+        <ul>
+          <li>轴：<span class="key">(pp, dp_replicate, dp_shard, cp, tp)</span></li>
+          <li>给：<b>普通参数</b>（attention/norm/共享专家/router）、FSDP、TP</li>
+          <li>本页示例 5 轴：<span class="key">(1, 1, 4, 2, 2)</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="branch">
+      <div class="arrow">↘</div>
+      <div class="meshcard sparse">
+        <h4>_global_meshes["sparse"]</h4>
+        <ul>
+          <li>轴：<span class="key">(pp, dp_replicate, efsdp, ep)</span></li>
+          <li>给：<b>路由专家权重</b>（GroupedExperts）、EP</li>
+          <li>本页示例 4 轴：<span class="key">(1, 1, 8, 2)</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="callout green">
+  <b class="tag">🔑 核心</b>
+  这两条 mesh 是<span style="color:var(--dense)"><b>同一批物理设备</b></span>的<b>两种逻辑切法</b>。世界 mesh 只是一张"卡编号表"，
+  而 <code>dense</code> / <code>sparse</code> 是它上面两个不同的多轴视图：同一张物理卡，在 dense 里有一个坐标，在 sparse 里有另一个坐标。
+  <b>分界标准</b>：这个参数要不要跟"专家 / EP"打交道——
+  <span class="lg"><span class="sw dense"></span> 不用 → dense；<span class="lg"><span class="sw sparse"></span> 要（专家权重） → sparse。</span>
+</div>
+
+<h2 class="section" id="rel">2. 轴的关系与 efsdp 的推导</h2>
+<p><code>sparse</code> 里的 <code>efsdp</code> 不是凭空来的，它由 dense 的几个轴换算得到（parallel_dims.py:272-274）：</p>
+<pre><code>batch = dp_replicate * dp_shard
+fsdp  = dp_shard * cp
+efsdp = fsdp * tp // ep          <span class="cmt" style="color:#8b949e"># 示例：8 * 2 // 2 = 8</span></code></pre>
+<table>
+  <tr><th>轴</th><th>属于哪套</th><th>示例值</th><th>含义</th></tr>
+  <tr><td><code>dp_replicate</code></td><td><span class="lg"><span class="sw share"></span> 共享</td><td><code>1</code></td><td>HSDP 的复制组；两套 mesh 共用</td></tr>
+  <tr><td><code>dp_shard</code></td><td>dense</td><td><code>4</code></td><td>FSDP 切参数的轴（batch 维）</td></tr>
+  <tr><td><code>cp</code></td><td>dense</td><td><code>2</code></td><td>上下文并行（序列维）</td></tr>
+  <tr><td><code>tp</code></td><td>dense</td><td><code>2</code></td><td>张量并行</td></tr>
+  <tr><td><code>efsdp</code></td><td>sparse</td><td><code>8</code></td><td>= <code>dp_shard*cp*tp/ep</code>，FSDP 在专家区域的 shard 轴</td></tr>
+  <tr><td><code>ep</code></td><td>sparse</td><td><code>2</code></td><td>专家并行（专家维）</td></tr>
+</table>
+<p>所以 <b>dense 的 <code>tp / cp / dp_shard</code> 在 sparse 里被"折叠"进 <code>efsdp</code>，<code>ep</code> 是 dense 里没有的独立专家轴</b>——
+这正是两套 mesh 覆盖同一批卡、却各管一段逻辑的原因。</p>
+
+<h2 class="section" id="demo">3. 交互演示：同一批 16 卡的两种坐标</h2>
+<p>拖动配置调整卡数分配，看每一张物理卡在 dense 和 sparse 里各是什么坐标（两边卡号完全相同，只坐标不同）。</p>
+<div class="grid-cfg">
+  <label>dp_replicate <input id="c_dpr" type="number" min="1" value="1"></label>
+  <label>dp_shard <input id="c_dps" type="number" min="1" value="4"></label>
+  <label>cp <input id="c_cp" type="number" min="1" value="2"></label>
+  <label>tp <input id="c_tp" type="number" min="1" value="2"></label>
+  <label>ep <input id="c_ep" type="number" min="1" value="2"></label>
+  <span id="cfg_note" style="color:var(--muted)"></span>
+</div>
+<div class="btnrow">
+  <span style="font-size:12.5px;color:var(--muted);align-self:center;">高亮：</span>
+  <button class="grp on" data-mode="dps">dense·dp_shard</button>
+  <button class="grp" data-mode="cp">dense·cp</button>
+  <button class="grp" data-mode="tp">dense·tp</button>
+  <button class="grp" data-mode="efsdp">sparse·efsdp</button>
+  <button class="grp" data-mode="ep">sparse·ep</button>
+</div>
+<div class="grid-wrap">
+  <div class="gridview dense">
+    <h5>dense 视图 —— 卡号 = 哪张物理卡</h5>
+    <div class="cardgrid" id="g_dense" style="grid-template-columns:repeat(4,minmax(0,1fr))"></div>
+    <p class="foot" style="margin-top:8px"><b>每卡 dense 坐标</b>：<code>(dp_replicate, dp_shard, cp, tp)</code>，按 mesh 轴序、卡号低位对应 tp。</p>
+  </div>
+  <div class="gridview sparse">
+    <h5>sparse 视图 —— 卡号 = 哪张物理卡（同批）</h5>
+    <div class="cardgrid" id="g_sparse" style="grid-template-columns:repeat(4,minmax(0,1fr))"></div>
+    <p class="foot" style="margin-top:8px"><b>每卡 sparse 坐标</b>：<code>(dp_replicate, efsdp, ep)</code>，按 mesh 轴序、卡号低位对应 ep。</p>
+  </div>
+</div>
+
+<h2 class="section" id="map">4. 与 fsdp.py 的 dp_mesh / edp_mesh 对上</h2>
+<pre><code><span class="cmt" style="color:#8b949e"># full_dtensor.py:70-125 —— resolve_fsdp_mesh / resolve_sparse_fsdp_mesh</span>
+_DENSE_STORAGE_AXES  = [<span class="st">"dp_replicate"</span>, <span class="st">"dp_shard"</span>, <span class="st">"cp"</span>, <span class="st">"tp"</span>]   <span class="cmt" style="color:#8b949e"># → 从 _global_meshes["dense"] 取</span>
+_SPARSE_STORAGE_AXES = [<span class="st">"dp_replicate"</span>, <span class="st">"efsdp"</span>, <span class="st">"ep"</span>]    <span class="cmt" style="color:#8b949e"># → 从 _global_meshes["sparse"] 取</span>
+
+dp_mesh  = get_activated_mesh(_DENSE_STORAGE_AXES)    <span class="cmt" style="color:#8b949e"># fsdp.py 的 dp_mesh  = dense 体系</span>
+edp_mesh = get_activated_mesh(_SPARSE_STORAGE_AXES)   <span class="cmt" style="color:#8b949e"># fsdp.py 的 edp_mesh = sparse 体系</span></code></pre>
+<table>
+  <tr><th>fsdp.py 形参</th><th>来源</th><th>build_mesh 真实对象</th><th>示例坐标</th><th>用途</th></tr>
+  <tr><td><code>dp_mesh</code></td><td><code>resolve_fsdp_mesh</code></td><td><code>_global_meshes["dense"]</code></td><td><code>(1,1,4,2,2)</code></td><td>普通参数的 FSDP / TP</td></tr>
+  <tr><td><code>edp_mesh</code></td><td><code>resolve_sparse_fsdp_mesh</code></td><td><code>_global_meshes["sparse"]</code></td><td><code>(1,1,8,2)</code></td><td>专家权重的 FSDP / EP</td></tr>
+</table>
+<div class="callout purple">
+  <b class="tag">⚙️ 为什么一个 MoE 层要拆到两套 mesh</b>
+  <code>_shard_placement_fn</code>（fsdp.py:281-295）按参数归属分开：<br>
+  专家权重 → <code>mesh_info=edp_mesh_info</code>（sparse，跟 EP 的 all-to-all 走）；<br>
+  其余参数 → <code>mesh_info=dp_mesh_info</code>（dense，普通 FSDP）。<br>
+  所以"同一批设备两套视图"在代码里的落点，就是这个 per-param 的 mesh 选择钩子。
+</div>
+
+<div class="foot">
+  本页基于 <code>torchtitan/distributed/parallel_dims.py</code> build_mesh(186-385) 与
+  <code>torchtitan/distributed/full_dtensor.py</code> resolve_fsdp_mesh / resolve_sparse_fsdp_mesh(70-125)。
+  交互演示默认 world=16（dense 5 轴=1·1·4·2·2，sparse 4 轴=1·1·8·2，验证 efsdp=8）。
+  <br>配套页面：<a href="fsdp_three_layers.html">FSDP</a> · <a href="ep_three_layers.html">EP</a> · <a href="cp_three_layers.html">CP</a> · <a href="pp_three_layers.html">PP</a> · <a href="x_attn_sharding_three_layers.html">TP</a>
+</div>
+
+</div>
+
+<script>
+(function(){
+  const gridD = document.getElementById('g_dense');
+  const gridS = document.getElementById('g_sparse');
+  const note = document.getElementById('cfg_note');
+  let mode = 'dps';
+
+  function coords(i, dims){ // row-major: rank's lowest digit = last dim
+    const c = {};
+    let rem = i;
+    const rev = [];
+    for(let k=dims.length-1;k>=0;k--){ rev.unshift(rem % dims[k]); rem = Math.floor(rem/dims[k]); }
+    return rev;
+  }
+  function render(){
+    const dpr = +document.getElementById('c_dpr').value;
+    const dps = +document.getElementById('c_dps').value;
+    const cp  = +document.getElementById('c_cp').value;
+    const tp  = +document.getElementById('c_tp').value;
+    const ep  = +document.getElementById('c_ep').value;
+    const world = dpr*dps*cp*tp;
+    const efsdp = Math.round(dps*cp*tp/ep);
+    // require consistency: sparse product == world
+    note.textContent = `dense 轴 (${dpr},${dps},${cp},${tp}) → world=${world}；sparse 轴 (${dpr},${efsdp},${ep}) → world=${dpr*efsdp*ep}${dpr*efsdp*ep!==world?'（不整除）':''}`;
+    const dD = [dpr,dps,cp,tp], dS = [dpr,efsdp,ep];
+    let hd='';
+    const isDenseMode = mode==='dps'||mode==='cp'||mode==='tp';
+    // dense 视图：只在 dense 模式下，按所选的 dense 轴高亮
+    for(let i=0;i<world;i++){
+      const cd = coords(i,dD);
+      const clD = mode==='dps'?cd[1]: mode==='cp'?cd[2]: cd[3];
+      const hlD = isDenseMode ? (clD===0?'hl-d0':'hl-d-mid') : '';
+      const tag = `dp_shard=${cd[1]} · cp=${cd[2]} · tp=${cd[3]}`;
+      hd += `<div class="card ${hlD}"><div class="id">卡 ${i}</div><div class="d">dense (${cd.join(',')})</div><div class="which">${tag}</div></div>`;
+    }
+    // sparse 视图：只在 sparse 模式下，按所选的 sparse 轴高亮
+    let hs2='';
+    for(let i=0;i<world;i++){
+      const cs = coords(i,dS);
+      const clS = mode==='efsdp'?cs[1]: cs[2];
+      const hlS = !isDenseMode ? (clS===0?'hl-s0':'hl-s-mid') : '';
+      const tag = `efsdp=${cs[1]} · ep=${cs[2]}`;
+      hs2 += `<div class="card ${hlS}"><div class="id">卡 ${i}</div><div class="s">sparse (${cs.join(',')})</div><div class="which">${tag}</div></div>`;
+    }
+    gridD.innerHTML = hd;
+    gridS.innerHTML = hs2;
+  }
+  document.querySelectorAll('.grp').forEach(b=>{
+    b.onclick=()=>{ document.querySelectorAll('.grp').forEach(x=>x.classList.remove('on')); b.classList.add('on'); mode=b.dataset.mode; render(); };
+  });
+  ['c_dpr','c_dps','c_cp','c_tp','c_ep'].forEach(id=>document.getElementById(id).oninput=render);
+  render();
+})();
+</script>
+
+</body>
+</html>

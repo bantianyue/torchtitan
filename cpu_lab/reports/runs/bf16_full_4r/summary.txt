@@ -1,0 +1,35 @@
+==============================================================================
+RUN SUMMARY
+==============================================================================
+  combo            qwen35
+  module/config    cpu_lab.qwen35 / qwen35_0_8b_bf16
+  parallelism      dp_replicate=1 dp_shard=4 cp=1 tp=1 pp=1
+  world_size       4
+  wall time        459.4 s
+  command          D:\02_source\torchtitan\.venv\Scripts\python.exe cpu_lab\run_cpu_train.py --combo qwen35 -n 4 --module cpu_lab.qwen35 --config qwen35_0_8b_bf16 --hf-cache D:/02_source/torchtitan/cpu_lab/hf --no-warmup --log-dir cpu_lab/logs_qwen35/bf16_full_4r --show-logs
+
+  per-rank results (real loss only on last-pipeline-stage ranks)
+  rank  steps  last_step  last_loss      last_grad_norm   note
+  0     0      None       n/a           n/a              sentinel, not a loss
+  1     0      None       n/a           n/a              sentinel, not a loss
+  2     0      None       n/a           n/a              sentinel, not a loss
+  3     0      None       n/a           n/a              sentinel, not a loss
+
+  peak memory per rank (sampled while the ranks ran)
+  rank  peak RSS      peak commit
+  0         1.95 GiB     4.16 GiB
+  1         1.98 GiB     4.16 GiB
+  2         1.38 GiB     3.18 GiB
+  3         1.99 GiB     4.16 GiB
+  sum       7.30 GiB    15.65 GiB   <- what the whole run needs, over 8 processes
+  system commit after run  28.86 / 45.63 GiB   (headroom 16.77 GiB)
+
+
+  artifacts
+    logs                   D:\02_source\torchtitan\cpu_lab\logs_qwen35\bf16_full_4r
+    dump folder            D:\02_source\torchtitan\cpu_lab\outputs\qwen35
+           784,121 B  structured_logs\training.global_rank_0.20261012-200851-9RHWX0.jsonl
+           784,107 B  structured_logs\training.global_rank_1.20261012-200851-TJ9UN8.jsonl
+           781,401 B  structured_logs\training.global_rank_2.20261012-200854-6HCU8Q.jsonl
+           784,103 B  structured_logs\training.global_rank_3.20261012-200905-JH8KWZ.jsonl
+==============================================================================

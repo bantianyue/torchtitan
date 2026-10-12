@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepSeek-V3 激活 x 与 Attention 矩阵的布局与切分 —— 三层视角详解</title>
+<style>
+  :root {
+    --user:   #1f6feb;   /* 用户层：蓝 */
+    --titan:  #2da44e;   /* Titan 层：绿 */
+    --torch:  #bf3989;   /* Torch 层：紫 */
+    --ink:    #1f2328;
+    --muted:  #59636e;
+    --bg:     #ffffff;
+    --panel:  #f6f8fa;
+    --border: #d1d9e0;
+    --code-bg:#0d1117;
+    --code-ink:#e6edf3;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.65;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  header.hero {
+    border-bottom: 3px solid var(--ink);
+    padding-bottom: 18px;
+    margin-bottom: 28px;
+  }
+  header.hero h1 { font-size: 26px; margin: 0 0 8px; line-height: 1.35; }
+  header.hero p.sub { color: var(--muted); margin: 0; font-size: 14.5px; }
+
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .legend .chip {
+    padding: 5px 12px; border-radius: 20px; color: #fff; font-size: 13px;
+    font-weight: 600;
+  }
+  .chip.user  { background: var(--user); }
+  .chip.titan { background: var(--titan); }
+  .chip.torch { background: var(--torch); }
+
+  nav.toc {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 20px; margin-bottom: 34px; font-size: 14px;
+  }
+  nav.toc b { display: block; margin-bottom: 6px; }
+  nav.toc ol { margin: 0; padding-left: 22px; }
+  nav.toc a { color: var(--user); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+
+  h2.section {
+    font-size: 21px; margin: 46px 0 12px; padding: 10px 14px;
+    background: var(--panel); border-left: 5px solid var(--ink);
+    border-radius: 6px;
+  }
+  h3 { font-size: 17px; margin: 30px 0 8px; }
+  h4 { font-size: 15px; margin: 22px 0 6px; }
+  p  { margin: 8px 0; }
+  ul, ol { margin: 8px 0 8px 4px; padding-left: 24px; }
+  li { margin: 4px 0; }
+
+  code {
+    font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+    font-size: 13px; background: #eef1f4; padding: 1px 6px; border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg); color: var(--code-ink); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 12.8px; line-height: 1.55;
+    font-family: "Cascadia Code", Consolas, monospace;
+  }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  .cmt { color: #8b949e; }
+  .kw  { color: #ff7b72; }
+  .fn  { color: #d2a8ff; }
+  .st  { color: #a5d6ff; }
+  .nu  { color: #79c0ff; }
+
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  tr:nth-child(even) td { background: #fafbfc; }
+
+  .callout {
+    border: 1px solid var(--border); border-left: 4px solid var(--user);
+    background: #f0f6ff; border-radius: 6px; padding: 10px 14px; margin: 14px 0;
+    font-size: 14px;
+  }
+  .callout.green { border-left-color: var(--titan); background: #f0faf1; }
+  .callout.purple{ border-left-color: var(--torch); background: #faf0f6; }
+  .callout b.tag { display: inline-block; font-size: 12px; margin-right: 6px; }
+
+  .layers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0; }
+  .layer {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+    background: var(--panel); font-size: 13.5px;
+  }
+  .layer .lhead { font-weight: 700; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 2px solid; }
+  .layer.user  .lhead { color: var(--user);   border-color: var(--user); }
+  .layer.titan .lhead { color: var(--titan);  border-color: var(--titan); }
+  .layer.torch .lhead { color: var(--torch);  border-color: var(--torch); }
+  .layer ul { padding-left: 18px; margin: 6px 0 0; }
+
+  /* ---- 布局图 ---- */
+  .tensorbox { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+  .tensor-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tlabel { font-size: 12.5px; color: var(--muted); width: 150px; flex: 0 0 auto; }
+  .tensor {
+    display: flex; border: 1.5px solid var(--ink); border-radius: 4px;
+    overflow: hidden; font-family: Consolas, monospace; font-size: 11px;
+  }
+  .tensor .cell {
+    padding: 6px 9px; border-right: 1px solid #c9d1d9; background: #ddf4ff;
+  }
+  .tensor .cell:last-child { border-right: none; }
+  .tensor .cell.dim { background: #fff1d6; }
+  .tensor .cell.rank0 { background: #ddf4ff; }
+  .tensor .cell.rank1 { background: #ffd7d7; }
+  .arrow { font-size: 20px; color: var(--muted); }
+  .gather-banner {
+    font-size: 12px; background: var(--torch); color: #fff; border-radius: 4px;
+    padding: 3px 10px; font-weight: 600;
+  }
+  .chip-r { background:#d4a72c; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .chip-s { background:#2f81f7; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .chip-p { background:#bf3989; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+
+  .flow { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 13px; }
+  .flow .step {
+    display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px;
+    border: 1px solid var(--border); border-radius: 8px; background: #fff;
+  }
+  .flow .step .n {
+    flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px;
+  }
+  .flow .step .who { font-size: 11.5px; font-weight: 700; margin-right: 8px; padding: 1px 8px; border-radius: 10px; color: #fff; flex: 0 0 auto; }
+  .who.user  { background: var(--user); }
+  .who.titan { background: var(--titan); }
+  .who.torch { background: var(--torch); }
+
+  .spmd-table td code { background: none; padding: 0; }
+  .foot { margin-top: 50px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 760px) { .layers { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>DeepSeek-V3：激活 x 与 Attention 矩阵的布局与切分<br>—— 用户 / torchtitan / PyTorch 三层视角详解</h1>
+  <p class="sub">以本仓库 <code>torchtitan/models/deepseek_v3/</code> 的实际实现为准，逐行对照源码。</p>
+  <div class="legend">
+    <span class="chip user">第 1 层 · 用户（模型作者）—— 声明意图</span>
+    <span class="chip titan">第 2 层 · torchtitan —— 编排边界</span>
+    <span class="chip torch">第 3 层 · PyTorch DTensor —— 物理执行</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <b>目录</b>
+  <ol>
+    <li><a href="#pre">前置：符号与坐标（先读这个）</a></li>
+    <li><a href="#x">激活 x：怎么布局、怎么切分、怎么聚合</a></li>
+    <li><a href="#attn">Attention（MLA）矩阵：每块权重怎么声明、怎么切</a></li>
+    <li><a href="#walkthrough">案例走查：wq_b 的 colwise 全链路（真实数值）</a></li>
+    <li><a href="#flow">全景：一个 Transformer 层内的布局流转</a></li>
+    <li><a href="#ref">源码索引</a></li>
+  </ol>
+</nav>
+
+<!-- ================= 0 前置 ================= -->
+<h2 class="section" id="pre">0. 前置：符号与坐标</h2>
+
+<h3>0.1 张量形状约定</h3>
+<table>
+  <tr><th>符号</th><th>形状</th><th>含义</th></tr>
+  <tr><td><code>x_BLD</code></td><td><code>(B, L, D)</code></td><td>激活：B=batch，L=序列长度，D=隐藏维</td></tr>
+  <tr><td><code>q/k/v_BLNH</code></td><td><code>(B, L, N, H)</code></td><td>注意力内部：N=头数，H=每头维度（此时 N×H = D）</td></tr>
+  <tr><td><code>weight</code>（Linear）</td><td><code>(out, in)</code></td><td>PyTorch Linear 权重形状，<b>dim 0 = 输出维，dim 1 = 输入维</b></td></tr>
+</table>
+
+<h3>0.2 网格轴（DeviceMesh 维度）</h3>
+<table>
+  <tr><th>轴</th><th>全称</th><th>在激活上的作用</th></tr>
+  <tr><td><code>DP</code></td><td>Data Parallel（<code>full_dtensor</code> 下展开为 <code>dp_replicate</code> + <code>dp_shard</code>）</td><td>切 batch 维（<code>S(0)</code>）</td></tr>
+  <tr><td><code>CP</code></td><td>Context Parallel</td><td>切序列维（<code>S(1)</code>）</td></tr>
+  <tr><td><code>TP</code></td><td>Tensor Parallel</td><td>切序列维（SP 下）或切隐藏维（权重）</td></tr>
+</table>
+
+<h3>0.3 spmd 类型符号（本仓库统一用 <code>spmd_types</code> 的记号）</h3>
+<table class="spmd-table">
+  <tr><th>符号</th><th>含义</th><th>映射到 DTensor placement</th></tr>
+  <tr><td><code>spmd.R</code></td><td>Replicate：每卡持有完整副本</td><td><code>Replicate()</code></td></tr>
+  <tr><td><code>spmd.I</code></td><td>Invariant：数据上等价于 R，但反向无梯度规约语义（"本就一样，无需管"）</td><td><code>Replicate()</code></td></tr>
+  <tr><td><code>spmd.V</code></td><td>Varying：随 <code>partition_spec</code> 决定切在哪一维</td><td>由 <code>partition_spec</code> 转成 <code>Shard(d)</code></td></tr>
+  <tr><td><code>spmd.S(d)</code></td><td>Shard：按张量第 d 维切分</td><td><code>Shard(d)</code></td></tr>
+  <tr><td><code>spmd.P</code></td><td>Partial：各卡持有局部和，消费前需规约</td><td><code>Partial()</code></td></tr>
+</table>
+<div class="callout">
+  <b class="tag">🔑 记忆口诀</b>
+  <code>V + partition_spec</code> 是"把切分写在张量维度上"的写法；
+  <code>S(d)</code> 是"把切分写在网格轴上"的写法。两者最终都换算成 DTensor 的 <code>Shard(d)</code>。
+</div>
+
+<h3>0.4 三层各干什么（一句话版）</h3>
+<div class="layers">
+  <div class="layer user">
+    <div class="lhead">用户层 · 声明</div>
+    往每个模块的 <code>sharding_config</code> 里填 <code>ShardingConfig</code>：
+    激活用 <code>in_src / in_dst_shardings</code>，权重用 <code>state_shardings</code>。
+    <b>不产生任何通信。</b>
+  </div>
+  <div class="layer titan">
+    <div class="lhead">Titan 层 · 编排</div>
+    <code>Module.parallelize()</code> 扫描配置：参数/缓存调 <code>distribute_tensor</code> 建 DTensor；
+    重写 <code>forward</code>，在算子执行前按 <code>in_src→in_dst</code> 调 <code>redistribute</code>，
+    执行后按 <code>out_src→out_dst</code> 再调一次。
+  </div>
+  <div class="layer torch">
+    <div class="lhead">Torch 层 · 执行</div>
+    <code>DTensor.redistribute</code> 内部把布局差异翻译成 NCCL 集体通信内核
+    （all-gather / all-reduce / reduce-scatter / shard），并维护反向传播的伴随算子。
+  </div>
+</div>
+
+<!-- ================= 1 激活 x ================= -->
+<h2 class="section" id="x">1. 激活 x：怎么布局、怎么切分、怎么聚合</h2>
+
+<p>以 MLA attention 的输入边界为例（<code>torchtitan/models/deepseek_v3/sharding.py:98-105</code>）：</p>
+<pre><code><span class="cmt"># deepseek_v3/sharding.py —— attention 模块的 ShardingConfig</span>
+attention.sharding_config = ShardingConfig(
+    <span class="fn">in_src_shardings</span>={ <span class="st">"x"</span>: attn_x_layout },                <span class="cmt"># 进入前：SP 布局（序列被切）</span>
+    <span class="fn">in_dst_shardings</span>={ <span class="st">"x"</span>: dense_activation_placement(tp=spmd.R) },  <span class="cmt"># 进入后：TP 上聚合为 Replicate</span>
+)
+</code></pre>
+<p>其中 <code>attn_x_layout</code> 由 <code>enable_sp</code>（Sequence Parallelism）开关决定（同文件 90-94 行）：</p>
+<pre><code>attn_x_layout = (
+    dense_sequence_parallel_placement()          <span class="cmt"># enable_sp=True ：x 在层间是序列切分的</span>
+    if enable_sp
+    else dense_activation_placement(tp=spmd.I)  <span class="cmt"># enable_sp=False：x 在 TP 上不切（I≈R）</span>
+)
+</code></pre>
+
+<h3>1.1 用户层：<code>x</code> 的布局长什么样</h3>
+<p>两个布局函数定义在 <code>torchtitan/models/common/decoder_sharding.py</code>：</p>
+<pre><code><span class="cmt"># decoder_sharding.py:34-50  —— 通用激活布局：DP 切 batch，CP 切序列，TP 由调用方指定</span>
+<span class="kw">def</span> <span class="fn">dense_activation_placement</span>(*, tp, cp=spmd.S(1)) -> SpmdLayout:
+    <span class="kw">return</span> SpmdLayout({ DP: spmd.S(0), CP: cp, TP: tp })
+
+<span class="cmt"># decoder_sharding.py:53-62  —— 序列并行（SP）激活布局：batch/seq 分给 DP/CP/TP</span>
+<span class="kw">def</span> <span class="fn">dense_sequence_parallel_placement</span>() -> SpmdLayout:
+    <span class="kw">return</span> SpmdLayout(
+        { DP: spmd.V, CP: spmd.V, TP: spmd.V },
+        partition_spec=(DP, (CP, TP), None),   <span class="cmt"># 张量 (B, L, D)：dim0→DP，dim1→CP+TP，dim2 不切</span>
+    )
+</code></pre>
+
+<div class="callout">
+  <b class="tag">📐 换算结果（对 <code>x_BLD = (B, L, D)</code>）</b><br>
+  <code>dense_sequence_parallel_placement()</code> → <b>DP: S(0)，CP: S(1)，TP: S(1)</b>（batch 归 DP，序列长度同时被 CP 和 TP 切）<br>
+  <code>dense_activation_placement(tp=spmd.R)</code> → <b>DP: S(0)，CP: S(1)，TP: R</b>（序列只在 CP 上切，TP 上是完整副本）
+</div>
+
+<p>所以 attention 输入边界的布局变化是：</p>
+<table>
+  <tr><th>模式</th><th>in_src（进入前，<code>attn_x_layout</code>）</th><th>in_dst（进入后）</th><th>需要的通信</th></tr>
+  <tr>
+    <td><b>SP 开</b>（<code>enable_sp=True</code>）</td>
+    <td><code>DP:S(0) CP:S(1) TP:S(1)</code></td>
+    <td><code>DP:S(0) CP:S(1) TP:R</code></td>
+    <td><b>TP 轴 all-gather</b>（序列段聚合）</td>
+  </tr>
+  <tr>
+    <td><b>SP 关</b>（<code>enable_sp=False</code>）</td>
+    <td><code>DP:S(0) CP:S(1) TP:I</code>（≈R）</td>
+    <td><code>DP:S(0) CP:S(1) TP:R</code></td>
+    <td>无（I 与 R 在 DTensor 层都是 Replicate）</td>
+  </tr>
+</table>
+
+<h3>1.2 Titan 层：<code>x</code> 的重分布编排</h3>
+<p><code>Module.parallelize()</code>（<code>torchtitan/protocols/module.py:248-294</code>）对每个带 <code>_sharding_config</code> 的模块：</p>
+<pre><code><span class="cmt"># module.py:289-294 —— 重写 forward：执行前对齐输入，执行后对齐输出</span>
+<span class="kw">def</span> <span class="fn">forward_with_redistribution</span>(*args, **kwargs):
+    args, kwargs = self._redistribute_inputs(parallel_dims, args, kwargs)   <span class="cmt"># 边界 A：in_src → in_dst</span>
+    outputs = fn(*args, **kwargs)
+    <span class="kw">return</span> self._redistribute_outputs(parallel_dims, outputs)           <span class="cmt"># 边界 B：out_src → out_dst</span>
+
+self.forward = forward_with_redistribution
+</code></pre>
+
+<p>对 <code>x</code> 的完整处理流程（<code>_redistribute_inputs</code>，module.py:518-629）：</p>
+<div class="flow">
+  <div class="step">
+    <div class="n">1</div>
+    <div><span class="who titan">Titan</span><b>提升 / 校验（in_src）</b><br>
+      读 <code>value.placements</code>。若 x 是普通 Tensor（数据入口处）：
+      full_dtensor 后端下直接 <code>raise "Got a plain Tensor"</code>（module.py:593-597）——
+      因为输入早在 trainer 里被 <code>parallelize_inputs</code> 包装过了（见下）；
+      其他后端则用 <code>in_src_shardings</code> 调 <code>DTensor.from_local</code> 提升（module.py:599-606）。<br>
+      若已是 DTensor：校验其 placements 必须与 <code>in_src_shardings</code> 一致（module.py:608-617，不一致 raise）。</div>
+  </div>
+  <div class="step">
+    <div class="n">2</div>
+    <div><span class="who titan">Titan</span><b>比对（in_dst）</b><br>
+      解析 <code>in_dst_shardings["x"] = {DP:S(0), CP:S(1), TP:R}</code>，用 <code>check_dtensor_placements_match</code> 与当前 placements 比对（module.py:619-623）。</div>
+  </div>
+  <div class="step">
+    <div class="n">3</div>
+    <div><span class="who titan">Titan</span><b>发起重分布</b><br>
+      发现 <code>TP:S(1) ≠ TP:R</code>，调用 <code>value.redistribute(placements=desired, async_op=True)</code>（module.py:624）。
+      只发出"指令"，不执行通信。</div>
+  </div>
+  <div class="step">
+    <div class="n">4</div>
+    <div><span class="who torch">Torch</span><b>物理执行</b><br>
+      <code>redistribute</code> 内部推导出 <code>S(1)→R</code> = <b>all-gather</b>，在 TP 组上发 NCCL
+      <code>all_gather_into_tensor</code>，把各卡 (B, L/TP, D) 的序列段拼成 (B, L, D) 完整副本。</div>
+  </div>
+</div>
+
+<div class="callout green">
+  <b class="tag">🌱 x 的 DTensor 是哪里建的？</b><br>
+  <b>数据入口（每个 step 一次）</b>：trainer.py:716-719 → <code>full_dtensor.parallelize_inputs</code>（full_dtensor.py:128-167），
+  按 <code>DP→Shard(0)、CP→Shard(1)、TP→Replicate</code> 用 <code>DTensor.from_local</code> 包装输入/labels。<br>
+  <b>层间流动</b>：上一层（如 norm）输出天然是 DTensor —— 由第 3 层 DTensor 算子（matmul 等）自动产出。
+  所以 attention 拿到 x 时几乎总是 DTensor，模块钩子里的 <code>from_local</code> 提升主要是给
+  非 full_dtensor 后端的兜底。
+</div>
+
+<h3>1.3 Torch 层：all-gather 长什么样</h3>
+<p>以 TP=2（卡 0、卡 1），SP 开为例，<code>x_BLD</code> 在 attention 边界前被序列切分，进入时被聚合：</p>
+
+<div class="tensorbox">
+  <div class="tensor-row">
+    <div class="tlabel">进入前（in_src，每卡局部）：</div>
+    <div class="tensor"><span class="cell rank0">卡0：seq 0..3</span></div>
+    <div class="tensor"><span class="cell rank1">卡1：seq 4..7</span></div>
+  </div>
+  <div class="tensor-row">
+    <div class="tlabel">&nbsp;</div>
+    <span class="arrow">⬇</span>
+    <span class="gather-banner">NCCL AllGather（TP 组）</span>
+    <span class="arrow">⬇</span>
+  </div>
+  <div class="tensor-row">
+    <div class="tlabel">进入后（in_dst，每卡完整）：</div>
+    <div class="tensor">
+      <span class="cell dim">seq 0..7</span>
+    </div>
+    <div class="tensor">
+      <span class="cell dim">seq 0..7</span>
+    </div>
+  </div>
+</div>
+
+<p>DTensor 的通信推导规则（对 <code>x_BLD</code> 的每个网格轴独立判断）：</p>
+<table>
+  <tr><th>src placement</th><th>dst placement</th><th>PyTorch 内部动作</th></tr>
+  <tr><td><span class="chip-s">Shard(1)</span>（TP 轴）</td><td><span class="chip-r">Replicate</span></td><td><b>AllGather</b>：每卡广播自己的序列段并拼接</td></tr>
+  <tr><td><span class="chip-r">Replicate</span></td><td><span class="chip-s">Shard(1)</span></td><td><b>Shard</b>：本地切片（无通信，或仅数据搬运）</td></tr>
+  <tr><td><span class="chip-s">Shard(0)</span>（DP 轴，batch）</td><td><span class="chip-s">Shard(0)</span></td><td>不变，不通信</td></tr>
+  <tr><td><span class="chip-s">Shard(1)</span>（CP 轴）</td><td><span class="chip-s">Shard(1)</span></td><td>不变，不通信（CP 的序列切分保留）</td></tr>
+</table>
+
+<p>注意 attention 模块的 <code>in_dst</code> 只把 <b>TP 轴</b>聚合：DP/CP 的切分原样保留 —— 所以注意力是在
+"batch 切成 DP、序列切成 CP、TP 每卡都有完整序列"的布局下计算的。</p>
+
+<!-- ================= 2 Attention 矩阵 ================= -->
+<h2 class="section" id="attn">2. Attention（MLA）矩阵：每块权重怎么声明、怎么切</h2>
+
+<p>DeepSeek-V3 的 MLA 注意力（<code>torchtitan/models/deepseek_v3/model.py</code> 的 <code>Attention</code>）权重结构：
+低秩投影 <code>wkv_a / wq_a</code>、上投影 <code>wkv_b / wq_b</code>（或直连 <code>wq</code>）、输出投影 <code>wo</code>、
+两个 RMSNorm（<code>kv_norm / q_norm</code>）与 RoPE 缓存。全部在 <code>_set_deepseek_v3_layer_sharding</code>
+（sharding.py:72-151）里声明：</p>
+
+<pre><code><span class="cmt"># deepseek_v3/sharding.py:98-133 —— MLA 各子模块的 ShardingConfig</span>
+attention.sharding_config = ShardingConfig(          <span class="cmt"># 边界：x 的聚合（第 1 节已讲）</span>
+    in_src_shardings={ <span class="st">"x"</span>: attn_x_layout },
+    in_dst_shardings={ <span class="st">"x"</span>: dense_activation_placement(tp=spmd.R) },
+)
+attention.rope.sharding_config = ShardingConfig(
+    state_shardings={ <span class="st">"cache"</span>: dense_param_placement(tp=spmd.R) },  <span class="cmt"># RoPE 缓存：R@TP</span>
+)
+replicate_weight = ShardingConfig(                   <span class="cmt"># 低秩/逐元素算子：权重不切</span>
+    state_shardings={ <span class="st">"weight"</span>: dense_param_placement(tp=spmd.R) },
+)
+attention.wkv_a.sharding_config = replicate_weight    <span class="cmt"># 低秩投影 (kv_lora_rank+qk_rope, D)  → R</span>
+attention.kv_norm.sharding_config = replicate_weight  <span class="cmt"># 逐元素 RMSNorm                        → R</span>
+
+attention.wkv_b.sharding_config = colwise_config()    <span class="cmt"># 上投影 (D, kv_lora_rank)              → S(0)</span>
+attention.wo.sharding_config = rowwise_config(output_sp=enable_sp)  <span class="cmt"># 输出 (D, D) → S(1)</span>
+
+set_gqa_inner_attention_local_map(attention.inner_attention)        <span class="cmt"># 内部 kernel：local_map + 头切分</span>
+
+<span class="kw">if</span> attention.q_lora_rank == 0:
+    attention.wq.sharding_config = colwise_config()   <span class="cmt"># 无低秩：wq 直接 colwise S(0)</span>
+<span class="kw">else</span>:
+    attention.wq_a.sharding_config = replicate_weight  <span class="cmt"># 低秩 q 投影 → R</span>
+    attention.q_norm.sharding_config = replicate_weight
+    attention.wq_b.sharding_config = colwise_config()  <span class="cmt"># 上投影 → S(0)</span>
+</code></pre>
+
+<p>两个"切分模板"定义在 <code>decoder_sharding.py</code>（注意：当前工作树删除了 <code>colwise_config</code> 定义，
+以下为 git HEAD 版本）：</p>
+<pre><code><span class="cmt"># decoder_sharding.py —— 列并行模板：切输出维</span>
+<span class="kw">def</span> <span class="fn">colwise_config</span>() -> ShardingConfig:
+    <span class="kw">return</span> ShardingConfig(
+        state_shardings={
+            <span class="st">"weight"</span>: dense_param_placement(tp=spmd.S(0)),   <span class="cmt"># (out, in) 切 dim0 = 输出维</span>
+            <span class="st">"bias"</span>:   dense_param_placement(tp=spmd.S(0)),
+        },
+        out_src_shardings=dense_activation_placement(tp=spmd.S(-1)), <span class="cmt"># 输出切最后一维（out 特征）</span>
+    )
+
+<span class="cmt"># decoder_sharding.py —— 行并行模板：切输入维，输出 Partial，再按需规约</span>
+<span class="kw">def</span> <span class="fn">rowwise_config</span>(*, output_sp: bool = False) -> ShardingConfig:
+    out_dst = (
+        dense_sequence_parallel_placement()      <span class="cmt"># SP 开：reduce-scatter 回序列分片</span>
+        if output_sp
+        <span class="kw">else</span> dense_activation_placement(tp=spmd.I)  <span class="cmt"># SP 关：all-reduce 成完整</span>
+    )
+    <span class="kw">return</span> ShardingConfig(
+        state_shardings={
+            <span class="st">"weight"</span>: dense_param_placement(tp=spmd.S(1)),   <span class="cmt"># (out, in) 切 dim1 = 输入维</span>
+            <span class="st">"bias"</span>:   dense_param_placement(tp=spmd.R),
+        },
+        out_src_shardings=dense_activation_placement(tp=spmd.P),   <span class="cmt"># 输出是 Partial（局部和）</span>
+        out_dst_shardings=out_dst,
+    )
+</code></pre>
+
+<h3>2.1 用户层：MLA 权重布局总表</h3>
+<table>
+  <tr><th>权重</th><th>形状 (out, in)</th><th>声明</th><th>TP 布局</th><th>为什么</th></tr>
+  <tr><td><code>wkv_a</code></td><td>(kv_lora_rank + qk_rope_dim, D)</td><td><code>replicate_weight</code></td><td><span class="chip-r">R</span></td><td>输出是低秩小张量，复制成本低、省去后续通信</td></tr>
+  <tr><td><code>kv_norm / q_norm</code></td><td>(dim,)</td><td><code>replicate_weight</code></td><td><span class="chip-r">R</span></td><td>RMSNorm 是逐元素运算，切了反而要通信</td></tr>
+  <tr><td><code>wkv_b</code></td><td>(D, kv_lora_rank)</td><td><code>colwise_config()</code></td><td><span class="chip-s">S(0)</span></td><td>输出维切分：每卡算自己的输出切片，前向零通信</td></tr>
+  <tr><td><code>wq</code>（q_lora_rank=0）</td><td>(D, D)</td><td><code>colwise_config()</code></td><td><span class="chip-s">S(0)</span></td><td>同 colwise</td></tr>
+  <tr><td><code>wq_a</code></td><td>(q_lora_rank, D)</td><td><code>replicate_weight</code></td><td><span class="chip-r">R</span></td><td>低秩</td></tr>
+  <tr><td><code>wq_b</code></td><td>(D, q_lora_rank)</td><td><code>colwise_config()</code></td><td><span class="chip-s">S(0)</span></td><td>上投影，输出维切分</td></tr>
+  <tr><td><code>wo</code></td><td>(D, D)</td><td><code>rowwise_config(output_sp=…)</code></td><td><span class="chip-s">S(1)</span></td><td>输入维切分：输出是 Partial，必须规约（这是 MLA 里唯一的通信点）</td></tr>
+  <tr><td><code>rope.cache</code></td><td>(max_seq, dim)</td><td>R@TP</td><td><span class="chip-r">R</span></td><td>每卡都需要完整缓存来算位置编码</td></tr>
+</table>
+
+<div class="callout">
+  <b class="tag">🧩 为什么 MLA 这么切？</b><br>
+  <b>低秩投影（wkv_a / wq_a）复制</b>：输出只有几百维，每卡复制一份的显存/计算成本远低于
+  为它做通信；<b>上投影（wkv_b / wq_b / wq）colwise</b>：输入 x 已被 gather 成 R@TP，
+  <code>R @ S(0)</code> 的 matmul 输出天然按特征维切开，<b>前向不需要任何通信</b>；
+  <b>wo rowwise</b>：它必须把各卡按头算出的部分和合并，是 attention 出口的"汇合点"，
+  顺便用 reduce-scatter 把输出还原成 SP 序列分片，供残差和下一层直接使用。
+</div>
+
+<h3>2.2 Titan 层：权重分发 + 内部注意力边界</h3>
+<p><b>① 权重分发</b>（<code>_distribute_states</code>，module.py:331-411）—— 训练开始前执行一次：</p>
+<pre><code><span class="cmt"># module.py:342-379 —— 遍历本模块参数，按 state_shardings 建 DTensor 权重</span>
+<span class="kw">for</span> name, param <span class="kw">in</span> self.named_parameters(recurse=False):
+    spmd_layout = sharding_config.state_shardings.get(name)   <span class="cmt"># 如 {"weight": {TP: S(0)}}</span>
+    ...
+    mesh = parallel_dims.resolve_mesh(axes)                   <span class="cmt"># SpmdLayout → DeviceMesh（按轴）</span>
+    placements = resolve_placements(spmd_layout, mesh)        <span class="cmt"># SpmdLayout → tuple[Placement]</span>
+    self.register_parameter(
+        name,
+        nn.Parameter(distribute_tensor(param, mesh, list(placements))),  <span class="cmt"># PyTorch API</span>
+    )
+</code></pre>
+<p>对 <code>wo</code> 来说：<code>resolve_placements({DP:R, CP:R, TP:S(1)}, mesh)</code> 产出
+<code>(Replicate, Replicate, Shard(1))</code>，<code>distribute_tensor</code> 把初始化时每卡都有的
+全量 <code>(D, D)</code> 权重按 dim1 切成 <code>(D, D/TP)</code>。</p>
+
+<p><b>② 内部注意力边界</b>（<code>set_gqa_inner_attention_local_map</code>，decoder_sharding.py:181-220）：
+q/k/v 进入 FlexAttention kernel 前的布局：</p>
+<pre><code><span class="cmt"># decoder_sharding.py:200-220 —— 头维切分 + local_map（DTensor → 局部张量 → kernel）</span>
+q_placements   = dense_activation_placement(tp=spmd.S(2))            <span class="cmt"># q_BLNH：头维 N 被 TP 切（Shard(2)）</span>
+kv_src_placements = dense_activation_placement(tp=spmd.S(2))         <span class="cmt"># k/v 进来时：头切分 + CP 序列切分</span>
+kv_dst_placements = dense_activation_placement(tp=spmd.S(2), cp=spmd.R)  <span class="cmt"># k/v 进入前：CP 上 all-gather（kernel 要看到完整 key）</span>
+...
+inner_attention_cfg.sharding_config = ShardingConfig(
+    in_src_shardings={ <span class="st">"q_BLNH"</span>: q_placements, <span class="st">"k_BLNH"</span>: kv_src_placements, <span class="st">"v_BLNH"</span>: kv_src_placements },
+    in_dst_shardings={ <span class="st">"q_BLNH"</span>: q_placements, <span class="st">"k_BLNH"</span>: kv_dst_placements, <span class="st">"v_BLNH"</span>: kv_dst_placements },
+    out_src_shardings=out_src,
+    local_map=LocalMapConfig(in_grad_placements=(q_placements, kv_grad_placements, kv_grad_placements)),
+)
+</code></pre>
+
+<p><b>③ 输出边界</b>（<code>_redistribute_outputs</code>，module.py:631-707）—— <code>wo</code> 出口：</p>
+<pre><code><span class="cmt"># module.py:700-705 —— wo 输出：out_src=P（Partial）→ out_dst（SP 布局或 I）</span>
+<span class="kw">if</span> out_dst <span class="kw">is</span> <span class="kw">not</span> None:
+    desired = resolve_placements(out_dst, mesh)
+    <span class="kw">if</span> isinstance(outputs, DTensor) <span class="kw">and</span> <span class="kw">not</span> check_dtensor_placements_match(outputs.placements, desired, outputs.ndim):
+        outputs = outputs.redistribute(placements=desired, async_op=True)
+</code></pre>
+
+<h3>2.3 Torch 层：每个矩阵切的物理含义</h3>
+<p><code>distribute_tensor</code> 把"每卡都有的全局权重"按 placements 切分/复制；<code>redistribute</code>
+按 src/dst 推导通信。MLA 前向里 DTensor 的 matmul 布局规则（x 在 TP 上已是 R，即
+<code>x</code> 的 TP placement 是 Replicate）：</p>
+<table>
+  <tr><th>算式</th><th>布局</th><th>结果</th><th>通信</th></tr>
+  <tr><td><code>q = wq_b(norm(wq_a(x)))</code></td><td><code>R @ S(0)ᵀ</code></td><td><span class="chip-s">S(-1)</span>（输出特征切分）</td><td>无（每卡独立算自己的输出切片）</td></tr>
+  <tr><td><code>kv = wkv_b(kv_norm(wkv_a(x)))</code></td><td><code>R @ S(0)ᵀ</code></td><td><span class="chip-s">S(-1)</span></td><td>无</td></tr>
+  <tr><td>inner attention（FlexAttention）</td><td>q/k/v 头切分 <code>S(2)</code>；k/v 先 CP all-gather</td><td>attn 输出 <span class="chip-s">S(2)</span></td><td>CP 组 all-gather（k/v 各一次）</td></tr>
+  <tr><td><code>out = wo(attn)</code></td><td><code>S(-1) @ S(1)ᵀ</code></td><td><span class="chip-p">Partial</span></td><td>必须规约</td></tr>
+  <tr><td>规约（SP 开 / 关）</td><td>P → SP 布局 / P → R</td><td><span class="chip-s">S(1)@(CP,TP)</span> / <span class="chip-r">R</span></td><td><b>reduce-scatter</b> / <b>all-reduce</b></td></tr>
+</table>
+
+<div class="callout purple">
+  <b class="tag">⚙️ 通信内核小结（按出现频率）</b><br>
+  <b>AllGather</b>：① attention 入口把 x 的 TP 序列段聚合（SP 模式）；② inner attention 里把 k/v 在 CP 上聚合。<br>
+  <b>ReduceScatter</b>：wo 输出 Partial → SP 序列分片（SP 模式，把通信和"切回序列并行"合并成一次）。<br>
+  <b>AllReduce</b>：wo 输出 Partial → 完整（非 SP 模式）。<br>
+  反向传播时每个集体通信都有伴随算子（all-gather 的伴随是 reduce-scatter，反之亦然），
+  DTensor 自动处理，torchtitan 和用户都不用写。
+</div>
+
+<!-- ================= 3 案例走查 ================= -->
+<h2 class="section" id="walkthrough">3. 案例走查：wq_b 的 colwise 全链路（真实数值）</h2>
+
+<p>用 <code>attention.wq_b.sharding_config = colwise_config()</code> 这一行
+（<code>deepseek_v3/sharding.py:133</code>），把"用户声明 → Titan 分发 → Torch 切分"整条链路逐行走一遍，
+<strong>每个变量的具体值都是真实数值</strong>（来自本仓库的模型配置与一个具体的并行设置）。</p>
+
+<h3>3.1 场景设定（真实值）</h3>
+<table>
+  <tr><th>来源</th><th>配置项</th><th>真实值</th></tr>
+  <tr><td rowspan="4">模型侧<br>（deepseek_v3/__init__.py:465-469）</td><td><code>dim</code></td><td><code>5120</code></td></tr>
+  <tr><td><code>n_heads</code></td><td><code>128</code></td></tr>
+  <tr><td><code>q_lora_rank</code></td><td><code>1536</code></td></tr>
+  <tr><td><code>qk_nope_head_dim / qk_rope_head_dim</code></td><td><code>128 / 64</code> → <code>qk_head_dim = 192</code></td></tr>
+  <tr><td rowspan="2">wq_b 的 Linear.Config<br>（deepseek_v3/__init__.py:127-131）</td><td><code>in_features = q_lora_rank</code></td><td><code>1536</code></td></tr>
+  <tr><td><code>out_features = n_heads * qk_head_dim</code></td><td><code>128 × 192 = 24576</code></td></tr>
+  <tr><td>并行侧（举例）</td><td>TP / DP / CP / world</td><td><code>TP=4, DP=4（dp_shard=4）, CP=1，world_size=16，backend=full_dtensor</code></td></tr>
+</table>
+<p>因此 <code>wq_b.weight</code> 的全局形状是 <code>(24576, 1536)</code>（PyTorch Linear：dim0=输出维，dim1=输入维），
+且 <code>bias=False</code>（linear.py:33 默认）——<strong>wq_b 没有 bias 参数</strong>。</p>
+
+<h3>3.2 第 1 层（用户）：这一行到底写了什么</h3>
+<pre><code><span class="cmt"># deepseek_v3/sharding.py:133 —— 用户唯一的动作</span>
+attention.wq_b.sharding_config = <span class="fn">colwise_config</span>()
+
+<span class="cmt"># colwise_config() 的完整返回值（git HEAD 版本）—— 一个真实的 ShardingConfig 对象</span>
+ShardingConfig(
+    state_shardings={
+        <span class="st">"weight"</span>: SpmdLayout({DP: R, CP: R, TP: S(0)}),   <span class="cmt"># = dense_param_placement(tp=spmd.S(0))</span>
+        <span class="st">"bias"</span>:   SpmdLayout({DP: R, CP: R, TP: S(0)}),   <span class="cmt"># 写了但 wq_b 没有 bias，永远不会被访问</span>
+    },
+    out_src_shardings=SpmdLayout({DP: S(0), CP: S(1), TP: S(-1)}),  <span class="cmt"># = dense_activation_placement(tp=spmd.S(-1))</span>
+)</code></pre>
+<p>这个对象先挂在 <code>wq_b.config</code> 上；<code>wq_b = config.wq_b.build()</code> 时，
+<code>Module.Config.build</code>（module.py:61-70）把它复制到实例：<code>instance._sharding_config = self.sharding_config</code>。
+<strong>第 1 层到此为止：只有数据结构，零通信。</strong></p>
+
+<h3>3.3 第 2 层（Titan）：<code>_distribute_states</code> 逐行走查</h3>
+<p><code>model.parallelize(parallel_dims)</code> 递归到 <code>wq_b</code> 时执行（module.py:342-379），
+每个变量标出真实值：</p>
+<pre><code><span class="cmt"># module.py:342 —— 遍历本模块自己的参数（不进子模块）</span>
+<span class="kw">for</span> name, param <span class="kw">in</span> self.named_parameters(recurse=False):
+<span class="cmt">#   真实值：self = wq_b 实例
+#   name  = "weight"（唯一一项，没有 bias）
+#   param = nn.Parameter，形状 (24576, 1536)</span>
+
+<span class="cmt"># module.py:343 —— 按参数名查声明好的布局</span>
+    spmd_layout = sharding_config.state_shardings.get(name)
+<span class="cmt">#   真实值：spmd_layout = SpmdLayout({DP: R, CP: R, TP: S(0)})</span>
+
+<span class="cmt"># module.py:344-348 —— 查不到就报错（"写全"硬规则）</span>
+    <span class="kw">if</span> spmd_layout <span class="kw">is</span> <span class="kw">None</span>:
+        <span class="kw">raise</span> ValueError(<span class="st">f"{type(self).__name__}.{name} has no placement declared ..."</span>)
+<span class="cmt">#   真实值：查到了，不 raise</span>
+
+<span class="cmt"># module.py:349-357 —— spmd_types 后端专用路径，本例跳过</span>
+    <span class="kw">if</span> parallel_dims.spmd_backend == <span class="st">"spmd_types"</span>:
+        self._spmd_distribute_state(...); <span class="kw">continue</span>
+<span class="cmt">#   真实值：backend == "full_dtensor"，不走这里</span>
+
+<span class="cmt"># module.py:358 —— 轴从 SpmdLayout 里取出来（用户声明时写死的）</span>
+    axes = spmd_layout.axes()
+<span class="cmt">#   真实值：axes = (DP, CP, TP)</span>
+
+<span class="cmt"># module.py:359 —— 按轴名查 ParallelDims 里已建好的命名 mesh</span>
+    mesh = parallel_dims.resolve_mesh(axes)
+<span class="cmt">#   真实执行（parallel_dims.py:546-582）：
+#   full_dtensor → unfold_dp_axes(["dp","cp","tp"])
+#                → ["dp_replicate", "dp_shard", "cp", "tp"]
+#   真实值：mesh = DeviceMesh(mesh_dim_names=("dp_replicate","dp_shard","cp","tp"),
+#                             shape=(1, 4, 1, 4))     # 4 维 mesh，world 16</span>
+
+<span class="cmt"># module.py:360-362 —— 轴未启用则跳过</span>
+    <span class="kw">if</span> mesh <span class="kw">is</span> <span class="kw">None</span>:
+        <span class="kw">continue</span>
+<span class="cmt">#   真实值：mesh 不为 None，继续</span>
+
+<span class="cmt"># module.py:363 —— SpmdLayout → 按 mesh 轴序排列的 DTensor placement 元组</span>
+    placements = resolve_placements(spmd_layout, mesh)
+<span class="cmt">#   真实过程（sharding.py:126-161，逐轴查表 + size-1 轴归一化）：
+#   dp_replicate: R    → Replicate()
+#   dp_shard:     R    → Replicate()
+#   cp:           R    → Replicate()
+#   tp:           S(0) → Shard(0)
+#   真实值：placements = (Replicate(), Replicate(), Replicate(), Shard(0))</span>
+
+<span class="cmt"># module.py:364-371 —— 权重共享（tied weight）检查</span>
+    <span class="kw">if</span> isinstance(param, DTensor):
+        <span class="kw">if</span> tuple(param.placements) != tuple(placements):
+            <span class="kw">raise</span> ValueError(...)
+<span class="cmt">#   真实值：param 还是普通 Parameter（wq_b 无 tied weight），跳过</span>
+
+<span class="cmt"># module.py:373-379 —— 交给第 3 层：把普通权重变成 DTensor 并注册回去</span>
+    self.register_parameter(
+        name,
+        nn.Parameter(
+            distribute_tensor(param, mesh, list(placements)),
+            requires_grad=param.requires_grad,
+        ),
+    )</code></pre>
+
+<h3>3.4 第 3 层（Torch）：<code>distribute_tensor</code> 的物理动作</h3>
+<pre><code><span class="cmt"># distribute_tensor(param, mesh, (R, R, R, S(0))) 内部：</span>
+<span class="cmt">#   输入：全局权重 (24576, 1536)，每卡都持有完整副本
+#   tp 轴 size=4 + Shard(0) → 按输出维切成 4 份
+#   结果：DTensor，全局形状 (24576, 1536)
+#         每卡局部形状 (24576 / 4, 1536) = (6144, 1536)
+#         placements = (Replicate(), Replicate(), Replicate(), Shard(0))</span></code></pre>
+<p>前向 <code>q = self.wq_b(self.q_norm(q))</code> 时：输入 <code>(B, L, 1536)</code> 在 TP 上是 Replicate，
+<code>R @ S(0)ᵀ → S(-1)</code>，每卡独立算出自己的 <code>(B, L, 24576/4)</code> 输出切片，
+<strong>零通信</strong>——这正是 <code>out_src_shardings</code> 里 <code>S(-1)</code> 的物理结果
+（<code>_redistribute_outputs</code> 会校验输出布局确实如此）。</p>
+
+<h3>3.5 全链路真实值汇总</h3>
+<table>
+  <tr><th>环节</th><th>真实值</th></tr>
+  <tr><td><code>wq_b.weight</code> 全局形状</td><td><code>(24576, 1536)</code>（= 128 头 × 192 头维, q_lora_rank）</td></tr>
+  <tr><td><code>state_shardings["weight"]</code></td><td><code>SpmdLayout({DP: R, CP: R, TP: S(0)})</code></td></tr>
+  <tr><td><code>axes</code></td><td><code>(DP, CP, TP)</code></td></tr>
+  <tr><td><code>resolve_mesh</code> 返回</td><td>4 维 mesh <code>(dp_replicate=1, dp_shard=4, cp=1, tp=4)</code></td></tr>
+  <tr><td><code>placements</code></td><td><code>(Replicate(), Replicate(), Replicate(), Shard(0))</code></td></tr>
+  <tr><td><code>distribute_tensor</code> 后每卡局部</td><td><code>(6144, 1536)</code></td></tr>
+  <tr><td><code>bias</code></td><td>不存在（bias=False）；<code>state_shardings</code> 里的 <code>"bias"</code> 键永远不会被访问，无害</td></tr>
+</table>
+
+<div class="callout green">
+  <b class="tag">💡 这条链路没有一步是隐式的</b><br>
+  轴在 <code>SpmdLayout</code> 里（<code>dense_param_placement</code> 写死的三个键）；
+  mesh 由 <code>resolve_mesh</code> 按轴名查 <code>ParallelDims</code> 已建好的命名 mesh；
+  placement 顺序由 mesh 轴序决定；切多少份由 <code>Shard(0)</code> + mesh 的 tp 维 size=4 决定。
+</div>
+
+<!-- ================= 4 全景 ================= -->
+<h2 class="section" id="flow">4. 全景：一个 Transformer 层内的布局流转</h2>
+
+<div class="flow">
+  <div class="step"><div class="n">1</div><div><span class="who user">用户</span><b>声明</b>：在 <code>set_deepseek_v3_sharding_config</code> → <code>_set_deepseek_v3_layer_sharding</code> 里给 attention / norm / FFN / MoE 填 <code>ShardingConfig</code>。零通信。</div></div>
+  <div class="step"><div class="n">2</div><div><span class="who titan">Titan</span><b>训练启动</b>：<code>parallelize_deepseekv3</code> → <code>model.parallelize(parallel_dims)</code>。所有权重按 <code>state_shardings</code> 调 <code>distribute_tensor</code> 变 DTensor；所有 forward 被重写（输入/输出边界）。</div></div>
+  <div class="step"><div class="n">3</div><div><span class="who titan">Titan</span><b>每步数据入口</b>：trainer 调 <code>parallelize_inputs</code>，用 <code>DTensor.from_local</code> 把 <code>inputs/labels</code> 包装成 <code>DP:S(0), CP:S(1), TP:R</code> 的 DTensor。</div></div>
+  <div class="step"><div class="n">4</div><div><span class="who titan">Titan</span><b>attention 边界</b>（<code>_redistribute_inputs</code>）：校验 x 的 placements == <code>in_src</code>（SP 布局），发现 ≠ <code>in_dst</code>（TP:R），调 <code>redistribute</code>。</div></div>
+  <div class="step"><div class="n">5</div><div><span class="who torch">Torch</span><b>AllGather</b>：TP 组上 x 从 <code>S(1)</code> → <code>R</code>。此刻每卡拥有完整序列的 x，可以算全部注意力。</div></div>
+  <div class="step"><div class="n">6</div><div><span class="who torch">Torch</span><b>MLA 计算</b>：R 权重（wkv_a/wq_a/norm）逐元素/低秩；colwise 权重（wkv_b/wq_b）<code>R@S(0)ᵀ → S(-1)</code> 零通信；inner attention 头切分 + k/v CP all-gather；wo <code>→ Partial</code>。</div></div>
+  <div class="step"><div class="n">7</div><div><span class="who torch">Torch</span><b>ReduceScatter / AllReduce</b>：wo 的 Partial 输出按 <code>out_dst</code> 规约（SP 开 reduce-scatter 回序列分片，SP 关 all-reduce）。</div></div>
+  <div class="step"><div class="n">8</div><div><span class="who titan">Titan</span><b>下一层</b>：残差相加后，FFN 的 norm 以 SP 布局为 <code>in_src</code> 直接消费；FFN 内部 w1/w3 colwise、w2 rowwise（decoder_sharding.py:223-241），模式与 attention 完全对称。</div></div>
+</div>
+
+<h3>一句话串起来</h3>
+<div class="callout">
+  <b class="tag">🧭 谁是"谁"</b><br>
+  <b>用户写 What</b>：<code>in_src/in_dst/state_shardings</code> 三张表，全是文本。<br>
+  <b>Titan 管 When/Where</b>：启动时建权重 DTensor、包 forward；forward 前后比对布局、调 <code>redistribute</code>。<br>
+  <b>Torch 管 How</b>：<code>redistribute / distribute_tensor / from_local</code> 内部推导并发射
+  all-gather / all-reduce / reduce-scatter 内核，并维护反向的伴随算子。
+</div>
+
+<!-- ================= 4 源码索引 ================= -->
+<h2 class="section" id="ref">5. 源码索引</h2>
+<table>
+  <tr><th>关注点</th><th>文件</th></tr>
+  <tr><td>DeepSeek-V3 全部布局声明（入口）</td><td><code>torchtitan/models/deepseek_v3/sharding.py</code>（<code>_set_deepseek_v3_layer_sharding</code> 72-151 行）</td></tr>
+  <tr><td>激活布局函数 / 权重模板</td><td><code>torchtitan/models/common/decoder_sharding.py</code>（activation 34-62、colwise 65、rowwise 67-84、norm 87-102、local_map 181-220、FFN 223-241）</td></tr>
+  <tr><td>ShardingConfig 定义 / SpmdLayout→Placement</td><td><code>torchtitan/protocols/sharding.py</code>（66-119 / 126-161）</td></tr>
+  <tr><td>parallelize 编排 / 权重分发 / 输入输出边界</td><td><code>torchtitan/protocols/module.py</code>（248-294 / 331-411 / 518-629 / 631-707）</td></tr>
+  <tr><td>数据入口包装（每步）</td><td><code>torchtitan/distributed/full_dtensor.py</code>（128-167）；调用处 <code>torchtitan/trainer.py:716-719</code></td></tr>
+  <tr><td>模型入口</td><td><code>torchtitan/models/deepseek_v3/parallelize.py</code>（60-133）</td></tr>
+  <tr><td>DTensor 底层 API</td><td><code>torch.distributed.tensor</code>：<code>DTensor.from_local / distribute_tensor / redistribute</code>（PyTorch 侧）</td></tr>
+</table>
+
+<div class="foot">
+  本文档基于本仓库当前工作树的实现生成；工作树中 <code>decoder_sharding.py</code> 的
+  <code>colwise_config</code> 定义被本地修改删除（git HEAD 中仍存在，本文按 HEAD 版本描述）。
+</div>
+
+</div>
+</body>
+</html>

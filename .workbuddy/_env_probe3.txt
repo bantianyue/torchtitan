@@ -1,0 +1,27 @@
+﻿=== which python ===
+C:\Users\twfehh7\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe
+=== py -0p ===
+no py launcher
+=== D:\02_source listing ===
+ai-newtab
+AReaL
+civil-engineering-cloud-claude-code-source-v2.1.88
+claudecode
+cleanrl
+codex
+cs249r_book-vol1-v0.7.0-vol2-v0.2.0
+deepseek-harness
+EvoCUA
+gif
+html-effectiveness-main
+hyper-parallel
+Megatron-LM
+moltbot
+notebooklm-py
+nowcoder
+opencode
+pytorch
+skills
+torchtitan
+train_demo
+verl

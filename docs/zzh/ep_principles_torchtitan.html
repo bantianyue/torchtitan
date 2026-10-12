@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EP 专家并行详解：原理与 torchtitan 实现</title>
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f6f8fa; --ink:#1f2328; --muted:#59636e;
+    --line:#d0d7de; --blue:#0969da; --purple:#8250df; --green:#1a7f37;
+    --orange:#bc4c00; --red:#cf222e; --code-bg:#0d1117; --code-fg:#e6edf3;
+    --mono:"Cascadia Code","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.7;font-size:15px}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 26px 90px}
+  header.hero{border-bottom:3px solid var(--ink);padding-bottom:16px;margin-bottom:22px}
+  header.hero h1{margin:0 0 8px;font-size:27px;line-height:1.35}
+  header.hero .sub{margin:0;color:var(--muted);font-size:13.5px}
+  .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .chip{font-size:12px;font-weight:600;padding:4px 11px;border-radius:20px;color:#fff}
+  .c-purple{background:var(--purple)} .c-blue{background:var(--blue)}
+  .c-green{background:var(--green)} .c-orange{background:var(--orange)}
+  nav.toc{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:12px 18px;margin:18px 0 8px;font-size:13.5px}
+  nav.toc ol{margin:6px 0 0;padding-left:22px}
+  nav.toc a{color:var(--blue);text-decoration:none}
+  h2{font-size:21px;margin:42px 0 12px;padding:9px 14px;background:var(--panel);
+    border-left:5px solid var(--purple);border-radius:6px}
+  h2.g{border-left-color:var(--blue)} h2.o{border-left-color:var(--orange)}
+  h2.r{border-left-color:var(--red)} h2.n{border-left-color:var(--green)}
+  h3{font-size:17px;margin:24px 0 8px;color:#0a0c10}
+  h4{font-size:15px;margin:18px 0 6px}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0;padding-left:24px}
+  code{font-family:var(--mono);font-size:12.8px;background:#eef1f4;padding:1px 6px;border-radius:4px}
+  pre{background:var(--code-bg);color:var(--code-fg);border-radius:8px;padding:13px 15px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.2px;line-height:1.55}
+  pre code{background:none;padding:0;color:inherit;font-size:inherit}
+  .cmt{color:#8b949e}.kw{color:#ff7b72}.fn{color:#d2a8ff}.st{color:#a5d6ff}
+  .nu{color:#79c0ff}.cl{color:#fcd34d}.nm{color:#fdba74}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel);font-weight:600}
+  tr:nth-child(even) td{background:#fbfcfe}
+  .callout{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;
+    background:#f0f6ff;padding:9px 13px;margin:13px 0;font-size:13.5px}
+  .callout.p{border-left-color:var(--purple);background:#faf0ff}
+  .callout.o{border-left-color:var(--orange);background:#fff4e8}
+  .callout.g{border-left-color:var(--green);background:#effbf2}
+  .callout b.t{display:inline-block;font-size:12px;margin-right:5px}
+  figure{margin:16px 0;padding:10px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  figure svg{display:block;width:100%;height:auto;max-width:1100px;margin:0 auto}
+  figcaption{text-align:center;color:var(--muted);font-size:12.5px;margin-top:6px}
+  .shape{font-family:var(--mono);font-size:12px}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;margin-right:4px}
+  .t-ep{background:#f1defa;color:#6f42c1}.t-tp{background:#ddf4ff;color:#0969da}
+  .t-fsdp{background:#fff1e5;color:#bc4c00}.t-user{background:#e7f3e7;color:#1a7f37}
+  .t-cfg{background:#fff8c5;color:#7d4e00}.t-mid{background:#eceef2;color:#24292f}
+  .foot{margin-top:50px;padding-top:14px;border-top:1px solid var(--line);
+    color:var(--muted);font-size:12.5px}
+  @media (max-width:820px){.wrap{padding:16px 12px 70px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>EP（专家并行）详解：原理 + torchtitan 实现</h1>
+  <p class="sub">以本地仓库 <code>D:\02_source\torchtitan</code> 为准（<code>main @ 229fa0bd5</code>）。核心代码：
+    <code>torchtitan/models/common/moe.py</code>、<code>moe_sharding.py</code>、<code>token_dispatcher.py</code>、
+    <code>torchtitan/distributed/parallel_dims.py</code>、<code>fsdp.py</code>、<code>full_dtensor.py</code>。</p>
+  <div class="legend">
+    <span class="chip c-purple">EP 原理</span>
+    <span class="chip c-blue">all-to-all dispatch / combine</span>
+    <span class="chip c-green">torchtitan 实现</span>
+    <span class="chip c-orange">Mesh / FSDP 切分</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <b>本页目录</b>
+  <ol>
+    <li><a href="#overview">为什么需要 EP（问题与收益）</a></li>
+    <li><a href="#router">Router：先决定 token 去哪些专家</a></li>
+    <li><a href="#alltoall">All-to-all：把 token 送到专家所在的卡</a></li>
+    <li><a href="#code">TorchTitan 实现地图：谁负责什么</a></li>
+    <li><a href="#mesh">双 Mesh 与专家权重切分</a></li>
+    <li><a href="#dispatch">Dispatcher 家族：standard / torchao / DeepEP / HybridEP / MinimalAsyncEP</a></li>
+    <li><a href="#train">训练配套：负载均衡、FSDP、checkpoint</a></li>
+    <li><a href="#fourlayers">四层分工：用户 / TorchTitan / PyTorch / CUDA &amp; NCCL（以 671B 为例）</a></li>
+    <li><a href="#faq">快速对照与 FAQ</a></li>
+  </ol>
+</nav>
+
+<h2 id="overview">1. 为什么需要 EP：MoE 的问题与 EP 的答案</h2>
+
+<p>MoE（Mixture of Experts）把 Transformer 每层的 FFN 换成“一个 Router + 很多个专家 FFN”。每个 token 只激活其中
+<code>top_k</code> 个专家，因此 <b>计算量</b>不随专家数线性增长；但 <b>参数量</b>随专家数线性增长，训练时必须解决“这么多专家权重放哪里”的问题。</p>
+
+<p>torchtitan 本仓库里自带的 DeepSeek V3 系配置正好能说明数量级（<code>models/deepseek_v3/__init__.py</code>）：</p>
+
+<table>
+  <tr><th>flavor</th><th>dim</th><th>层数</th><th>路由专家数 E</th><th>top_k</th><th>共享专家</th><th>配置入口</th></tr>
+  <tr><td><code>debugmodel</code></td><td>256</td><td>6</td><td>8</td><td>3</td><td>2</td><td><code>deepseek_v3_debugmodel</code></td></tr>
+  <tr><td><code>16B</code></td><td>2048</td><td>27</td><td>64</td><td>6</td><td>2</td><td><code>deepseek_v3_16b</code>（EP=8）</td></tr>
+  <tr><td><code>236B</code></td><td>5120</td><td>60</td><td>160</td><td>6</td><td>2</td><td>模型入口 <code>model_registry("236B")</code></td></tr>
+  <tr><td><code>671B</code></td><td>7168</td><td>61</td><td>256</td><td>8</td><td>1</td><td><code>deepseek_v3_671b</code>（EP=2）</td></tr>
+</table>
+
+<p>以 <code>236B</code> 的数值粗算：单个专家三层 FFN 权重约 <code>3 × 1536 × 5120 ≈ 23.6M</code>；
+160 个路由专家一层约 <b>3.77B</b>，59 层 MoE 合计约 <b>222B</b>。若 EP 把 160 个专家切成 4 份，
+每张卡只持有 <b>40 个专家的权重</b>，单层路由专家权重降到约 <code>0.94B</code>。</p>
+
+<div class="callout p">
+  <b class="t">EP 的本质</b>
+  <b>DP/FSDP/TP/CP/PP 是“把同样的计算拆给不同卡、数据不搬家”；EP 相反——token 会被路由到任意一张卡上的专家，所以必须“数据跟着计算走”，用
+  <b>all-to-all</b> 把 token 先送到持有目标专家的卡，算完再送回来。</b>
+</div>
+
+<h3>1.1 一张总览图：MoE 层在 EP=4 下怎么工作</h3>
+
+<figure>
+<svg viewBox="0 0 1100 470" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="12">
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/>
+    </marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#8250df"/>
+    </marker>
+  </defs>
+
+  <text x="30" y="28" fill="#1f2328" font-size="15" font-weight="700">MoE 层（EP=4 示意，E=8，每 rank 2 个本地专家）</text>
+
+  <!-- input -->
+  <rect x="28" y="62" width="135" height="86" rx="8" fill="#eef1f4" stroke="#57606a"/>
+  <text x="95" y="92" text-anchor="middle" font-weight="700" fill="#24292f">输入 x</text>
+  <text x="95" y="111" text-anchor="middle" fill="#59636e" font-size="10.5">[T, D] / [B, L, D]</text>
+  <text x="95" y="128" text-anchor="middle" fill="#59636e" font-size="10.5">本地 token 段</text>
+
+  <!-- router -->
+  <rect x="216" y="56" width="170" height="98" rx="8" fill="#f1defa" stroke="#8250df" stroke-width="1.6"/>
+  <text x="301" y="82" text-anchor="middle" fill="#6f42c1" font-weight="700" font-size="13">Router / Gate</text>
+  <text x="301" y="102" text-anchor="middle" fill="#5b3a96" font-size="10.5">scores [T, E]</text>
+  <text x="301" y="118" text-anchor="middle" fill="#5b3a96" font-size="10.5">top-k 选择</text>
+  <text x="301" y="136" text-anchor="middle" fill="#5b3a96" font-size="10.5">token → 目标专家</text>
+
+  <path d="M163 105 L210 105" stroke="#57606a" stroke-width="1.8" marker-end="url(#a1)"/>
+
+  <!-- all-to-all dispatch label -->
+  <rect x="450" y="34" width="212" height="34" rx="17" fill="#0d1117"/>
+  <text x="556" y="55" text-anchor="middle" fill="#fff" font-weight="700" font-size="12.5">① all-to-all dispatch（送 token）</text>
+  <path d="M386 105 L425 105 L425 51 L446 51" stroke="#8250df" stroke-width="2" fill="none" marker-end="url(#a2)"/>
+
+  <!-- 4 ranks -->
+  <g>
+    <rect x="450" y="92" width="200" height="120" rx="8" fill="#f6f8fa" stroke="#0969da"/>
+    <text x="550" y="114" text-anchor="middle" fill="#0969da" font-weight="700">EP rank 0 · 专家 0,1</text>
+    <rect x="472" y="124" width="64" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="504" y="143" text-anchor="middle" fill="#0969da" font-size="10.5">E0</text>
+    <rect x="548" y="124" width="64" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="580" y="143" text-anchor="middle" fill="#0969da" font-size="10.5">E1</text>
+    <text x="550" y="178" text-anchor="middle" fill="#59636e" font-size="10.5">收到各 rank 发来的 token，</text>
+    <text x="550" y="194" text-anchor="middle" fill="#59636e" font-size="10.5">按本地专家分组做 grouped GEMM</text>
+  </g>
+  <g>
+    <rect x="676" y="92" width="200" height="120" rx="8" fill="#f6f8fa" stroke="#0969da"/>
+    <text x="776" y="114" text-anchor="middle" fill="#0969da" font-weight="700">EP rank 1 · 专家 2,3</text>
+    <rect x="698" y="124" width="64" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="730" y="143" text-anchor="middle" fill="#0969da" font-size="10.5">E2</text>
+    <rect x="774" y="124" width="64" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="806" y="143" text-anchor="middle" fill="#0969da" font-size="10.5">E3</text>
+    <text x="776" y="178" text-anchor="middle" fill="#59636e" font-size="10.5">每组 FFN：</text>
+    <text x="776" y="194" text-anchor="middle" fill="#59636e" font-size="10.5">SiLU(x·w1ᵀ) ⊙ x·w3ᵀ → ·w2ᵀ</text>
+  </g>
+  <g>
+    <rect x="902" y="92" width="168" height="120" rx="8" fill="#f6f8fa" stroke="#0969da"/>
+    <text x="986" y="114" text-anchor="middle" fill="#0969da" font-weight="700">EP rank 2 · 专家 4,5</text>
+    <rect x="916" y="124" width="62" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="947" y="143" text-anchor="middle" fill="#0969da" font-size="10.5">E4</text>
+    <rect x="984" y="124" width="62" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="1015" y="143" text-anchor="middle" fill="#0969da" font-size="10.5">E5</text>
+  </g>
+  <g>
+    <rect x="902" y="226" width="168" height="92" rx="8" fill="#f6f8fa" stroke="#0969da"/>
+    <text x="986" y="248" text-anchor="middle" fill="#0969da" font-weight="700">EP rank 3 · 专家 6,7</text>
+    <rect x="920" y="258" width="60" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="950" y="277" text-anchor="middle" fill="#0969da" font-size="10.5">E6</text>
+    <rect x="988" y="258" width="60" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="1018" y="277" text-anchor="middle" fill="#0969da" font-size="10.5">E7</text>
+  </g>
+  <g>
+    <rect x="450" y="226" width="426" height="92" rx="8" fill="#f6f8fa" stroke="#0969da"/>
+    <text x="663" y="248" text-anchor="middle" fill="#0969da" font-weight="700">EP rank 0、1（与 2/3 镜像，省略其余箭头）</text>
+    <text x="663" y="272" text-anchor="middle" fill="#59636e" font-size="10.5">每张卡只拥有自己那 2 个专家的权重；路由落在哪张卡，token 就发给哪张卡。</text>
+    <text x="663" y="290" text-anchor="middle" fill="#59636e" font-size="10.5">本地专家并不等于“本地 token 选中的专家”——这正是 all-to-all 存在的原因。</text>
+  </g>
+
+  <!-- combine -->
+  <rect x="28" y="300" width="330" height="82" rx="8" fill="#ddf4ff" stroke="#0969da" stroke-width="1.6"/>
+  <text x="193" y="326" text-anchor="middle" fill="#0969da" font-weight="700">③ all-to-all combine + scatter_add</text>
+  <text x="193" y="347" text-anchor="middle" fill="#24292f" font-size="11">每个专家输出 × 路由权重后，</text>
+  <text x="193" y="365" text-anchor="middle" fill="#24292f" font-size="11">把属于本卡 token 的结果送回来相加</text>
+
+  <!-- back arrows -->
+  <path d="M463 216 L360 330" stroke="#8250df" stroke-width="2" fill="none" stroke-dasharray="5 3" marker-end="url(#a2)"/>
+  <path d="M686 216 L360 344" stroke="#8250df" stroke-width="2" fill="none" stroke-dasharray="5 3" marker-end="url(#a2)"/>
+
+  <!-- output / residual -->
+  <rect x="470" y="300" width="250" height="82" rx="8" fill="#effbf2" stroke="#1a7f37" stroke-width="1.6"/>
+  <text x="595" y="326" text-anchor="middle" fill="#1a7f37" font-weight="700">MoE 输出（回原 token 位置）</text>
+  <text x="595" y="350" text-anchor="middle" fill="#24292f" font-size="11">routed_out + shared_out</text>
+  <text x="595" y="368" text-anchor="middle" fill="#59636e" font-size="11">x + MoE(norm(x)) 残差</text>
+  <path d="M358 341 L466 341" stroke="#1a7f37" stroke-width="2" marker-end="url(#a1)"/>
+
+  <text x="30" y="430" fill="#59636e" font-size="11.5">示意中的 E=8 只是为了画得下；真实模型 E 为 64 / 160 / 256，切分后每 rank 持 E / EP 个专家。</text>
+  <text x="30" y="450" fill="#59636e" font-size="11.5">虚线为 combine 返回方向：dispatch 时 token 发去“持有该专家的 rank”，combine 时结果按 token 原地址发回。</text>
+</svg>
+<figcaption>图 1：EP 的完整闭环——router 选择专家 → all-to-all 把 token 送到专家所在卡 → 本地专家 grouped GEMM → all-to-all 把结果送回并加权累加。</figcaption>
+</figure>
+
+<h3>1.2 EP 与 EP=1 的区别</h3>
+<table>
+  <tr><th>配置</th><th>专家权重怎么放</th><th>token 怎么算</th><th>代价</th></tr>
+  <tr>
+    <td><code>expert_parallel_degree=1</code><br>（LocalTokenDispatcher）</td>
+    <td>不按 EP 轴切专家；若开 FSDP，则沿普通数据并行轴切</td>
+    <td>每个 rank 只处理自己的数据段，路由后在本卡完成；没有跨卡 token 交换</td>
+    <td>专家数巨大时，每层需要把（几乎）全部专家权重准备到参与计算的 rank，参数量是短板</td>
+  </tr>
+  <tr>
+    <td><code>expert_parallel_degree &gt; 1</code><br>（EP TokenDispatcher）</td>
+    <td>专家沿 <code>ep</code> 轴切：每 rank 只持有 E/EP 个</td>
+    <td>token 通过 all-to-all 路由到持有目标专家的 rank；算完再 all-to-all 回来</td>
+    <td>引入 token 通信开销、变长 all-to-all、负载不均衡问题</td>
+  </tr>
+</table>
+
+<h2 id="router">2. Router：先决定 token 去哪些专家</h2>
+
+<p>torchtitan 的默认路由是 <b>token-choice top-k</b>，实现在 <code>torchtitan/models/common/moe.py:193</code>
+的 <code>TokenChoiceTopKRouter</code>。前向逻辑（<code>moe.py:285</code>）：</p>
+
+<pre><code><span class="kw">def</span> <span class="fn">forward</span>(self, x_BLD, expert_bias_E=None):
+    <span class="cmt"># gate 只是 D→E 的线性层；在 float32 下计算保证稳定</span>
+    scores_BLE = <span class="fn">autocast_float32</span>(self.gate(x_BLD))       <span class="cmt"># (B, L, E) 每个 token 对每个专家的分数</span>
+    <span class="kw">if</span> self.score_func == <span class="st">"sigmoid"</span>:  scores_BLE = sigmoid(scores_BLE)
+    <span class="kw">elif</span> self.score_func == <span class="st">"softmax"</span>: scores_BLE = softmax(scores_BLE, dim=-1)
+
+    scores_for_choice_BLE = scores_BLE + expert_bias_E   <span class="cmt"># 选路时可加 bias，但不改输出分数</span>
+    <span class="cmt"># 可选：先按专家分组过滤（node-limited），减少跨节点通信</span>
+    topk_expert_ids_BLK = topk(scores_for_choice_BLE, k=top_k)   <span class="cmt"># 每个 token 选 K 个专家</span>
+    topk_scores_BLK = scores_BLE.gather(dim=-1, index=topk_ids) <span class="cmt"># 分数仍取自原始 sigmoid/softmax</span>
+    <span class="kw">if</span> self.route_norm: topk_scores_BLK /= sum(topk_scores_BLK)
+    topk_scores_BLK *= self.route_scale
+    <span class="kw">return</span> topk_scores_BLK, topk_expert_ids_BLK, scores_BLE</code></pre>
+
+<p>DeepSeek V3 家族在这里还带两个可选开关：</p>
+<ul>
+  <li><b>node-limited / group-limited routing</b>（<code>num_expert_groups</code>、<code>num_limited_groups</code>）：
+      先把 E 个专家分成若干组，只允许 token 从得分最高的 <code>num_limited_groups</code> 组里选 top-k，
+      减少一次 all-to-all 里跨节点的比例。</li>
+  <li><b>expert_bias_E</b>：由 <code>MoE.expert_bias_E</code> buffer 提供，参与“选择”但不进入输出分数，
+      用于后续讲的 aux-loss-free 负载均衡。</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 1100 300" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="12">
+  <defs><marker id="b1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(30,20)">
+    <text x="0" y="20" fill="#8250df" font-weight="700" font-size="14">Router 输出（示意：T 个 token，top_k=2，E=8）</text>
+
+    <rect x="0" y="48" width="150" height="64" rx="6" fill="#eef1f4" stroke="#57606a"/>
+    <text x="75" y="70" text-anchor="middle" font-weight="700">token 向量</text>
+    <text x="75" y="88" text-anchor="middle" fill="#59636e" font-size="10.5">[T, D]</text>
+
+    <path d="M152 80 L188 80" stroke="#57606a" stroke-width="1.7" marker-end="url(#b1)"/>
+    <rect x="192" y="42" width="176" height="76" rx="6" fill="#f1defa" stroke="#8250df"/>
+    <text x="280" y="64" text-anchor="middle" fill="#6f42c1" font-weight="700">gate 分数</text>
+    <text x="280" y="82" text-anchor="middle" fill="#5b3a96" font-size="10.5">[T, E] + bias_E</text>
+    <text x="280" y="100" text-anchor="middle" fill="#5b3a96" font-size="10.5">sigmoid / softmax</text>
+
+    <path d="M370 80 L414 80" stroke="#8250df" stroke-width="1.7" marker-end="url(#b1)"/>
+    <rect x="418" y="42" width="250" height="76" rx="6" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="543" y="64" text-anchor="middle" fill="#0969da" font-weight="700">top-2 路由结果</text>
+    <text x="543" y="84" text-anchor="middle" fill="#24292f" font-size="10.5">topk_ids [T, 2]：每行是两个专家号</text>
+    <text x="543" y="102" text-anchor="middle" fill="#24292f" font-size="10.5">topk_scores [T, 2]：路由权重</text>
+
+    <text x="700" y="62" fill="#1f2328" font-weight="700">例</text>
+    <rect x="700" y="74" width="330" height="108" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="716" y="96" fill="#24292f" font-size="11">token0 → 专家 2, 7　权重 0.55, 0.20</text>
+    <text x="716" y="116" fill="#24292f" font-size="11">token1 → 专家 3, 3？不可能：同一 token</text>
+    <text x="716" y="134" fill="#24292f" font-size="11">      的 top-k 专家互不相同</text>
+    <text x="716" y="158" fill="#59636e" font-size="11">把 [T,2] 展平后按专家排序，得到</text>
+    <text x="716" y="176" fill="#59636e" font-size="11">每个专家要处理的 token 列表</text>
+
+    <text x="0" y="240" fill="#59636e" font-size="11">再往下：MoE.forward 用 one-hot routing_map 数出“每个专家本段收到了几个 token”，得到</text>
+    <text x="0" y="260" fill="#59636e" font-size="11">num_local_tokens_per_expert_E；这个向量在 EP 里会先做一次 all-to-all（见下一节）。</text>
+  </g>
+</svg>
+<figcaption>图 2：Router 从“token × 所有专家”的分数矩阵里为每个 token 选 K 个专家，随后派生出按专家计的 token 数。</figcaption>
+</figure>
+
+<h2 id="alltoall">3. All-to-all：把 token 送到专家所在的卡</h2>
+
+<p>EP 与“每次激活全部专家”的并行不同：每个 token 的 top-k 是 <b>数据相关的</b>，因此每个 rank
+发给其他 rank 的 token 数不固定。PyTorch 的 <code>all_to_all_single</code> 支持不等长切分，
+但调用前必须知道每个接收方要收多少行。所以标准 EP dispatcher 实际做 <b>两次 all-to-all</b>：</p>
+
+<div class="callout">
+  <b class="t">第 1 次：交换“每个专家的 token 数”</b>
+  本地 token 只知道自己把 token 分给谁。把 <code>num_local_tokens_per_expert_E</code> 按 <code>(EP, E/EP)</code> 切，
+  用一次小 all-to-all 让每个 rank 知道“其他 rank 将发给我的每个本地专家多少 token”。
+  <br><br>
+  <b class="t">第 2 次：交换 token 数据本身</b>
+  用第 1 次得到的分割长度（<code>input_splits / output_splits</code>）做数据 all-to-all，
+  把 token 行发给持有目标专家的 rank。GPU 上无法动态拼接变长通信，需要把 split 长度取回 CPU，
+  这是 EP 中一次不可避免的 device-to-host 同步。
+</div>
+
+<pre><code><span class="cmt"># token_dispatcher.py: AllToAllTokenDispatcher</span>
+<span class="kw">def</span> <span class="fn">_token_count_exchange</span>(self, num_local_tokens_per_expert_E, pg, ep_size):
+    <span class="kw">return</span> all_to_all_single(
+        num_local_tokens_per_expert_E.view(ep_size, -1),  <span class="cmt"># (EP, E/EP)</span>
+        None, None, group=self.ep_mesh)
+
+<span class="kw">def</span> <span class="fn">dispatch</span>(self, x_TD, topk_scores_TK, topk_expert_ids_TK, num_local_tokens_per_expert_E):
+    routed_input_ND, token_indices, scores = self._local_reorder(...)  <span class="cmt"># 先把本地 token 按专家号排序</span>
+    <span class="cmt"># ① count all-to-all —— 得到每个本地专家一共要收多少 token</span>
+    num_global_tokens_per_local_expert_EP_e = self._token_count_exchange(...)
+    input_splits, output_splits = self._sync_token_count_exchange(...)  <span class="cmt"># 切分长度取回 CPU</span>
+    <span class="cmt"># ② data all-to-all —— 真正把 token 送到持专家权的 rank</span>
+    routed_input_RD = self._dispatch_token_exchange(routed_input_ND, pg, output_splits, input_splits)
+    <span class="cmt"># ③ 收到的行目前是 “按发送方排序”，再重排成 “按本地专家排序”</span>
+    input_shape, routed_input_RD, permuted_indices, per_local_expert = self._permute(...)
+    <span class="kw">return</span> routed_input_RD, per_local_expert, metadata
+
+<span class="kw">def</span> <span class="fn">combine</span>(self, routed_output_RD, metadata, x_TD):
+    routed_output_RD = self._unpermute(routed_output_RD, ...)  <span class="cmt"># 还原 rank-major</span>
+    routed_output_RD = self._combine_token_exchange(...)       <span class="cmt"># 反向 all-to-all，结果送回原 token 的 rank</span>
+    out_TD = routed_output_RD.to(float32) * topk_scores_experts_sorted_N
+    <span class="kw">return</span> deterministic_scatter_add(out_TD, token_indices, routed_output_RD)</code></pre>
+
+<figure>
+<svg viewBox="0 0 1100 300" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <defs><marker id="c1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(24,24)">
+    <text x="0" y="0" fill="#1f2328" font-weight="700" font-size="14">标准 EP forward 的五段流水（token_dispatcher.py）</text>
+
+    <rect x="0" y="34" width="170" height="94" rx="7" fill="#f1defa" stroke="#8250df"/>
+    <text x="85" y="54" text-anchor="middle" fill="#6f42c1" font-weight="700">① Router + reorder</text>
+    <text x="85" y="73" text-anchor="middle" fill="#5b3a96" font-size="10">选 top-k；按专家号</text>
+    <text x="85" y="90" text-anchor="middle" fill="#5b3a96" font-size="10">argsort 本地 token</text>
+    <text x="85" y="107" text-anchor="middle" fill="#5b3a96" font-size="10">N = T·K 行</text>
+
+    <path d="M172 81 L205 81" stroke="#8250df" stroke-width="1.7" marker-end="url(#c1)"/>
+    <rect x="208" y="34" width="176" height="94" rx="7" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="296" y="54" text-anchor="middle" fill="#0969da" font-weight="700">② count all-to-all</text>
+    <text x="296" y="73" text-anchor="middle" fill="#24292f" font-size="10">每个源 rank 把“发给每个目标</text>
+    <text x="296" y="90" text-anchor="middle" fill="#24292f" font-size="10">rank 多少 token”广播过去；</text>
+    <text x="296" y="107" text-anchor="middle" fill="#24292f" font-size="10">得到 split 长度（回 CPU）</text>
+
+    <path d="M386 81 L419 81" stroke="#0969da" stroke-width="1.7" marker-end="url(#c1)"/>
+    <rect x="422" y="34" width="176" height="94" rx="7" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="510" y="54" text-anchor="middle" fill="#0969da" font-weight="700">③ data all-to-all</text>
+    <text x="510" y="73" text-anchor="middle" fill="#24292f" font-size="10">不等长切分；token 行被</text>
+    <text x="510" y="90" text-anchor="middle" fill="#24292f" font-size="10">发往对应专家所在的</text>
+    <text x="510" y="107" text-anchor="middle" fill="#24292f" font-size="10">EP rank</text>
+
+    <path d="M600 81 L633 81" stroke="#0969da" stroke-width="1.7" marker-end="url(#c1)"/>
+    <rect x="636" y="34" width="176" height="94" rx="7" fill="#f6f8fa" stroke="#57606a"/>
+    <text x="724" y="54" text-anchor="middle" fill="#1f2328" font-weight="700">④ permute → grouped GEMM</text>
+    <text x="724" y="73" text-anchor="middle" fill="#59636e" font-size="10">rank-major 变 expert-major，</text>
+    <text x="724" y="90" text-anchor="middle" fill="#59636e" font-size="10">每个专家一段连续 token，</text>
+    <text x="724" y="107" text-anchor="middle" fill="#59636e" font-size="10">torch._grouped_mm</text>
+
+    <path d="M814 81 L847 81" stroke="#57606a" stroke-width="1.7" marker-end="url(#c1)"/>
+    <rect x="850" y="34" width="212" height="94" rx="7" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="956" y="54" text-anchor="middle" fill="#1a7f37" font-weight="700">⑤ combine（反过程）</text>
+    <text x="956" y="73" text-anchor="middle" fill="#24292f" font-size="10">unpermute → all-to-all 送回 →</text>
+    <text x="956" y="90" text-anchor="middle" fill="#24292f" font-size="10">乘路由分数 → scatter_add 回</text>
+    <text x="956" y="107" text-anchor="middle" fill="#24292f" font-size="10">原始 token 位置</text>
+
+    <text x="0" y="162" fill="#59636e" font-size="11">N 是“token × top-k”个数；R 是发给本 rank 本地专家的行数。负载均衡时 R ≈ N / EP。</text>
+    <text x="0" y="180" fill="#59636e" font-size="11">③ 和 ⑤ 是同一批 EP rank 之间的通信：③ 的数据布局按“目标 rank 的专家”，⑤ 反过来按“源 token 的 rank”。</text>
+
+    <text x="0" y="220" fill="#0969da" font-weight="700" font-size="12.5">为什么要先做 ②？</text>
+    <text x="0" y="240" fill="#59636e" font-size="11">PyTorch 的 all-to-all 需要每个方向的行数。token 被路由到哪个专家是数据相关的，</text>
+    <text x="0" y="258" fill="#59636e" font-size="11">所以不能像 TP 那样预先知道固定切分。② 交换的只是计数向量（E 个数），③ 才交换真实数据。</text>
+  </g>
+</svg>
+<figcaption>图 3：标准 EP forward 的五段流水。真正“跨卡搬家”的是第 ③、⑤ 两步 all-to-all，前后还有排序/反排序。</figcaption>
+</figure>
+
+<h3>3.1 两次重排：rank-major → expert-major → rank-major</h3>
+<p>数据 all-to-all 完成后，每个 EP rank 收到的是“<b>按发送方 rank 排</b>”的行：
+<code>(src0 的本地专家 0), (src0 的本地专家 1), …, (src1 的本地专家 0), …</code>。
+而 grouped GEMM 希望“<b>按本地专家排</b>”：每个专家收到来自所有 src 的 token 连成一段。
+所以 <code>_permute</code>（<code>token_dispatcher.py:474</code>）做一个矩阵转置式的索引重排；combine 时用记录的
+<code>permuted_indices</code> 原路还原。</p>
+
+<figure>
+<svg viewBox="0 0 1100 330" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <defs><marker id="d1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(30,20)">
+    <text x="0" y="22" fill="#1f2328" font-weight="700" font-size="14">permute 前后：EP=2，本 rank 有 3 个本地专家（e0,e1,e2），收到 src0/src1 的 token</text>
+
+    <text x="0" y="64" fill="#8250df" font-weight="700">收到后（rank-major）</text>
+    <rect x="0" y="76" width="400" height="130" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <rect x="8" y="86" width="188" height="112" rx="4" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="102" y="104" text-anchor="middle" fill="#0969da" font-weight="700">来自 src0</text>
+    <rect x="18" y="116" width="54" height="72" rx="3" fill="#fff" stroke="#0969da"/>
+    <text x="45" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">e0</text>
+    <rect x="76" y="116" width="54" height="72" rx="3" fill="#fff" stroke="#0969da"/>
+    <text x="103" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">e1</text>
+    <rect x="134" y="116" width="54" height="72" rx="3" fill="#fff" stroke="#0969da"/>
+    <text x="161" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">e2</text>
+    <rect x="208" y="86" width="184" height="112" rx="4" fill="#eef1f4" stroke="#57606a"/>
+    <text x="300" y="104" text-anchor="middle" fill="#24292f" font-weight="700">来自 src1</text>
+    <rect x="218" y="116" width="54" height="72" rx="3" fill="#fff" stroke="#57606a"/>
+    <text x="245" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">e0</text>
+    <rect x="276" y="116" width="54" height="72" rx="3" fill="#fff" stroke="#57606a"/>
+    <text x="303" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">e1</text>
+    <rect x="334" y="116" width="54" height="72" rx="3" fill="#fff" stroke="#57606a"/>
+    <text x="361" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">e2</text>
+    <text x="10" y="244" fill="#59636e" font-size="10.5">counts 矩阵 t_mat：行=源 rank，列=本地专家</text>
+    <text x="10" y="262" fill="#59636e" font-size="10.5">row-major 读出来就是左边这段内存顺序</text>
+
+    <path d="M440 140 L486 140" stroke="#57606a" stroke-width="1.8" marker-end="url(#d1)"/>
+
+    <text x="498" y="64" fill="#1a7f37" font-weight="700">permute 后（expert-major）</text>
+    <rect x="498" y="76" width="400" height="130" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+    <rect x="506" y="86" width="188" height="112" rx="4" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="600" y="104" text-anchor="middle" fill="#1a7f37" font-weight="700">e0 的 token</text>
+    <rect x="518" y="116" width="84" height="72" rx="3" fill="#fff" stroke="#1a7f37"/>
+    <text x="560" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">src0</text>
+    <rect x="606" y="116" width="84" height="72" rx="3" fill="#fff" stroke="#1a7f37"/>
+    <text x="648" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">src1</text>
+    <rect x="706" y="86" width="184" height="112" rx="4" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="798" y="104" text-anchor="middle" fill="#1a7f37" font-weight="700">e1 的 token</text>
+    <rect x="716" y="116" width="84" height="72" rx="3" fill="#fff" stroke="#1a7f37"/>
+    <text x="758" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">src0</text>
+    <rect x="804" y="116" width="84" height="72" rx="3" fill="#fff" stroke="#1a7f37"/>
+    <text x="846" y="136" text-anchor="middle" fill="#24292f" font-size="9.5">src1</text>
+    <text x="506" y="244" fill="#59636e" font-size="10.5">每个专家一段连续内存 → 直接作为 grouped</text>
+    <text x="506" y="262" fill="#59636e" font-size="10.5">GEMM 的一个“组”；offsets 用 cumsum(counts) 得到</text>
+
+    <text x="0" y="310" fill="#59636e" font-size="11">torchTitan 不做第二次通信来完成这次重排：它根据 t_mat 在 GPU 上构造 permuted_indices，用一行索引 routed_input_RD[indices] 完成。</text>
+  </g>
+</svg>
+<figcaption>图 4：<code>_permute</code> 把收到的“源 rank 优先”的内存布局，转成“本地专家优先”，使每个专家获得连续 token 段。</figcaption>
+</figure>
+
+<h3>3.2 专家计算与 combine</h3>
+<p>专家本体是 <code>GroupedExperts</code>（<code>moe.py:35</code>）。三个参数直接以
+<code>(E, *, *)</code> 的“打包”3D 形状存放：<code>w1_EFD (E,F,D)</code>、<code>w2_EDF (E,D,F)</code>、
+<code>w3_EFD (E,F,D)</code>。EP 下 E 是本地专家数。前向用 <code>torch._grouped_mm</code>
+一次对“每组 token”做独立矩阵乘：</p>
+
+<pre><code><span class="cmt"># 简化：省略 bf16 转换与 DTensor.to_local()；EP 下 x_RD 已是本地 token 行</span>
+<span class="kw">def</span> <span class="fn">forward</span>(self, x_RD, num_tokens_per_expert_E):
+    offsets_E = cumsum(num_tokens_per_expert_E, dim=0)   <span class="cmt"># 每个专家组的行偏移</span>
+    h_RF = silu(self._grouped_mm(A=x_RD, B_t=w1_EFD, offs=offsets_E))
+    h_RF = h_RF * self._grouped_mm(A=x_RD, B_t=w3_EFD, offs=offsets_E)
+    <span class="kw">return</span> self._grouped_mm(A=h_RF, B_t=w2_EDF, offs=offsets_E)</code></pre>
+
+<p>combine 是 dispatch 的镜像：先 unpermute，再 all-to-all 把结果送回原始 rank，乘以 top-k 路由分数，
+再用 <code>deterministic_scatter_add</code> 把同一个 token 的 K 份专家输出累加回该 token 的行。
+乘法在 float32 做，保证小分数下数值稳定。</p>
+
+<h2 id="code">4. TorchTitan 实现地图：谁负责什么</h2>
+
+<p>整个 EP 功能横跨配置、mesh、模型构建、sharding 声明、FSDP 和运行时 dispatcher。按代码路径拆开看：</p>
+
+<table>
+  <tr><th>关注点</th><th>位置</th><th>做了什么</th></tr>
+  <tr>
+    <td>用户开关</td>
+    <td><code>config/configs.py</code> · <code>ParallelismConfig.expert_parallel_degree</code></td>
+    <td>EP 度；默认 1（关闭）。<code>models/deepseek_v3/config_registry.py:165</code> 的 16B 配置给 8，<code>:234</code> 的 671B 配置给 2</td>
+  </tr>
+  <tr>
+    <td>后端选择</td>
+    <td><code>models/common/config_utils.py:311</code> <code>make_token_dispatcher_config</code></td>
+    <td><code>comm_backend</code> 字符串映射到 <code>AllToAll / DeepEP / HybridEP / MinimalAsyncEP</code> 的 Config</td>
+  </tr>
+  <tr>
+    <td>模块定义</td>
+    <td><code>models/common/moe.py</code></td>
+    <td><code>GroupedExperts</code>(:35)、<code>RoutedExperts</code>(:123)、<code>TokenChoiceTopKRouter</code>(:193)、<code>MoE</code>(:346)</td>
+  </tr>
+  <tr>
+    <td>切分声明</td>
+    <td><code>models/common/moe_sharding.py</code> + <code>models/deepseek_v3/sharding.py</code></td>
+    <td>把每个子模块的“参数 / 输入 / 输出 / 路由计数”在 mesh 上的 placement 填进 <code>sharding_config</code></td>
+  </tr>
+  <tr>
+    <td>Mesh 构造</td>
+    <td><code>distributed/parallel_dims.py:203</code> <code>build_mesh</code></td>
+    <td>同一批 GPU 同时展开成 dense mesh 与 sparse mesh；sparse mesh 含 <code>efsdp, ep</code></td>
+  </tr>
+  <tr>
+    <td>并行化执行</td>
+    <td><code>models/deepseek_v3/parallelize.py:27</code></td>
+    <td><code>model.parallelize()</code> 填 sharding；<code>full_dtensor.resolve_sparse_fsdp_mesh()</code> + <code>fsdp.apply_fsdp_to_decoder()</code> 上 FSDP</td>
+  </tr>
+  <tr>
+    <td>运行时 token 分发</td>
+    <td><code>models/common/token_dispatcher.py</code></td>
+    <td>dispatch / combine 的五个实现（见第 6 节）</td>
+  </tr>
+  <tr>
+    <td>训练配套</td>
+    <td><code>components/optimizer.py:386</code></td>
+    <td>aux-loss-free 负载均衡：optimizer step 前更新 <code>expert_bias_E</code></td>
+  </tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 1100 380" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <defs><marker id="e1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(24,16)">
+    <text x="0" y="22" fill="#1f2328" font-weight="700" font-size="14">EP 在 torchtitan 里的生命周期（从配置到一次 forward）</text>
+
+    <!-- config -->
+    <rect x="0" y="50" width="220" height="96" rx="7" fill="#fff8c5" stroke="#9a6700"/>
+    <text x="110" y="72" text-anchor="middle" fill="#7d4e00" font-weight="700">1 配置</text>
+    <text x="110" y="92" text-anchor="middle" fill="#24292f" font-size="10.5">config_registry.py</text>
+    <text x="110" y="109" text-anchor="middle" fill="#24292f" font-size="10.5">expert_parallel_degree</text>
+    <text x="110" y="126" text-anchor="middle" fill="#24292f" font-size="10.5">moe_comm_backend</text>
+
+    <!-- mesh -->
+    <rect x="260" y="50" width="250" height="96" rx="7" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="385" y="72" text-anchor="middle" fill="#0969da" font-weight="700">2 Mesh</text>
+    <text x="385" y="92" text-anchor="middle" fill="#24292f" font-size="10.5">ParallelDims.build_mesh()</text>
+    <text x="385" y="109" text-anchor="middle" fill="#24292f" font-size="10.5">sparse mesh (pp, dp_rep, efsdp, ep)</text>
+    <text x="385" y="126" text-anchor="middle" fill="#24292f" font-size="10.5">ep_mesh / edp_mesh</text>
+
+    <!-- sharding -->
+    <rect x="550" y="50" width="250" height="96" rx="7" fill="#fff8c5" stroke="#9a6700"/>
+    <text x="675" y="72" text-anchor="middle" fill="#7d4e00" font-weight="700">3 声明式 sharding</text>
+    <text x="675" y="92" text-anchor="middle" fill="#24292f" font-size="10.5">set_moe_sharding_config</text>
+    <text x="675" y="109" text-anchor="middle" fill="#24292f" font-size="10.5">expert_param_placement_sparse</text>
+    <text x="675" y="126" text-anchor="middle" fill="#24292f" font-size="10.5">EP 轴 Shard(0)</text>
+
+    <!-- fsdp -->
+    <rect x="840" y="50" width="236" height="96" rx="7" fill="#fff1e5" stroke="#bc4c00"/>
+    <text x="958" y="72" text-anchor="middle" fill="#bc4c00" font-weight="700">4 FSDP + 双 mesh</text>
+    <text x="958" y="92" text-anchor="middle" fill="#24292f" font-size="10.5">resolve_sparse_fsdp_mesh</text>
+    <text x="958" y="109" text-anchor="middle" fill="#24292f" font-size="10.5">apply_fsdp_to_decoder</text>
+    <text x="958" y="126" text-anchor="middle" fill="#24292f" font-size="10.5">专家参数进 edp_mesh</text>
+
+    <path d="M220 98 L258 98" stroke="#57606a" stroke-width="1.6" marker-end="url(#e1)"/>
+    <path d="M510 98 L548 98" stroke="#57606a" stroke-width="1.6" marker-end="url(#e1)"/>
+    <path d="M800 98 L838 98" stroke="#57606a" stroke-width="1.6" marker-end="url(#e1)"/>
+
+    <!-- forward -->
+    <rect x="0" y="190" width="250" height="150" rx="7" fill="#f6f8fa" stroke="#8250df"/>
+    <text x="125" y="214" text-anchor="middle" fill="#6f42c1" font-weight="700">5 forward 运行时</text>
+    <text x="125" y="242" text-anchor="middle" fill="#24292f" font-size="11">MoE.forward (moe.py:409)</text>
+    <text x="125" y="266" text-anchor="middle" fill="#24292f" font-size="11">RoutedExperts.forward</text>
+    <text x="125" y="290" text-anchor="middle" fill="#24292f" font-size="11">token_dispatcher.dispatch</text>
+    <text x="125" y="314" text-anchor="middle" fill="#24292f" font-size="11">GroupedExperts + combine</text>
+
+    <rect x="300" y="190" width="350" height="150" rx="7" fill="#eef1f4" stroke="#57606a"/>
+    <text x="475" y="214" text-anchor="middle" fill="#24292f" font-weight="700">dispatch 内部（AllToAll）</text>
+    <text x="475" y="240" text-anchor="middle" fill="#24292f" font-size="11">局部 argsort（按专家号）</text>
+    <text x="475" y="262" text-anchor="middle" fill="#24292f" font-size="11">count all-to-all → split 列表</text>
+    <text x="475" y="284" text-anchor="middle" fill="#24292f" font-size="11">data all-to-all → permute</text>
+    <text x="475" y="306" text-anchor="middle" fill="#24292f" font-size="11">→ expert-major token 段</text>
+
+    <rect x="700" y="190" width="376" height="150" rx="7" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="888" y="214" text-anchor="middle" fill="#1a7f37" font-weight="700">专家计算 + combine</text>
+    <text x="888" y="242" text-anchor="middle" fill="#24292f" font-size="11">GroupedExperts：w1/w3/w2</text>
+    <text x="888" y="264" text-anchor="middle" fill="#24292f" font-size="11">用 torch._grouped_mm</text>
+    <text x="888" y="286" text-anchor="middle" fill="#24292f" font-size="11">combine：unpermute → all-to-all</text>
+    <text x="888" y="308" text-anchor="middle" fill="#24292f" font-size="11">→ 乘分数 → scatter_add</text>
+
+    <path d="M252 260 L298 260" stroke="#8250df" stroke-width="1.7" marker-end="url(#e1)"/>
+    <path d="M652 260 L698 260" stroke="#1a7f37" stroke-width="1.7" marker-end="url(#e1)"/>
+    <path d="M385 148 L385 188" stroke="#57606a" stroke-width="1.5" marker-end="url(#e1)"/>
+    <path d="M675 148 L675 188" stroke="#57606a" stroke-width="1.5" marker-end="url(#e1)"/>
+    <path d="M958 148 L958 188" stroke="#57606a" stroke-width="1.5" marker-end="url(#e1)"/>
+
+    <text x="0" y="370" fill="#59636e" font-size="11">关键：sharding 只是声明；真正的通信由 RoutedExperts.parallelize 注入的 ep_mesh + dispatcher 在运行时完成。</text>
+  </g>
+</svg>
+<figcaption>图 5：EP 相关代码的职责分块。第 2、3 步是“并行初始化期”，第 5 步是“每次 forward 的训练期”。</figcaption>
+</figure>
+
+<h2 id="mesh">5. 双 Mesh 与专家权重切分</h2>
+
+<h3>5.1 一个世界，两张 mesh</h3>
+<p>torchtitan 的并行维度名定义在 <code>distributed/parallel_dims.py:31</code>：
+<code>dp_replicate / dp_shard / fsdp / tp / cp / pp / ep / efsdp</code>。
+关键点：<b>EP 不是把 GPU 数量再乘一个 EP 度，而是把同一批 GPU 重新分组</b>。</p>
+
+<pre><code><span class="cmt"># parallel_dims.py:203-274（简化）</span>
+fsdp   = dp_shard * cp
+efsdp  = fsdp * tp // ep            <span class="cmt"># “专家区的 FSDP 轴”</span>
+
+<span class="cmt"># 稠密区（attention / 共享专家 / 其它 dense 参数）</span>
+dense_storage_mesh_axes  = [pp, dp_replicate, dp_shard, cp, tp]
+<span class="cmt"># 专家区（routed experts 权重）</span>
+sparse_storage_mesh_axes = [pp, dp_replicate, efsdp, ep]
+
+<span class="cmt"># 两边都能还原世界大小：</span>
+<span class="cmt"># dense :  pp × dp_replicate × dp_shard × cp × tp = world</span>
+<span class="cmt"># sparse:  pp × dp_replicate × efsdp × ep      = world（因为 efsdp = dp_shard·cp·tp / ep）</span></code></pre>
+
+<p>也就是说，专家参数被放进一张与 dense 参数“正交的另一种因式分解”的 mesh 上：
+<code>ep</code> 轴决定“哪些专家在本地”，<code>efsdp</code> 轴继续承担 FSDP 的“参数再分片 / all-gather”。
+这也解释了 <code>full_dtensor.py:56-57</code> 里的两组常量：</p>
+
+<pre><code>_DENSE_STORAGE_AXES  = [<span class="st">"dp_replicate"</span>, <span class="st">"dp_shard"</span>, <span class="st">"cp"</span>, <span class="st">"tp"</span>]
+_SPARSE_STORAGE_AXES = [<span class="st">"dp_replicate"</span>, <span class="st">"efsdp"</span>, <span class="st">"ep"</span>]</code></pre>
+
+<h3>5.2 专家权重在 EP 轴上的声明</h3>
+<p>EP 的核心声明只有几行（<code>moe_sharding.py:29</code>）：</p>
+
+<pre><code><span class="kw">def</span> <span class="fn">expert_param_placement_sparse</span>() -> SpmdLayout:
+    <span class="kw">return</span> SpmdLayout({
+        DP_REPLICATE: spmd.R,        <span class="cmt"># HSDP 复制轴（存储期 Replicate，FSDP 处理）</span>
+        EFSDP:        spmd.R,        <span class="cmt"># FSDP 存储轴（分片交给 fully_shard）</span>
+        EP:           spmd.S(0),     <span class="cmt"># ← EP 永远沿 dim 0：专家维</span>
+    })</code></pre>
+
+<p><code>w1_EFD / w2_EDF / w3_EFD</code> 的第一个维度是专家维，因此 EP 对它们统一用 <code>Shard(0)</code>；
+而 <code>expert_param_placement_dense</code>（EP=1、TP&gt;1 时）才需要区分 colwise 的 <code>Shard(1)</code> /
+rowwise 的 <code>Shard(2)</code>——那是“不切专家、只做普通 TP”的另一条路。</p>
+
+<table>
+  <tr><th>阶段</th><th>w1_EFD（示意 E=160, F=1536, D=5120）</th><th>说明</th></tr>
+  <tr><td>逻辑形状</td><td class="shape">(160, 1536, 5120)</td><td>打包成 3D 参数的 160 组 FFN</td></tr>
+  <tr><td>EP=4 之后</td><td class="shape">每 rank (40, 1536, 5120)</td><td>40 = 160 / 4，沿 ep 轴 Shard(0)</td></tr>
+  <tr><td>再叠 efsdp FSDP</td><td class="shape">每 rank ≈ (40/(efsdp) 或 F 切分, …)</td><td>由 <code>apply_fsdp_to_decoder</code> 的 <code>Shard(0)/Shard(1)</code> 策略决定；专家充足时仍切专家维</td></tr>
+</table>
+
+<div class="callout g">
+  <b class="t">FSDP 里的 expert 特判</b>
+  <code>fsdp.py:110</code> 的 <code>apply_fsdp_to_decoder</code> 遍历 MoE transformer block：普通参数留在 dense <code>dp_mesh</code>，
+  路由专家参数通过 <code>shard_placement_fn</code> 路由到 <code>edp_mesh</code>（<code>dp_replicate, efsdp, ep</code>）。
+  EP 开启后还会显式设置跨层的 FSDP prefetch，因为 EP 的 host sync 会干扰 FSDP 默认隐式预取。
+</div>
+
+<h2 id="dispatch">6. Dispatcher 家族：五种 token 分发实现</h2>
+
+<p>torchtitan 把“token 重排 + 通信”从模型里抽成了 <code>TokenDispatcher</code>，
+通过 <code>comm_backend</code> 配置选择实现（<code>config_utils.py:311</code>）。所有实现都遵循同一个接口：
+<code>dispatch()</code> 返回“本地专家按 expert-major 排好的 token” + 元数据，<code>combine()</code> 负责送回去。</p>
+
+<table>
+  <tr><th>类（文件行号）</th><th>适用场景</th><th>机制</th><th>备注</th></tr>
+  <tr>
+    <td><code>LocalTokenDispatcher</code><br><code>token_dispatcher.py:46</code></td>
+    <td>EP=1</td>
+    <td>只做本地 argsort / scatter_add，无跨卡通信</td>
+    <td>所有 EP dispatcher 的公共基类</td>
+  </tr>
+  <tr>
+    <td><code>AllToAllTokenDispatcher</code><br><code>:203</code></td>
+    <td>默认 <code>comm_backend="standard"</code></td>
+    <td>count all-to-all + data all-to-all + <code>_permute</code></td>
+    <td>PyTorch 原生集合通信，任意 EP 拓扑</td>
+  </tr>
+  <tr>
+    <td><code>TorchAOTokenDispatcher</code><br><code>:606</code></td>
+    <td>FP8 / MXFP8 量化 grouped GEMM</td>
+    <td>继承 AllToAll，但用 torchao <code>permute_and_pad</code> 把每个专家的 token 组 padding 到 16/32/128 的倍数</td>
+    <td>quantized kernel 需要对齐；combine 时剥掉 padding 哨兵行</td>
+  </tr>
+  <tr>
+    <td><code>DeepEPTokenDispatcher</code><br><code>:757</code></td>
+    <td>DeepEP v2（H100 / NVLink Switch，可选）</td>
+    <td><code>deep_ep.ElasticBuffer.dispatch/combine</code> 自定义算子；compact（训练）/ expand（可 CUDA Graph 推理）两种布局</td>
+    <td>combine 异步，可与 shared experts 重叠；需安装 <code>deepseek-ai/DeepEP</code></td>
+  </tr>
+  <tr>
+    <td><code>HybridEPTokenDispatcher</code><br><code>:882</code></td>
+    <td>GB200 / NVLink72（可选）</td>
+    <td>HybridEP TMA 优化的 all-to-all；<code>non_blocking_capacity_factor</code> 控制非阻塞 buffer 容量</td>
+    <td>factor &lt;1 时可能丢 token；需安装 DeepEP 库</td>
+  </tr>
+  <tr>
+    <td><code>MinimalAsyncEPTokenDispatcher</code><br><code>:988</code></td>
+    <td>受限研究场景（EP 组 = DP 组，无 TP/CP/PP/SP）</td>
+    <td>对称内存 + Triton kernel 的异步分发；dispatch 后无需 host 等 count 的第二次 sync</td>
+    <td>要求 full recompute；最“窄”的后端</td>
+  </tr>
+</table>
+
+<div class="callout">
+  <b class="t">“standard” 在 EP=1 时也会退化成 local</b>
+  <code>AllToAllTokenDispatcher.dispatch()</code> 先判断 <code>self.ep_mesh is None</code>：
+  没有 EP mesh 就直接调用 <code>LocalTokenDispatcher</code> 的逻辑。因此同一种 dispatcher 配置
+  可以同时覆盖“EP 开/关”两种运行，区别只在 mesh 是否被 <code>RoutedExperts.parallelize</code> 注入。
+</div>
+
+<h3>6.1 DeepEP 的异步 combine 与 HybridEP 的非阻塞 dispatch</h3>
+<p><code>MoE.forward</code>（<code>moe.py:409</code>）里的顺序是：先跑 routed experts，再跑 shared experts，
+最后相加。标准 all-to-all 的 combine 是同步的，通信时间直接暴露；DeepEP v2 的 combine 则返回后不立刻等，
+让 <code>shared_experts</code> 的计算与 combine 通信重叠，等真正要用结果前再 <code>sync_combine()</code>（<code>moe.py:477-479</code>）。
+HybridEP 则把重心放在 GB200/NVLink72 上的 <b>dispatch</b>：用 TMA + 预设容量做 CPU-free 非阻塞分发；它的 combine 仍按同步路径执行。</p>
+
+<figure>
+<svg viewBox="0 0 1100 260" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <defs><marker id="f1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(24,12)">
+    <text x="0" y="18" fill="#1f2328" font-weight="700" font-size="14">DeepEP 异步 combine 与 shared expert 的重叠</text>
+
+    <text x="0" y="58" fill="#8250df" font-weight="700">dispatch 通信</text>
+    <rect x="132" y="40" width="220" height="24" rx="5" fill="#f1defa" stroke="#8250df"/>
+    <text x="242" y="56" text-anchor="middle" fill="#6f42c1" font-size="10">all-to-all 发 token</text>
+
+    <text x="0" y="108" fill="#0969da" font-weight="700">计算流</text>
+    <rect x="132" y="88" width="270" height="30" rx="5" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="267" y="107" text-anchor="middle" fill="#0969da" font-size="10">router + grouped GEMM</text>
+    <rect x="440" y="88" width="260" height="30" rx="5" fill="#effbf2" stroke="#1a7f37"/>
+    <text x="570" y="107" text-anchor="middle" fill="#1a7f37" font-size="10">shared experts（被重叠住）</text>
+    <rect x="745" y="88" width="150" height="30" rx="5" fill="#eef1f4" stroke="#57606a"/>
+    <text x="820" y="107" text-anchor="middle" fill="#24292f" font-size="10">sync + add</text>
+
+    <text x="0" y="158" fill="#bc4c00" font-weight="700">通信流</text>
+    <rect x="420" y="138" width="280" height="30" rx="5" fill="#fff1e5" stroke="#bc4c00"/>
+    <text x="560" y="157" text-anchor="middle" fill="#bc4c00" font-size="10">async combine（返回结果）</text>
+
+    <path d="M370 103 L438 103" stroke="#1a7f37" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#f1)"/>
+    <path d="M560 138 L560 122" stroke="#bc4c00" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+    <text x="0" y="210" fill="#59636e" font-size="11">标准 AllToAll dispatcher 没有这条优化：combine 的 all-to-all 结束，结果才可被 scatter_add 消费。</text>
+    <text x="0" y="228" fill="#59636e" font-size="11">DeepEP 的 combine 返回后先把“事件”记下，shared experts 与 combine 同时在跑；sync_combine() 在相加前等待。</text>
+  </g>
+</svg>
+<figcaption>图 6：DeepEP 把 combine 通信放到通信流上，与 dense 侧的共享专家计算重叠（图仅描述 DeepEP 的异步路径）。</figcaption>
+</figure>
+
+<h2 id="train">7. 训练配套：负载均衡、FSDP 与 checkpoint</h2>
+
+<h3>7.1 aux-loss-free 负载均衡（expert bias）</h3>
+<p>EP 的通信量取决于各 rank 收到的 token 数是否均匀。DeepSeek V3 用“无辅助损失的负载均衡”
+（arXiv:2408.15664），torchtitan 的实现放在 <code>components/optimizer.py:386</code>：</p>
+
+<ol>
+  <li>每个 MoE 层维护 <code>tokens_per_expert_E</code> buffer；<code>MoE.forward</code> 在 no_grad 下累计每个专家本步收到的 token 数。</li>
+  <li>每个 optimizer step 前，先把所有层、所有并行 rank 的计数规约成全局计数（loss mesh / DTensor redistribute）。</li>
+  <li>对每个专家更新 bias：</li>
+</ol>
+
+<pre><code><span class="cmt"># optimizer.py:514-520（代码注释也承认：与论文并不完全一致）</span>
+expert_bias_delta_E = load_balance_coeff * torch.sign(
+    tokens_per_expert_E.mean() - tokens_per_expert_E)
+expert_bias_delta_E = expert_bias_delta_E - expert_bias_delta_E.mean()
+moe.expert_bias_E.add_(expert_bias_delta_E)
+moe.tokens_per_expert_E.zero_()</code></pre>
+
+<p>偏置只影响 <code>topk</code> 的选择，不影响输出分数（见 Router 一节），因此不会破坏训练目标；
+它会让“用得少的专家”在下次路由时更容易被选到。若激活重计算开启，代码按“计数被算了两遍”处理，除以 2 修正。</p>
+
+<h3>7.2 EP 与 FSDP / checkpoint 的耦合</h3>
+<ul>
+  <li><b>FSDP 分 mesh</b>：非专家参数在 dense mesh 上 FSDP，路由专家参数由 <code>shard_placement_fn</code> 放到 sparse mesh 上，
+      所以一块 MoE transformer block 内部可以同时属于两套 FSDP 单位。</li>
+  <li><b>显式 prefetch</b>：EP &gt;1 时 <code>apply_fsdp_to_decoder</code> 手动设置相邻层 forward/backward 的 FSDP prefetch，
+      避免 count exchange 的 host sync 打断 FSDP 的隐式预取（<code>fsdp.py:332+</code>）。</li>
+  <li><b>checkpoint adapter</b>：HF 存的是“每个专家一个 2D 权重”，torchtitan 存的是打包 3D 权重；
+      <code>MoEStateDictAdapter</code>（<code>models/utils.py</code>）需要把 3D 拆回 2D 逐专家读写，并能处理
+      <code>[StridedShard(0), Shard(0)]</code> 这种 EP+FSDP 同切专家维的布局。</li>
+</ul>
+
+<h2 id="fourlayers">8. 四层分工：用户 / TorchTitan / PyTorch / CUDA &amp; NCCL</h2>
+
+<p>下面换一种视角，把“EP 的一次 MoE forward”拆成四层，看每一层分别承担什么。
+为了具体，以本仓库的 <b>DeepSeek-V3 671B</b> 模型（<code>models/deepseek_v3/__init__.py:544 _671b</code>）
+为例，并按 <b>EP=4</b> 展开（仓库自带配置默认 EP=2，用户可用 CLI 覆盖成 4/8）。</p>
+
+<table>
+  <tr><th>维度</th><th>671B 真实值</th><th>对 EP 的意义</th></tr>
+  <tr><td>隐藏维 dim</td><td class="shape">7168</td><td>token 行宽；决定 all-to-all 搬运的字节数</td></tr>
+  <tr><td>层数</td><td>61（前 3 层 dense，后 58 层 MoE）</td><td>每层 MoE 都要做一次 EP</td></tr>
+  <tr><td>路由专家 E</td><td class="shape">256</td><td>EP=4 → 每 rank 本地 64 个专家</td></tr>
+  <tr><td>专家中间维</td><td class="shape">2048</td><td>单个专家 w1/w2/w3 ≈ 3×2048×7168 ≈ 44.0M 参数</td></tr>
+  <tr><td>top_k</td><td>8</td><td>每个 token 激活 8/256 = 3.125% 的专家</td></tr>
+  <tr><td>共享专家</td><td>1（走 dense FFN，不进 EP）</td><td>与 routed experts 输出相加</td></tr>
+  <tr><td>router</td><td>sigmoid、8 组取 4 组、route_scale=2.5、route_norm</td><td>组限制可减少跨节点 all-to-all 流量</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 1100 480" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="11.5">
+  <defs><marker id="g1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/></marker></defs>
+  <g transform="translate(24,10)">
+    <text x="0" y="20" fill="#1f2328" font-weight="700" font-size="14">一次 671B MoE 前向，四层各做什么</text>
+
+    <!-- user layer -->
+    <rect x="0" y="46" width="1050" height="84" rx="8" fill="#e7f3e7" stroke="#1a7f37"/>
+    <text x="22" y="70" fill="#1a7f37" font-weight="700" font-size="13">用户层：选择与声明，不做并行实现</text>
+    <text x="22" y="93" fill="#24292f" font-size="11">MODULE=deepseek_v3 CONFIG=deepseek_v3_671b；必要时覆盖 expert_parallel_degree=4、moe_comm_backend="standard"</text>
+    <text x="22" y="113" fill="#24292f" font-size="11">模型结构由 model_registry("671B") 声明：256 路由专家、1 共享专家、top_k=8、dim=7168、moe_hidden=2048</text>
+
+    <path d="M525 132 L525 150" stroke="#57606a" stroke-width="1.6" marker-end="url(#g1)"/>
+
+    <!-- titan layer -->
+    <rect x="0" y="154" width="1050" height="100" rx="8" fill="#f6f8fa" stroke="#8250df"/>
+    <text x="22" y="178" fill="#6f42c1" font-weight="700" font-size="13">TorchTitan 层：把配置变成“mesh + 布局 + 编排”</text>
+    <text x="22" y="201" fill="#24292f" font-size="11">ParallelDims.build_mesh() 建 sparse mesh（dp_replicate, efsdp, ep）；full_dtensor.py 把专家参数放到 edp_mesh</text>
+    <text x="22" y="221" fill="#24292f" font-size="11">moe_sharding.py 声明：路由专家权重 EP→Shard(0)，路由计数 Partial；RoutedExperts.parallelize 给 dispatcher 注入 ep_mesh</text>
+    <text x="22" y="241" fill="#24292f" font-size="11">前向编排：MoE.forward → Router → dispatch → GroupedExperts → combine → +shared_experts；optimizer step 前更新 expert_bias</text>
+
+    <path d="M525 256 L525 274" stroke="#57606a" stroke-width="1.6" marker-end="url(#g1)"/>
+
+    <!-- torch layer -->
+    <rect x="0" y="278" width="1050" height="94" rx="8" fill="#ddf4ff" stroke="#0969da"/>
+    <text x="22" y="302" fill="#0969da" font-weight="700" font-size="13">PyTorch 层：提供分布式原语与张量算子</text>
+    <text x="22" y="325" fill="#24292f" font-size="11">DeviceMesh / ProcessGroup 管理 EP 通信组；DTensor 表达 Shard(0)；FSDP2 的 fully_shard + shard_placement_fn 上 FSDP</text>
+    <text x="22" y="345" fill="#24292f" font-size="11">all_to_all_single 做 count / data 交换；torch._grouped_mm 做每专家一组的分组 GEMM；autograd 串联反向</text>
+    <text x="22" y="365" fill="#24292f" font-size="11">若选 DeepEP/HybridEP：PyTorch 通过 torch.library 注册的自定义算子调用外部 kernel</text>
+
+    <path d="M525 374 L525 392" stroke="#57606a" stroke-width="1.6" marker-end="url(#g1)"/>
+
+    <!-- cuda/nccl layer -->
+    <rect x="0" y="396" width="1050" height="76" rx="8" fill="#fff1e5" stroke="#bc4c00"/>
+    <text x="22" y="420" fill="#bc4c00" font-weight="700" font-size="13">CUDA &amp; NCCL 层：真正搬运数据、执行矩阵乘</text>
+    <text x="22" y="443" fill="#24292f" font-size="11">GPU kernel：top-k / argsort / 计数 / permute / scatter_add；grouped GEMM kernel 按 64 个本地专家分段执行</text>
+    <text x="22" y="461" fill="#24292f" font-size="11">NCCL：对 EP 通信组执行 all-to-all（NVLink / RDMA）；DeepEP 走自研 TMA kernel + CUDA stream 异步重叠</text>
+  </g>
+</svg>
+<figcaption>图 7：四层职责纵向剖面。用户只做“声明”，真正的 mesh 编排在 TorchTitan，通信与算子落在 PyTorch / CUDA / NCCL。</figcaption>
+</figure>
+
+<h3>8.1 用户层做什么？</h3>
+<ul>
+  <li><b>选模型与并行度</b>：<code>MODULE=deepseek_v3 CONFIG=deepseek_v3_671b</code>；
+      对 671B 来说 EP 必须开启，用户决定 <code>expert_parallel_degree</code>（仓库默认 2，也可 CLI 设 4/8）。</li>
+  <li><b>选 MoE 通信后端</b>：默认 <code>moe_comm_backend="standard"</code>；在 GB200 上可切
+      <code>hybridep</code>，或装 DeepEP 后切 <code>deepep</code>（由 <code>model_registry</code> 参数传入）。</li>
+  <li><b>（扩展新模型时）声明结构</b>：用户模型代码只需给出 <code>MoE.Config / RoutedExperts.Config / TokenChoiceTopKRouter.Config</code>，
+      例如 256 个专家、top_k=8、共享专家数、router 的 sigmoid / 组限制；torchtitan 的 sharding 系统负责把它解释成并行布局。</li>
+  <li><b>不做的事</b>：用户不写 all-to-all、不写 NCCL 调用、不手动搬权重；EP 是“配置出来的”，不是“手写出来的”。</li>
+</ul>
+
+<h3>8.2 TorchTitan 层做什么？</h3>
+<ul>
+  <li><b>建 mesh</b>：<code>ParallelDims</code> 根据 world_size 和 ep 度建 dense mesh 与 sparse mesh；
+      671B EP=4 时每个 rank 在 <code>ep</code> 轴上只对 64 个专家负责。</li>
+  <li><b>写布局声明</b>：<code>set_deepseek_v3_sharding_config</code> → <code>set_moe_sharding_config</code> 把
+      “哪些参数切、切哪个轴、激活什么布局、路由计数 Partial”填进每个 Module 的 <code>sharding_config</code>。</li>
+  <li><b>接 FSDP</b>：<code>apply_fsdp_to_decoder</code> 用 <code>shard_placement_fn</code> 把专家参数放上 sparse/edp mesh，
+      其余参数留在 dense mesh；EP 下还会显式排相邻层的 FSDP prefetch。</li>
+  <li><b>跑前向编排</b>：<code>MoE.forward</code> 负责“router 出分数 → 数每个专家的 token → 交给 token dispatcher →
+      GroupedExperts → combine → 与 shared expert 相加”，并处理序列 padding、DeepEP 的 sync_combine 等边界。</li>
+  <li><b>训练配套</b>：统计 <code>tokens_per_expert_E</code>，在 optimizer step 前更新 <code>expert_bias_E</code>，
+      做 aux-loss-free 负载均衡；checkpoint 层负责把打包的 3D 专家权重和 HF 的逐专家 2D 权重互转。</li>
+</ul>
+
+<h3>8.3 PyTorch 层做什么？</h3>
+<ul>
+  <li><b>进程组与 DeviceMesh</b>：<code>init_device_mesh</code> 为 <code>ep</code> 轴创建真实通信组；
+      <code>AllToAllTokenDispatcher</code> 拿到的 <code>ep_mesh</code> 就是从这里来的。</li>
+  <li><b>DTensor / placement</b>：用 <code>Shard(0)</code> 表达“专家维被 EP 切开”，用 Partial/Replicate 表达路由计数与共享专家；
+      FSDP2 负责在 <code>efsdp</code> 轴上再分片。</li>
+  <li><b>集合通信原语</b>：标准后端调用 <code>all_to_all_single</code>（functional collective），
+      传入 ep 进程组与切分长度；count 和 data 两次 all-to-all 都由它发起。</li>
+  <li><b>计算算子</b>：<code>torch._grouped_mm</code> 把 64 组本地专家的 GEMM 一次调度；
+      <code>topk / argsort / scatter_add</code> 等算子用于路由与 combine；这些本身由 CUDA kernel 实现。</li>
+  <li><b>可扩展算子边界</b>：DeepEP/HybridEP 通过 <code>torch.library</code> 自定义算子进入同一套 autograd / torch.compile 图，
+      dispatcher 接口让切换后端不影响 MoE 模型代码。</li>
+</ul>
+
+<h3>8.4 CUDA &amp; NCCL 层做什么？</h3>
+<ul>
+  <li><b>执行 all-to-all</b>：NCCL 在 EP 通信组上搬运 token 数据。它不认识“专家”：
+      只按 PyTorch 给出的 split 长度，把每个 rank 缓冲区里的行送到对应 rank。</li>
+  <li><b>执行 grouped GEMM</b>：671B 每层 MoE 有 64（EP=4）个本地专家，每个专家是一个
+      <code>2048×7168 / 7168×2048</code> 的 FFN；GPU 端用 grouped GEMM kernel 一次性按专家分段计算，
+      比 64 次独立 GEMM 启动更高效。</li>
+  <li><b>跑路由周边 kernel</b>：top-k、按专家 argsort、token 计数、permute 索引、scatter_add 等都在 GPU kernel 内完成；
+      唯一需要 CPU 介入的是把变长 all-to-all 的 split 长度从 device 拷回 host。</li>
+  <li><b>硬件拓扑相关优化</b>：DeepEP/HybridEP 针对 NVLink、NVLink72/GB200 使用 TMA、多 SM、独立通信流；
+      combine 通信可与 shared experts 计算重叠，最终靠 CUDA event 同步。</li>
+</ul>
+
+<h3>8.5 把 671B 的一次 MoE forward 过一遍</h3>
+<div class="callout g">
+  <b class="t">具体数字示例（EP=4、每 rank 64 个本地专家）</b>
+  假设每个 rank 本地有 T=16,384 个 token（例如 batch 4 × seq 4096），top_k=8 → N=131,072 条“token-专家”记录。
+  路由后约 1/4 的 token 命中本地专家，其余 3/4 需要 all-to-all 送去其他 3 个 rank；均衡时每 rank 净收 ~N/4=32,768 行。
+  每层 MoE 重复一次 count all-to-all + data all-to-all + combine all-to-all。
+  <br><br>
+  <b class="t">这四层各自的“一秒钟”</b>
+  用户写配置 → TorchTitan 算出 mesh 与布局 → PyTorch 发 all-to-all / 调度 grouped GEMM → NCCL 在 NVLink 上搬 32,768 行、
+  GPU kernel 算 64 个本地专家的 FFN；反向传播时同一流程倒着再来一遍，并由 autograd 自动把 dispatch/combine 的梯度接回 router。
+</div>
+
+<h2 id="faq">9. 快速对照与 FAQ</h2>
+
+<table>
+  <tr><th>问题</th><th>答案</th></tr>
+  <tr>
+    <td>EP 和 TP 都切专家权重吗？</td>
+    <td>EP=1 且 TP&gt;1 时，torchtitan 走 <code>expert_param_placement_dense</code>：把单个专家的 F/D 维像普通 FFN 一样 colwise/rowwise 切。
+        EP&gt;1 时走 <code>expert_param_placement_sparse</code>：优先沿 <b>专家维</b>（dim 0）切。两者不是同一件事。</td>
+  </tr>
+  <tr>
+    <td>EP 度有什么约束？</td>
+    <td>ep 必须能整除 num_experts（dispatcher 会校验）；同时 <code>efsdp = dp_shard × cp × tp / ep</code> 必须仍是整数，
+        否则 mesh 建不出来。EP 不在 <code>ParallelDims._validate</code> 的乘法里，而是通过 sparse mesh 与 dense mesh 共用 GPU 来满足 world_size。</td>
+  </tr>
+  <tr>
+    <td>一次 forward 到底跨卡通信几次？</td>
+    <td>标准 AllToAll 每层 MoE：1 次 count all-to-all + 1 次 dispatch all-to-all + 1 次 combine all-to-all。
+        DeepEP/HybridEP 把 combine 异步化；MinimalAsyncEP 用对称内存把 count 阶段合并进一次异步 dispatch。</td>
+  </tr>
+  <tr>
+    <td>共享专家（shared expert）走 EP 吗？</td>
+    <td>本仓库 DeepSeek V3 的 <code>shared_experts</code> 是普通 <code>FeedForward</code>，按 dense 族布局处理（可再叠 FSDP/TP），
+        不参与 routed experts 的 all-to-all。它每层每个 token 都算，所以放在 dense mesh 更合理。</td>
+  </tr>
+  <tr>
+    <td>为什么 route 之前要把 token 本地排序？</td>
+    <td>all-to-all 的切分按“连续区间”发送。token 先按目标专家号排好，才能把“发给同一 rank 的 token”聚成一个连续分片；收到的 rank 也才能按专家块处理。</td>
+  </tr>
+  <tr>
+    <td>负载不均衡会怎样？</td>
+    <td>某几个专家收到的 token 特别多时，对应 rank 的 grouped GEMM 成为瓶颈，其他 rank 空等；
+        all-to-all 的 split 也会更不均衡。训练期用 expert bias 做无辅助损失均衡；调试时可用 <code>--debug.moe_force_load_balance</code> 强制轮转路由验证数值。</td>
+  </tr>
+  <tr>
+    <td>最小化例子怎么跑？</td>
+    <td><code>MODULE=deepseek_v3 CONFIG=deepseek_v3_debugmodel ./run_train.sh</code>；16B EP=8 见
+        <code>config_registry.py:165</code>；671B EP=2 见 <code>:234</code>。实际大规模部署常把 ep 设成 4/8 并用 CLI 覆盖。</td>
+  </tr>
+</table>
+
+<div class="callout p">
+  <b class="t">一句话总结</b>
+  MoE 让“参数量随专家数增长、计算量不随专家数增长”；EP 再把专家权重按 <code>ep</code> 轴切开，
+  用两次（或一次异步）all-to-all 让 token 跟着路由走：先数 token、再送 token、按专家算、送回 scatter_add。
+  torchtitan 的工程化要点是：<b>声明式 sharding（EP 切 dim 0）</b>、<b>sparse mesh 与 dense mesh 复用同一批 GPU</b>、
+  <b>dispatcher 可插拔（standard / torchao / DeepEP / HybridEP / MinimalAsyncEP）</b>。
+</div>
+
+<div class="foot">
+  本页基于 <code>D:\02_source\torchtitan</code> main @ 229fa0bd5 核验：
+  <code>models/common/moe.py</code>、<code>moe_sharding.py</code>、<code>config_utils.py</code>、<code>token_dispatcher.py</code>、
+  <code>models/deepseek_v3/__init__.py</code> / <code>sharding.py</code> / <code>config_registry.py</code>、
+  <code>distributed/parallel_dims.py</code> / <code>fsdp.py</code> / <code>full_dtensor.py</code> / <code>deepep/*</code>、
+  <code>components/optimizer.py</code>。
+  图中的专家数 / EP 为示意，真实数值见第 1 节表格。
+</div>
+
+</div>
+</body>
+</html>

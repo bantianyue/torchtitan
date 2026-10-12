@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PP（流水并行）实现详解 —— 三层视角</title>
+<style>
+  :root {
+    --user:   #1f6feb; --titan: #2da44e; --torch: #bf3989;
+    --ink: #1f2328; --muted: #59636e; --bg: #ffffff; --panel: #f6f8fa;
+    --border: #d1d9e0; --code-bg: #0d1117; --code-ink: #e6edf3;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif; color: var(--ink); background: var(--bg); line-height: 1.65; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.hero { border-bottom: 3px solid var(--ink); padding-bottom: 18px; margin-bottom: 26px; }
+  header.hero h1 { font-size: 26px; margin: 0 0 8px; line-height: 1.35; }
+  header.hero p.sub { color: var(--muted); margin: 0; font-size: 14.5px; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .legend .chip { padding: 5px 12px; border-radius: 20px; color: #fff; font-size: 13px; font-weight: 600; }
+  .chip.user { background: var(--user); } .chip.titan { background: var(--titan); } .chip.torch { background: var(--torch); }
+  nav.toc { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 20px; margin-bottom: 30px; font-size: 14px; }
+  nav.toc ol { margin: 6px 0 0; padding-left: 22px; } nav.toc a { color: var(--user); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.sites { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 26px; font-size: 13px; }
+  nav.sites a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 20px; color: var(--ink); text-decoration: none; background: var(--panel); }
+  nav.sites a.cur { background: var(--ink); color: #fff; }
+  h2.section { font-size: 21px; margin: 44px 0 12px; padding: 10px 14px; background: var(--panel); border-left: 5px solid var(--ink); border-radius: 6px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  p { margin: 8px 0; } ul, ol { margin: 8px 0; padding-left: 24px; }
+  code { font-family: "Cascadia Code",Consolas,"JetBrains Mono",monospace; font-size: 13px; background: #eef1f4; padding: 1px 6px; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 12.7px; line-height: 1.55; font-family: "Cascadia Code",Consolas,monospace; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  .cmt { color: #8b949e; } .kw { color: #ff7b72; } .fn { color: #d2a8ff; } .st { color: #a5d6ff; } .nu { color: #79c0ff; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.4px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; } tr:nth-child(even) td { background: #fafbfc; }
+  .callout { border: 1px solid var(--border); border-left: 4px solid var(--user); background: #f0f6ff; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .callout.green { border-left-color: var(--titan); background: #f0faf1; } .callout.purple { border-left-color: var(--torch); background: #faf0f6; }
+  .callout b.tag { display: inline-block; font-size: 12px; margin-right: 6px; }
+  .flow { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 13px; }
+  .flow .step { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  .flow .step .n { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+  .flow .step .who { font-size: 11.5px; font-weight: 700; margin-right: 8px; padding: 1px 8px; border-radius: 10px; color: #fff; flex: 0 0 auto; }
+  .who.user { background: var(--user); } .who.titan { background: var(--titan); } .who.torch { background: var(--torch); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .stg { background:#2da44e; color:#fff; border-radius:4px; padding:2px 9px; font-size:12px; font-weight:700; }
+  .mb { background:#1f6feb; color:#fff; border-radius:4px; padding:2px 9px; font-size:12px; font-weight:700; }
+  .stagegrid { display: grid; gap: 6px; margin: 12px 0; font-size: 12.5px; }
+  .srow { display: grid; grid-template-columns: 60px repeat(6, 1fr); gap: 4px; align-items: center; }
+  .std { font-weight: 700; color: var(--muted); }
+  .cellb { border: 1px solid var(--border); border-radius: 5px; padding: 5px 6px; background: var(--panel); text-align: center; }
+  .cellb.f { background: #ddf4ff; } .cellb.b { background: #ffe9e9; }
+  .foot { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 760px) { .srow { grid-template-columns: 50px repeat(3, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>PP（流水并行）如何实现 —— 用户 / torchtitan / PyTorch 三层详解</h1>
+  <p class="sub">以本仓库 <code>torchtitan/distributed/pipeline_parallel.py</code> 与 <code>trainer.py</code> 的 PP 调度为准。</p>
+  <div class="legend">
+    <span class="chip user">第 1 层 · 用户 —— 声明调度类型 / 层切分 / microbatch</span>
+    <span class="chip titan">第 2 层 · torchtitan —— 切模型 / 建 stage / 驱动 schedule</span>
+    <span class="chip torch">第 3 层 · PyTorch —— PipelineStage + P2P send/recv</span>
+  </div>
+</header>
+
+<nav class="sites">
+  <a href="fsdp_three_layers.html">FSDP 数据并行</a>
+  <a href="cp_three_layers.html">CP 上下文并行</a>
+  <a class="cur">PP 流水并行</a>
+  <a href="ep_three_layers.html">EP 专家并行</a>
+</nav>
+
+<nav class="toc">
+  <b>本页目录</b>
+  <ol>
+    <li><a href="#scene">场景设定与 PP 的本质</a></li>
+    <li><a href="#user">第 1 层 · 用户层：调度 / 层切分 / microbatch 声明</a></li>
+    <li><a href="#titan">第 2 层 · Titan 层：pipeline_llm 切模型建调度</a></li>
+    <li><a href="#torch">第 3 层 · Torch 层：PipelineStage + P2P 通信</a></li>
+    <li><a href="#flow">全链路流转 + PP 与其它并行的关系</a></li>
+  </ol>
+</nav>
+
+<h2 class="section" id="scene">0. 场景设定与 PP 的本质</h2>
+<table>
+  <tr><th>维度</th><th>取值</th><th>说明</th></tr>
+  <tr><td>PP 卡数</td><td><code>4</code></td><td>4 个 stage，每个 stage 放一部分层</td></tr>
+  <tr><td>模型层数</td><td><code>60</code></td><td>DeepSeek-V3 decoder 层</td></tr>
+  <tr><td>层/卡</td><td><code>15</code></td><td>60 / 4 = 15 层每卡</td></tr>
+  <tr><td>microbatch</td><td><code>8</code></td><td>一个 batch 切成 8 个 micro-batch 流水</td></tr>
+  <tr><td>schedule</td><td><code>GPipe / 1F1B</code></td><td>用户指定调度（见下）</td></tr>
+</table>
+<div class="callout">
+  <b class="tag">🎯 PP 要解决什么</b>
+  模型太大，单卡放不下<b>全部层</b>。PP 把模型<b>按层</b>分成几段（stage），每段放一张（或多张）卡。
+  数据以 microbatch 为单位在一个接一个的 stage 里<b>流水</b>推进。PP 和 TP/CP/FSDP 完全不同：
+  <b>它切的是"层"，不是"单个 tensor 的维度"</b>，通信是 stage 之间的 P2P 传激活。
+</div>
+
+<h2 class="section" id="user">1. 第 1 层 · 用户层：只声明调度参数</h2>
+<p>PP 的用户层配置全在 <code>ParallelismConfig</code> 里（不需要写 per-param 分片）：</p>
+<pre><code><span class="cmt"># ParallelismConfig —— 用户声明 PP 的"形状"</span>
+<span class="st">pipeline_parallel_degree</span>        = <span class="nu">4</span>   <span class="cmt"># 4 个 stage</span>
+<span class="st">pipeline_parallel_schedule</span>     = <span class="st">"1F1B"</span>   <span class="cmt"># 或 "GPipe"/"Interleaved1F1B"/"DualPipe"/"ZBV"</span>
+<span class="st">pipeline_parallel_layers_per_stage</span> = <span class="nu">15</span>   <span class="cmt"># 每 stage 15 层（也可自动算）</span>
+<span class="st">pipeline_parallel_microbatch_size</span> = <span class="nu">8</span>   <span class="cmt"># batch 切成 8 个 micro-batch</span>
+<span class="st">module_fqns_per_model_part</span>      = <span class="kw">None</span>   <span class="cmt"># 可手动指定 stage 模块，默认自动切</span></code></pre>
+<p>用户不写"哪层放哪卡"——torchtitan 用 <code>_generate_llm_fqn_per_model_part</code>（pipeline_parallel.py:366-476）
+按层数 + 首尾权重自动把 <code>tok_embeddings / layers.* / norm / lm_head</code> 分到各 stage。
+这就是用户层的全部：<strong>一个调度字符串 + 两个整数</strong>。</p>
+
+<h2 class="section" id="titan">2. 第 2 层 · Titan 层：pipeline_llm 切模型建调度</h2>
+<pre><code><span class="cmt"># trainer 初始化时调用 pipeline_llm（pipeline_parallel.py:65-141）</span>
+pp_mesh = parallel_dims.get_mesh(<span class="st">"pp"</span>)   <span class="cmt"># 1 维 mesh，size=4</span>
+
+<span class="cmt"># ① 决定每 stage 放哪些模块（默认自动切）</span>
+module_names_per_stage = _generate_llm_fqn_per_model_part(<span class="nu">4</span>, <span class="nu">60</span>)
+<span class="cmt">#   真实值（近似）：stage0=["tok_embeddings","layers.0".."layers.13"],
+#                   stage1=["layers.14".."layers.28"], stage2=["layers.29".."layers.43"],
+#                   stage3=["layers.44".."layers.59","norm","lm_head"]</span>
+
+<span class="cmt"># ② 切模型：每一卡创建属于自己 stage 的模型副本（_split_module 深层拷走指定模块）</span>
+stages, model_parts = _pipeline_module_split(
+    model, pp_mesh, schedule, device, module_names_per_stage, get_mesh=get_mesh_cb)
+
+<span class="cmt"># ③ 每个 stage 内部再套其它并行：每个 model_part 单独跑 TP/FSDP/EP 的 parallelize_fn</span>
+<span class="kw">for</span> i, m <span class="kw">in</span> enumerate(model_parts):
+    m = parallelize_fn(m, parallel_dims=parallel_dims, ...)   <span class="cmt"># 各自 apply TP/FSDP/EP</span>
+    stages[i].submod = m
+
+<span class="cmt"># ④ 组装调度器（_build_pipeline_schedule）</span>
+pp_schedule = <span class="fn">_build_pipeline_schedule</span>(
+    parallelism=parallelism, local_batch_size=..., stages=stages, loss_fn=loss_fn)
+<span class="cmt">#   真实值：1F1B schedule，n_microbatches = batch_size / microbatch_size = 8</span></code></pre>
+
+<h3>训练时：trainer 用 schedule 驱动（trainer.py:775-811）</h3>
+<pre><code><span class="kw">def</span> <span class="fn">pp_forward_backward_step</span>(self, input_dict_mbs, label_mbs, global_valid_tokens):
+    ...
+    self.pp_schedule.step(
+        arg_mbs=arg_mbs,      <span class="cmt"># 8 个 microbatch 的输入</span>
+        kwarg_mbs=kwarg_mbs,
+        target_mbs=target_mbs,
+        losses=losses,
+        loss_kwargs=loss_kwargs,
+        return_outputs=<span class="kw">False</span>)
+    <span class="cmt"># schedule.step 内部逐 microbatch 依次前向/反向，跨 stage 传激活</span></code></pre>
+<div class="callout green">
+  <b class="tag">🔀 PP + FSDP 的联动</b>
+  <code>get_fsdp_reshard_after_forward_policy</code>（fsdp.py:66-74）在 PP 开启时默认 <code>not pp_enabled =
+  False</code>（不 reshard）——避免每个 microbatch 都做一次 all-gather 的开销。
+  这是 PP 特有的对 FSDP 策略的修改。
+</div>
+
+<h2 class="section" id="torch">3. 第 3 层 · Torch 层：PipelineStage + P2P 通信</h2>
+<p>PP 的实际执行靠 <code>torch.distributed.pipelining</code>：</p>
+<pre><code><span class="cmt"># ① 每个 stage 被包装成 PipelineStage（pipeline_parallel.py:634-641）</span>
+stage = PipelineStage(
+    model_chunk, stage_idx, num_stages, device,
+    group=pp_mesh.get_group(<span class="st">"pp"</span>),   <span class="cmt"># PP 进程组 → 定义相邻 stage 间的 P2P 通道</span>
+    get_mesh=get_mesh,               <span class="cmt"># 重建 DTensor 用（见下）</span>
+)
+
+<span class="cmt"># ② schedule.step() 里：相邻 stage 之间用 P2P send/recv 传激活张量</span>
+<span class="cmt">#    stage i 前向完 → send(输出激活) → stage i+1 recv() 接着算</span>
+<span class="cmt">#    反向同理，从后往前传梯度</span>
+
+<span class="cmt"># ③ DTensor 跨 stage 重建（_build_get_mesh_callback，pipeline_parallel.py:41-62）</span>
+<span class="kw">def</span> <span class="fn">_get_mesh</span>(mesh_dim_names, mesh_layout):
+    mesh = parallel_dims.get_mesh(list(mesh_dim_names))   <span class="cmt"># 得到本 stage 的本地 DeviceMesh</span>
+    ...
+    <span class="kw">return</span> mesh
+<span class="cmt">#   真实值：DTensor 不能直接跨 stage 序列化（ProcessGroup 不可序列化），
+#           所以每卡收到前一 stage 的 plain tensor 后，用这个回调重建本地 DeviceMesh，
+#           再把张量包回 DTensor 并赋予正确 placements。</span></code></pre>
+
+<h3>microbatch 流水示意（1F1B，纵深 = 4 stage）</h3>
+<div class="stagegrid">
+  <div class="srow"><span class="std">t=0</span><span class="cellb f">m0 f</span><span class="cellb">-</span><span class="cellb">-</span><span class="cellb">-</span></div>
+  <div class="srow"><span class="std">t=1</span><span class="cellb f">m1 f</span><span class="cellb f">m0 f</span><span class="cellb">-</span><span class="cellb">-</span></div>
+  <div class="srow"><span class="std">t=2</span><span class="cellb f">m2 f</span><span class="cellb f">m1 f</span><span class="cellb f">m0 f</span><span class="cellb">-</span></div>
+  <div class="srow"><span class="std">t=3</span><span class="cellb f">m3 f</span><span class="cellb f">m2 f</span><span class="cellb f">m1 f</span><span class="cellb f">m0 f</span></div>
+  <div class="srow"><span class="std">t=4</span><span class="cellb b">m0 b</span><span class="cellb f">m3 f</span><span class="cellb f">m2 f</span><span class="cellb f">m1 f</span></div>
+  <div class="srow"><span class="std">t=5</span><span class="cellb b">m1 b</span><span class="cellb b">m0 b</span><span class="cellb f">m3 f</span><span class="cellb f">m2 f</span></div>
+  <div class="srow"><span class="std">t=6</span><span class="cellb b">m2 b</span><span class="cellb b">m1 b</span><span class="cellb b">m0 b</span><span class="cellb f">m3 f</span></div>
+  <div class="srow"><span class="std">t=7</span><span class="cellb b">m3 b</span><span class="cellb b">m2 b</span><span class="cellb b">m1 b</span><span class="cellb b">m0 b</span></div>
+</div>
+<p class="foot" style="margin-top:6px"><span class="cellb f">f = 前向</span> &nbsp; <span class="cellb b">b = 反向</span> —— 1F1B（one forward one backward）在气泡（bubble）阶段交错前向/反向，提高利用率。每一格表示一个 stage 上的一个 microbatch 阶段。</p>
+
+<div class="callout purple">
+  <b class="tag">⚙️ PP 的通信只有 P2P</b>
+  与 TP/CP/FSDP 的 collective 通信不同，PP 跨 stage 是<b>点对点 send/recv</b>（相邻 stage 传激活/梯度）。
+  而 <b>PP 之内</b>每个 stage 还可以嵌套 TP/FSDP/EP——所以 PP 是"最外层"的并行划分，
+  在 <code>parallelize_fn</code> 里逐个 stage 再套其它并行。
+</div>
+
+<h2 class="section" id="flow">4. 全链路流转 + PP 与其它并行的关系</h2>
+<div class="flow">
+  <div class="step"><div class="n">1</div><div><span class="who user">用户</span><b>声明</b>：<code>pipeline_parallel_degree/schedule/layers_per_stage/microbatch_size</code>。无 per-param 声明。</div></div>
+  <div class="step"><div class="n">2</div><div><span class="who titan">Titan</span><b>切模型</b>：<code>_generate_llm_fqn_per_model_part</code> 决定每 stage 模块 → <code>_pipeline_module_split</code> 建 4 个 stage。</div></div>
+  <div class="step"><div class="n">3</div><div><span class="who titan">Titan</span><b>套内层并行</b>：逐个 model_part 跑 <code>parallelize_fn</code>（TP/FSDP/EP 作用于每个 stage 内部）。</div></div>
+  <div class="step"><div class="n">4</div><div><span class="who titan">Titan</span><b>建调度</b>：<code>_build_pipeline_schedule</code> 组装 1F1B schedule；训练时 <code>pp_schedule.step</code> 驱动 microbatch 流水。</div></div>
+  <div class="step"><div class="n">5</div><div><span class="who torch">Torch</span><b>P2P 通信</b>：<code>PipelineStage</code> 用 PP 进程组在相邻 stage 间 send/recv 激活与梯度；DTensor 经回调重建。</div></div>
+</div>
+
+<table>
+  <tr><th>对比</th><th>PP（流水并行）</th><th>TP / FSDP / EP</th></tr>
+  <tr><td>切的对象</td><td><b>模型层</b>（stage）</td><td>单个 tensor 的维度 / 权重</td></tr>
+  <tr><td>通信类型</td><td>stage 间 <b>P2P</b> send/recv</td><td><b>collective</b>（all-gather/reduce-scatter/all-to-all）</td></tr>
+  <tr><td>单位</td><td>microbatch（流水）</td><td>每个 forward/backward</td></tr>
+  <tr><td>是否需 per-param 分片</td><td>不写</td><td>TP/EP 要写，FSDP 不写</td></tr>
+  <tr><td>与其它并行关系</td><td>最外层，可嵌套其它并行</td><td>在 PP stage 内部生效</td></tr>
+</table>
+
+<div class="foot">
+  本页基于 <code>torchtitan/distributed/pipeline_parallel.py</code>、<code>torchtitan/trainer.py:775-811</code>；
+  PP 实际执行依赖 <code>torch.distributed.pipelining</code>。配套页面：<a href="fsdp_three_layers.html">FSDP</a> · <a href="cp_three_layers.html">CP</a> · <a href="ep_three_layers.html">EP</a>
+</div>
+
+</div>
+</body>
+</html>
