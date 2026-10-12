@@ -1,0 +1,117 @@
+<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Qwen3.5-0.8B CPU LoRA 实测</title><style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#16181d;--muted:#6b7280;--line:#e3e5ea;
+--panel:#f7f8fa;--accent:#2f6fd0;--ok:#1a7f4b;--miss:#b4451f;--code:#f2f3f6;}
+@media (prefers-color-scheme:dark){:root{--bg:#15171c;--fg:#e8eaf0;--muted:#9aa1ad;
+--line:#2b2f38;--panel:#1c1f26;--accent:#6ea8ff;--ok:#5ed09a;--miss:#ff9b7a;--code:#22262e;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",Roboto,sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:32px 24px 72px}
+h1{font-size:23px;font-weight:600;margin:0 0 4px}h2{font-size:16px;font-weight:600;margin:26px 0 8px}
+h3{font-size:14px;font-weight:600;margin:20px 0 6px}
+.sub{color:var(--muted);margin:2px 0 14px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;background:var(--code);
+padding:1px 5px;border-radius:4px}
+.note{background:var(--panel);border-left:3px solid var(--accent);padding:10px 14px;
+border-radius:6px;margin:12px 0}.muted{color:var(--muted)}.ok{color:var(--ok);font-weight:600}
+.miss{color:var(--miss);font-weight:600}
+.chartbox{border:1px solid var(--line);border-radius:10px;padding:12px;margin:12px 0}
+canvas{width:100%;height:280px;display:block}
+.pill{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 12px;
+font-size:12.5px;display:inline-block;margin:0 8px 8px 0}.pill b{font-weight:600}
+ul.tight{margin:6px 0;padding-left:20px}
+.kv{display:flex;flex-wrap:wrap;gap:6px 28px;margin:6px 0}
+.kv div{font-size:13px}.kv span{color:var(--muted)}
+</style></head><body>
+<div class="wrap">
+<h1>Qwen3.5-0.8B 在 CPU 上做 LoRA 微调</h1>
+<p class="sub">实测：Qwen3.5-0.8B 在纯 CPU 上做 LoRA SFT。本机为 i7-1165G7（4 核 / 8 线程，AVX512，无 GPU），16 GB 内存。数字全部来自本目录一次真实运行。</p>
+<div><span class='pill'>模型 <b>D:/02_source/torchtitan/qlora_lab/model</b></span><span class='pill'>主干参数 <b>853.0M</b></span><span class='pill'>可训练 <b>5,111,808 (0.599%)</b></span><span class='pill'>LoRA <b>r=8 α=16</b></span><span class='pill'>数据集 <b>yahma/alpaca-cleaned (51,760 行 → 用 512)</b></span><span class='pill'>seq_len <b>256</b></span><span class='pill'>dtype <b>float32</b></span><span class='pill'>threads <b>4</b></span><span class='pill'>s/step <b>13.3</b></span><span class='pill'>tokens/s <b>12.6</b></span><span class='pill'>峰值 RSS <b>3.15 GiB</b></span></div>
+<h2>1. 训练曲线</h2>
+<div class="chartbox"><canvas id="lossChart">loss</canvas></div>
+<p class="note">起始 loss <b>1.2142</b> → 结束 loss <b>0.3874</b>
+（下降 <b>+0.8267</b>）。20 步、每条样本平均
+<b>167</b> token。</p>
+<h2>2. 每步耗时</h2>
+<div class="chartbox"><canvas id="timeChart">s/step</canvas></div>
+<div class="chartbox"><canvas id="splitChart">fwd vs bwd</canvas></div>
+<p class="note">蓝线为 forward，黄线为 backward。backward 明显更长是正常的：
+LoRA 虽不为主干算权重梯度，但仍要对<b>全部 24 层</b>求输入梯度，
+且要经过冻结的 GDN 与注意力层。</p>
+<h2>3. 逐 step 明细</h2>
+<table><tr><th>step</th><th class='num'>loss</th><th class='num'>grad_norm</th><th class='num'>fwd s</th><th class='num'>bwd s</th><th class='num'>合计 s</th><th class='num'>tokens</th><th class='num'>tok/s</th><th class='num'>RSS GiB</th></tr><tr><td class='num'>1</td><td class='num'>1.2142</td><td class='num'>7.044</td><td class='num'>11.2</td><td class='num'>5.0</td><td class='num'>16.2</td><td class='num'>170</td><td class='num'>10.5</td><td class='num'>3.41</td></tr><tr><td class='num'>2</td><td class='num'>1.1333</td><td class='num'>5.740</td><td class='num'>3.5</td><td class='num'>2.8</td><td class='num'>6.3</td><td class='num'>80</td><td class='num'>12.7</td><td class='num'>3.55</td></tr><tr><td class='num'>3</td><td class='num'>0.7523</td><td class='num'>3.092</td><td class='num'>9.9</td><td class='num'>8.7</td><td class='num'>18.6</td><td class='num'>256</td><td class='num'>13.7</td><td class='num'>3.69</td></tr><tr><td class='num'>4</td><td class='num'>1.5637</td><td class='num'>3.553</td><td class='num'>9.8</td><td class='num'>9.1</td><td class='num'>18.9</td><td class='num'>256</td><td class='num'>13.6</td><td class='num'>3.68</td></tr><tr><td class='num'>5</td><td class='num'>1.5567</td><td class='num'>4.473</td><td class='num'>7.0</td><td class='num'>5.9</td><td class='num'>12.9</td><td class='num'>182</td><td class='num'>14.1</td><td class='num'>3.53</td></tr><tr><td class='num'>6</td><td class='num'>0.3035</td><td class='num'>4.295</td><td class='num'>9.8</td><td class='num'>8.8</td><td class='num'>18.6</td><td class='num'>256</td><td class='num'>13.8</td><td class='num'>3.69</td></tr><tr><td class='num'>7</td><td class='num'>0.7477</td><td class='num'>2.721</td><td class='num'>8.2</td><td class='num'>7.7</td><td class='num'>15.9</td><td class='num'>207</td><td class='num'>13.0</td><td class='num'>3.54</td></tr><tr><td class='num'>8</td><td class='num'>1.6375</td><td class='num'>3.372</td><td class='num'>9.2</td><td class='num'>8.6</td><td class='num'>17.8</td><td class='num'>256</td><td class='num'>14.3</td><td class='num'>3.54</td></tr><tr><td class='num'>9</td><td class='num'>0.8500</td><td class='num'>5.374</td><td class='num'>3.2</td><td class='num'>2.0</td><td class='num'>5.2</td><td class='num'>54</td><td class='num'>10.4</td><td class='num'>3.21</td></tr><tr><td class='num'>10</td><td class='num'>1.8670</td><td class='num'>3.491</td><td class='num'>6.4</td><td class='num'>5.9</td><td class='num'>12.4</td><td class='num'>166</td><td class='num'>13.4</td><td class='num'>3.35</td></tr><tr><td class='num'>11</td><td class='num'>0.5008</td><td class='num'>11.372</td><td class='num'>2.2</td><td class='num'>1.4</td><td class='num'>3.6</td><td class='num'>25</td><td class='num'>6.9</td><td class='num'>3.18</td></tr><tr><td class='num'>12</td><td class='num'>1.2422</td><td class='num'>3.232</td><td class='num'>7.4</td><td class='num'>6.2</td><td class='num'>13.6</td><td class='num'>178</td><td class='num'>13.0</td><td class='num'>3.38</td></tr><tr><td class='num'>13</td><td class='num'>1.5527</td><td class='num'>2.602</td><td class='num'>10.4</td><td class='num'>9.4</td><td class='num'>19.9</td><td class='num'>256</td><td class='num'>12.9</td><td class='num'>3.44</td></tr><tr><td class='num'>14</td><td class='num'>0.4640</td><td class='num'>7.811</td><td class='num'>3.0</td><td class='num'>1.8</td><td class='num'>4.8</td><td class='num'>45</td><td class='num'>9.4</td><td class='num'>3.19</td></tr><tr><td class='num'>15</td><td class='num'>1.2231</td><td class='num'>2.738</td><td class='num'>9.3</td><td class='num'>8.4</td><td class='num'>17.7</td><td class='num'>226</td><td class='num'>12.8</td><td class='num'>3.45</td></tr><tr><td class='num'>16</td><td class='num'>1.4692</td><td class='num'>3.108</td><td class='num'>9.2</td><td class='num'>8.1</td><td class='num'>17.3</td><td class='num'>219</td><td class='num'>12.7</td><td class='num'>3.43</td></tr><tr><td class='num'>17</td><td class='num'>0.6561</td><td class='num'>3.407</td><td class='num'>6.6</td><td class='num'>5.8</td><td class='num'>12.4</td><td class='num'>156</td><td class='num'>12.6</td><td class='num'>3.36</td></tr><tr><td class='num'>18</td><td class='num'>1.2082</td><td class='num'>2.613</td><td class='num'>10.0</td><td class='num'>9.1</td><td class='num'>19.1</td><td class='num'>256</td><td class='num'>13.4</td><td class='num'>3.44</td></tr><tr><td class='num'>19</td><td class='num'>0.9979</td><td class='num'>11.570</td><td class='num'>2.8</td><td class='num'>1.9</td><td class='num'>4.7</td><td class='num'>40</td><td class='num'>8.5</td><td class='num'>3.12</td></tr><tr><td class='num'>20</td><td class='num'>0.3874</td><td class='num'>6.831</td><td class='num'>3.1</td><td class='num'>1.9</td><td class='num'>5.1</td><td class='num'>52</td><td class='num'>10.2</td><td class='num'>3.15</td></tr></table>
+<h2>4. 结论</h2>
+<ul class="tight">
+<li>这台机器上 0.8B 级模型的 LoRA SFT 实测 <b>13.3 s/step</b>、
+<b>12.6 token/s</b>（seq 256、batch 1、
+fp32、4 线程）。</li>
+<li>峰值 RSS <b>3.15 GiB</b>，距离 16 GB 物理内存还有余量——
+<b>内存不是这台机器训 0.8B 的瓶颈，时间才是</b>。</li>
+<li>按当前配置（每步消耗 <b>1</b> 条样本、13.3 s/步），在完整 yahma/alpaca-cleaned（51,760 行）上跑满 1 个 epoch 约需 <b>7.9 天</b>。</li>
+</ul>
+<p class="note">为什么没有用 4bit：CPU 上 bitsandbytes 的 4bit 是「反量化成 bf16 再算」，
+比原生 fp32 多一遍 dequant，<b>更慢</b>；而 0.8B 主干 fp32 也只有 ~3.4 GB，本来就装得下。
+QLoRA 的价值是省显存，在 16 GB 内存的 CPU 上省不出有意义的东西。
+真正的省内存手段是 LoRA 本身：主干冻结，不带梯度也不带优化器状态。</p>
+<footer class="muted">生成于 2026-10-12 18:11:21 · 数据来自 <code>qlora_lab\reports\alpaca_20step.html</code> 对应的 metrics.json</footer>
+</div>
+<script id="run-data" type="application/json">{"loss": [{"x": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], "y": [1.214186191558838, 1.133279800415039, 0.7523067593574524, 1.5637016296386719, 1.5566954612731934, 0.3035071790218353, 0.7477324604988098, 1.637473464012146, 0.8499990105628967, 1.8669708967208862, 0.5007613897323608, 1.2422432899475098, 1.5526549816131592, 0.46404629945755005, 1.223080039024353, 1.4691730737686157, 0.656133770942688, 1.2082183361053467, 0.9979161620140076, 0.3874450623989105], "color": "#2f6fd0"}], "time": [{"x": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], "y": [16.19, 6.28, 18.62, 18.85, 12.89, 18.56, 15.91, 17.84, 5.19, 12.37, 3.6, 13.64, 19.86, 4.78, 17.71, 17.27, 12.38, 19.06, 4.69, 5.1], "color": "#1d9e75"}], "split": [{"x": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], "y": [11.18, 3.53, 9.92, 9.8, 7.0, 9.81, 8.21, 9.2, 3.21, 6.43, 2.22, 7.39, 10.42, 3.02, 9.35, 9.17, 6.6, 9.99, 2.77, 3.15], "color": "#2f6fd0", "dots": false}, {"x": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], "y": [5.01, 2.75, 8.7, 9.05, 5.89, 8.75, 7.7, 8.64, 1.98, 5.94, 1.38, 6.25, 9.44, 1.76, 8.36, 8.1, 5.78, 9.07, 1.92, 1.95], "color": "#c98a1b", "dots": false}]}</script>
+<script>
+function drawLine(canvas, series, yLabel, opts){
+  opts = opts || {};
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w*dpr; canvas.height = h*dpr;
+  const c = canvas.getContext('2d'); c.setTransform(dpr,0,0,dpr,0,0);
+  const cs = getComputedStyle(document.body);
+  const fg = cs.getPropertyValue('--fg').trim(), muted = cs.getPropertyValue('--muted').trim();
+  const line = cs.getPropertyValue('--line').trim();
+  const M = {l:66,r:18,t:16,b:38}, W = w-M.l-M.r, H = h-M.t-M.b;
+  const allY = series.flatMap(s=>s.y);
+  let y0 = Math.min(...allY), y1 = Math.max(...allY);
+  const padY = (y1-y0)*0.12 || Math.abs(y0)*0.05 || 1;
+  y0 -= padY; y1 += padY;
+  if (opts.y0 !== undefined) y0 = opts.y0;
+  const xs = series[0].x;
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const X = v => M.l + (x1===x0?W/2:((v-x0)/(x1-x0))*W);
+  const Y = v => M.t + H - ((v-y0)/(y1-y0))*H;
+  c.font = '11px -apple-system,"Segoe UI",sans-serif';
+  c.strokeStyle = line; c.fillStyle = muted; c.lineWidth = 1;
+  for (let i=0;i<=4;i++){
+    const v = y0 + (y1-y0)*i/4, y = Y(v);
+    c.beginPath(); c.moveTo(M.l,y); c.lineTo(M.l+W,y); c.stroke();
+    const lbl = Math.abs(v)>=1000? v.toFixed(0) : v.toFixed(3);
+    c.textAlign='right'; c.textBaseline='middle'; c.fillText(lbl, M.l-8, y);
+  }
+  for (let i=0;i<=4;i++){
+    const v = x0 + (x1-x0)*i/4, x = X(v);
+    c.textAlign='center'; c.textBaseline='top'; c.fillText(String(Math.round(v)), x, M.t+H+8);
+  }
+  c.save(); c.translate(14, M.t+H/2); c.rotate(-Math.PI/2);
+  c.textAlign='center'; c.textBaseline='middle'; c.fillText(yLabel,0,0); c.restore();
+  series.forEach(s=>{
+    c.strokeStyle = s.color; c.lineWidth = 2; c.beginPath();
+    s.y.forEach((v,i)=>{ const x=X(s.x[i]), y=Y(v); i?c.lineTo(x,y):c.moveTo(x,y); });
+    c.stroke();
+    if (s.dots!==false) s.y.forEach((v,i)=>{
+      c.fillStyle = s.color; c.beginPath();
+      c.arc(X(s.x[i]), Y(v), 2.6, 0, Math.PI*2); c.fill();
+    });
+  });
+}
+
+(function(){
+  const d = JSON.parse(document.getElementById('run-data').textContent);
+  const el = id => document.getElementById(id);
+  try {
+    if (el('lossChart')) drawLine(el('lossChart'), d.loss, 'loss');
+    if (el('timeChart')) drawLine(el('timeChart'), d.time, 's / step');
+    if (el('splitChart')) drawLine(el('splitChart'), d.split, 's');
+  } catch (e) { console.error(e); }
+})();
+</script></body></html>

@@ -1,0 +1,200 @@
+{
+  "combo": "qwen35",
+  "module": "cpu_lab.qwen35",
+  "config": "qwen35_0_8b_smoke_untied",
+  "python": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe",
+  "command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe cpu_lab\\run_cpu_train.py --combo qwen35 -n 8 --module cpu_lab.qwen35 --config qwen35_0_8b_smoke_untied --hf-cache D:/02_source/torchtitan/cpu_lab/hf --no-warmup --log-dir cpu_lab/logs_qwen35/untied --show-logs",
+  "child_command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe -u -m cpu_lab_child --module cpu_lab.qwen35 --config qwen35_0_8b_smoke_untied --parallelism.data_parallel_replicate_degree 1 --parallelism.data_parallel_shard_degree 8 --parallelism.context_parallel_degree 1 --parallelism.tensor_parallel_degree 1 --parallelism.pipeline_parallel_degree 1 --dump-folder D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "started": "2026-10-12T19:49:26",
+  "wall_time_s": 98.6,
+  "world_size": 8,
+  "ranks_spawned": 8,
+  "dims": {
+    "dp_replicate": 1,
+    "dp_shard": 8,
+    "cp": 1,
+    "tp": 1,
+    "pp": 1
+  },
+  "overrides": {
+    "seq_len": null,
+    "steps": null,
+    "local_batch_size": null,
+    "dataset_path": null,
+    "sequence_parallel": null
+  },
+  "collectives": false,
+  "probe": false,
+  "results": {
+    "rows": [
+      {
+        "rank": 0,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied\\rank_0.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 1,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied\\rank_1.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 2,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied\\rank_2.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 3,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied\\rank_3.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 4,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied\\rank_4.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 5,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied\\rank_5.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 6,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied\\rank_6.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 7,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied\\rank_7.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      }
+    ]
+  },
+  "last_step": null,
+  "dump_dir": "D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "log_dir": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\untied",
+  "artifacts": [
+    {
+      "rel": "structured_logs/training.global_rank_0.20261012-194809-05UH8I.jsonl",
+      "bytes": 781429
+    },
+    {
+      "rel": "structured_logs/training.global_rank_1.20261012-194809-AOVML0.jsonl",
+      "bytes": 781518
+    },
+    {
+      "rel": "structured_logs/training.global_rank_2.20261012-194819-3VUZC3.jsonl",
+      "bytes": 781484
+    },
+    {
+      "rel": "structured_logs/training.global_rank_3.20261012-194819-VS4KPD.jsonl",
+      "bytes": 781448
+    },
+    {
+      "rel": "structured_logs/training.global_rank_4.20261012-194823-KH66QK.jsonl",
+      "bytes": 781531
+    },
+    {
+      "rel": "structured_logs/training.global_rank_5.20261012-194833-I7HK8R.jsonl",
+      "bytes": 781410
+    },
+    {
+      "rel": "structured_logs/training.global_rank_6.20261012-194833-VE4XHN.jsonl",
+      "bytes": 780193
+    },
+    {
+      "rel": "structured_logs/training.global_rank_7.20261012-194840-O9F0A1.jsonl",
+      "bytes": 781391
+    }
+  ],
+  "memory": {
+    "per_rank": {
+      "0": {
+        "peak_rss": 706633728,
+        "peak_commit": 1472327680,
+        "samples": 50
+      },
+      "1": {
+        "peak_rss": 718757888,
+        "peak_commit": 1471094784,
+        "samples": 50
+      },
+      "2": {
+        "peak_rss": 634478592,
+        "peak_commit": 1606066176,
+        "samples": 50
+      },
+      "3": {
+        "peak_rss": 701849600,
+        "peak_commit": 2298863616,
+        "samples": 50
+      },
+      "4": {
+        "peak_rss": 755531776,
+        "peak_commit": 1472753664,
+        "samples": 50
+      },
+      "5": {
+        "peak_rss": 954949632,
+        "peak_commit": 2291204096,
+        "samples": 50
+      },
+      "6": {
+        "peak_rss": 855130112,
+        "peak_commit": 1929728000,
+        "samples": 50
+      },
+      "7": {
+        "peak_rss": 835850240,
+        "peak_commit": 2017210368,
+        "samples": 50
+      }
+    },
+    "system_after": {
+      "total_phys": 16885276672,
+      "avail_phys": 4751384576,
+      "commit_limit": 47086186496,
+      "commit_used": 34317160448
+    },
+    "source": "windows"
+  }
+}

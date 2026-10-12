@@ -1,0 +1,47 @@
+==============================================================================
+RUN SUMMARY
+==============================================================================
+  combo            qwen35
+  module/config    cpu_lab.qwen35 / qwen35_0_8b_smoke_bf16
+  parallelism      dp_replicate=1 dp_shard=8 cp=1 tp=1 pp=1
+  world_size       8
+  wall time        408.4 s
+  command          D:\02_source\torchtitan\.venv\Scripts\python.exe cpu_lab\run_cpu_train.py --combo qwen35 -n 8 --module cpu_lab.qwen35 --config qwen35_0_8b_smoke_bf16 --hf-cache D:/02_source/torchtitan/cpu_lab/hf --no-warmup --log-dir cpu_lab/logs_qwen35/bf16_8r --show-logs
+
+  per-rank results (real loss only on last-pipeline-stage ranks)
+  rank  steps  last_step  last_loss      last_grad_norm   note
+  0     0      None       n/a           n/a              sentinel, not a loss
+  1     0      None       n/a           n/a              sentinel, not a loss
+  2     0      None       n/a           n/a              sentinel, not a loss
+  3     0      None       n/a           n/a              sentinel, not a loss
+  4     0      None       n/a           n/a              sentinel, not a loss
+  5     0      None       n/a           n/a              sentinel, not a loss
+  6     0      None       n/a           n/a              sentinel, not a loss
+  7     0      None       n/a           n/a              sentinel, not a loss
+
+  peak memory per rank (sampled while the ranks ran)
+  rank  peak RSS      peak commit
+  0         0.71 GiB     1.57 GiB
+  1         0.64 GiB     2.06 GiB
+  2         0.60 GiB     1.37 GiB
+  3         0.68 GiB     1.25 GiB
+  4         0.71 GiB     1.25 GiB
+  5         0.78 GiB     2.06 GiB
+  6         0.74 GiB     2.06 GiB
+  7         0.75 GiB     2.07 GiB
+  sum       5.62 GiB    13.69 GiB   <- what the whole run needs, over 8 processes
+  system commit after run  30.81 / 45.41 GiB   (headroom 14.61 GiB)
+
+
+  artifacts
+    logs                   D:\02_source\torchtitan\cpu_lab\logs_qwen35\bf16_8r
+    dump folder            D:\02_source\torchtitan\cpu_lab\outputs\qwen35
+           781,505 B  structured_logs\training.global_rank_0.20261012-195200-RFM4J7.jsonl
+           784,242 B  structured_logs\training.global_rank_1.20261012-195200-ZW8JP7.jsonl
+           781,539 B  structured_logs\training.global_rank_2.20261012-195209-UTINTX.jsonl
+           781,449 B  structured_logs\training.global_rank_3.20261012-195212-NTG2BQ.jsonl
+           781,537 B  structured_logs\training.global_rank_4.20261012-195216-UTBHWC.jsonl
+           784,255 B  structured_logs\training.global_rank_5.20261012-195227-KLN27F.jsonl
+           784,263 B  structured_logs\training.global_rank_6.20261012-195227-YXX012.jsonl
+           784,287 B  structured_logs\training.global_rank_7.20261012-195238-WE4HJ4.jsonl
+==============================================================================

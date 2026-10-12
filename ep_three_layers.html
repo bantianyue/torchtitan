@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EP（专家并行）实现详解 —— 三层视角</title>
+<style>
+  :root {
+    --user:   #1f6feb; --titan: #2da44e; --torch: #bf3989;
+    --ink: #1f2328; --muted: #59636e; --bg: #ffffff; --panel: #f6f8fa;
+    --border: #d1d9e0; --code-bg: #0d1117; --code-ink: #e6edf3;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif; color: var(--ink); background: var(--bg); line-height: 1.65; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.hero { border-bottom: 3px solid var(--ink); padding-bottom: 18px; margin-bottom: 26px; }
+  header.hero h1 { font-size: 26px; margin: 0 0 8px; line-height: 1.35; }
+  header.hero p.sub { color: var(--muted); margin: 0; font-size: 14.5px; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .legend .chip { padding: 5px 12px; border-radius: 20px; color: #fff; font-size: 13px; font-weight: 600; }
+  .chip.user { background: var(--user); } .chip.titan { background: var(--titan); } .chip.torch { background: var(--torch); }
+  nav.toc { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 20px; margin-bottom: 30px; font-size: 14px; }
+  nav.toc ol { margin: 6px 0 0; padding-left: 22px; } nav.toc a { color: var(--user); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.sites { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 26px; font-size: 13px; }
+  nav.sites a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 20px; color: var(--ink); text-decoration: none; background: var(--panel); }
+  nav.sites a.cur { background: var(--ink); color: #fff; }
+  h2.section { font-size: 21px; margin: 44px 0 12px; padding: 10px 14px; background: var(--panel); border-left: 5px solid var(--ink); border-radius: 6px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  p { margin: 8px 0; } ul, ol { margin: 8px 0; padding-left: 24px; }
+  code { font-family: "Cascadia Code",Consolas,"JetBrains Mono",monospace; font-size: 13px; background: #eef1f4; padding: 1px 6px; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 12.7px; line-height: 1.55; font-family: "Cascadia Code",Consolas,monospace; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  .cmt { color: #8b949e; } .kw { color: #ff7b72; } .fn { color: #d2a8ff; } .st { color: #a5d6ff; } .nu { color: #79c0ff; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.4px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; } tr:nth-child(even) td { background: #fafbfc; }
+  .callout { border: 1px solid var(--border); border-left: 4px solid var(--user); background: #f0f6ff; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .callout.green { border-left-color: var(--titan); background: #f0faf1; } .callout.purple { border-left-color: var(--torch); background: #faf0f6; }
+  .callout b.tag { display: inline-block; font-size: 12px; margin-right: 6px; }
+  .flow { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 13px; }
+  .flow .step { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  .flow .step .n { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+  .flow .step .who { font-size: 11.5px; font-weight: 700; margin-right: 8px; padding: 1px 8px; border-radius: 10px; color: #fff; flex: 0 0 auto; }
+  .who.user { background: var(--user); } .who.titan { background: var(--titan); } .who.torch { background: var(--torch); }
+  .chip-s { background:#2f81f7; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .chip-r { background:#d4a72c; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .chip-p { background:#bf3989; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .foot { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 760px) { .layers { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>EP（专家并行）如何实现 —— 用户 / torchtitan / PyTorch 三层详解</h1>
+  <p class="sub">以本仓库 <code>torchtitan/models/common/moe_sharding.py</code>、<code>token_dispatcher.py</code>、<code>moe.py</code> 为准。</p>
+  <div class="legend">
+    <span class="chip user">第 1 层 · 用户 —— 声明专家权重布局 + token 分发</span>
+    <span class="chip titan">第 2 层 · torchtitan —— 建稀疏 mesh / 分专家权重 / 驱动 token 分发</span>
+    <span class="chip torch">第 3 层 · PyTorch —— all-to-all + 专家权重 EP 轴切分</span>
+  </div>
+</header>
+
+<nav class="sites">
+  <a href="fsdp_three_layers.html">FSDP 数据并行</a>
+  <a href="cp_three_layers.html">CP 上下文并行</a>
+  <a href="pp_three_layers.html">PP 流水并行</a>
+  <a class="cur">EP 专家并行</a>
+</nav>
+
+<nav class="toc">
+  <b>本页目录</b>
+  <ol>
+    <li><a href="#scene">场景设定与 EP 的本质</a></li>
+    <li><a href="#user">第 1 层 · 用户层：专家权重布局声明</a></li>
+    <li><a href="#titan">第 2 层 · Titan 层：稀疏 mesh + token 分发</a></li>
+    <li><a href="#torch">第 3 层 · Torch 层：all-to-all + 专家权重切分</a></li>
+    <li><a href="#flow">全链路流转 + EP vs TP</a></li>
+  </ol>
+</nav>
+
+<h2 class="section" id="scene">0. 场景设定与 EP 的本质</h2>
+<table>
+  <tr><th>维度</th><th>取值</th><th>说明</th></tr>
+  <tr><td>world_size</td><td><code>8</code></td><td>EP=4 × TP=2（MoE 组内）</td></tr>
+  <tr><td>EP</td><td><code>4</code></td><td>160 个专家切成 4 份，每卡 40 个专家</td></tr>
+  <tr><td>num_experts</td><td><code>160</code></td><td>DeepSeek-V3 路由专家数</td></tr>
+  <tr><td>专家权重形状</td><td><code>w1_EFD: (160, 1536, 5120)</code></td><td>E=专家，F=中间维，D=隐藏维</td></tr>
+  <tr><td>top_k</td><td><code>6</code></td><td>每个 token 路由到 6 个专家</td></tr>
+</table>
+<div class="callout">
+  <b class="tag">🎯 EP 要解决什么</b>
+  MoE 专家很多（160 个）放不下。EP 把<b>"专家"本身</b>分到不同卡——每卡只存一部分专家的权重。
+  但每个 token 可能被路由到"别人卡上的专家"，所以必须用 <b>all-to-all</b> 把 token 送到持有对应专家的卡上，
+  算完再送回来（combine）。这是唯一一种"<b>数据跟着计算走</b>"的并行。
+</div>
+
+<h2 class="section" id="user">1. 第 1 层 · 用户层：专家权重布局声明</h2>
+<p>EP 的用户层声明集中在 <code>models/deepseek_v3/sharding.py</code>（专家权重）和
+<code>models/common/moe_sharding.py</code>（各子模块布局）：</p>
+<pre><code><span class="cmt"># ① deepseek_v3/sharding.py:35-39 —— 路由专家权重在 EP 下的"每参数布局"</span>
+_GROUPED_EXPERTS_PARAM_LAYOUT = {
+    <span class="st">"w1_EFD"</span>: spmd.S(1),   <span class="cmt"># 输入投影 (E, F, D)</span>
+    <span class="st">"w2_EDF"</span>: spmd.S(2),   <span class="cmt"># 输出投影 (E, D, F)</span>
+    <span class="st">"w3_EFD"</span>: spmd.S(1),
+}
+
+<span class="cmt"># ② deepseek_v3/sharding.py:145-150</span>
+<span class="fn">set_moe_sharding_config</span>(
+    layer_cfg.moe, enable_ep=enable_ep, enable_sp=enable_sp,
+    expert_param_layout=_GROUPED_EXPERTS_PARAM_LAYOUT,
+)
+
+<span class="cmt"># ③ moe_sharding.py:41-47 —— EP 启用时专家权重的真实布局（稀疏族）</span>
+<span class="kw">def</span> <span class="fn">expert_param_placement_sparse</span>() -> SpmdLayout:
+    <span class="kw">return</span> SpmdLayout({
+        DP_REPLICATE: spmd.R,   <span class="cmt"># FSDP 存储轴：复制</span>
+        EFSDP:        spmd.R,   <span class="cmt"># FSDP 存储轴：复制</span>
+        EP:           spmd.S(0), <span class="cmt"># ← 关键：沿 EP 轴切"专家维"(dim0)</span>
+    })
+<span class="cmt">#   真实值：w1_EFD (160,1536,5120) 沿 EP=4 切成 (40,1536,5120) 每卡</span>
+
+<span class="cmt"># ④ 路由计数 buffer：tokens_per_expert_E 是 Partial（每卡数自己那段的 token）</span>
+<span class="cmt">#   moe_sharding.py:71-86 _tokens_per_expert_placement：DP/CP/TP 都是 Partial</span></code></pre>
+<p><strong>用户层 = "专家权重切哪个轴 + 路由计数 Partial + token 输入布局"</strong>——因为 EP 需要把 token
+送到别的卡，所以激活布局（<code>dense_sequence_parallel_placement</code>）和权重布局（<code>expert_param_placement_sparse</code>）
+都要写。</p>
+
+<h2 class="section" id="titan">2. 第 2 层 · Titan 层：稀疏 mesh + token 分发</h2>
+<h3>2.1 建稀疏 FSDP mesh（full_dtensor.py:109-125）</h3>
+<pre><code><span class="kw">def</span> <span class="fn">resolve_sparse_fsdp_mesh</span>(parallel_dims) -> (DeviceMesh | None, DataParallelMeshDims):
+    <span class="kw">if</span> <span class="kw">not</span> parallel_dims.ep_enabled: <span class="kw">return</span> None, None
+    sparse_mesh = parallel_dims.get_activated_mesh([<span class="st">"dp_replicate"</span>, <span class="st">"efsdp"</span>, <span class="st">"ep"</span>])
+    <span class="cmt"># 真实值：稀疏 mesh = (dp_replicate, efsdp, ep)，专家权重在这个稀疏 mesh 上 FSDP</span>
+    <span class="kw">return</span> sparse_mesh, DataParallelMeshDims(shard=<span class="st">"efsdp"</span>, replicate=<span class="st">"dp_replicate"</span>)</code></pre>
+
+<h3>2.2 专家权重单独分 mesh（fsdp.py:216-302）</h3>
+<pre><code><span class="kw">if</span> getattr(transformer_block, <span class="st">"moe_enabled"</span>, <span class="kw">False</span>):
+    experts = transformer_block.moe.routed_experts.inner_experts
+    <span class="kw">if</span> ep_degree > <span class="nu">1</span>:   <span class="cmt"># EP=4</span>
+        <span class="kw">def</span> <span class="fn">_shard_placement_fn</span>(param, ...):
+            <span class="kw">if</span> param <span class="kw">in</span> expert_params:
+                <span class="kw">return</span> ShardPlacementResult(placement=<span class="kw">Shard</span>(<span class="nu">0</span>), mesh_info=<span class="kw">edp_mesh_info</span>)  <span class="cmt"># 专家权重 → 稀疏 mesh</span>
+            <span class="kw">else</span>:
+                <span class="kw">return</span> ShardPlacementResult(placement=<span class="kw">Shard</span>(<span class="nu">0</span>), mesh_info=<span class="kw">dp_mesh_info</span>)    <span class="cmt"># 其它参数 → 稠密 mesh</span>
+        <span class="fn">fully_shard</span>(transformer_block, ..., shard_placement_fn=_shard_placement_fn)
+    <span class="cmt"># 真实值：专家权重沿稀疏 mesh 的 efsdp/ep 切，其它权重沿普通 dp_mesh 切</span></code></pre>
+
+<h3>2.3 wiring EP mesh 到 token dispatcher（moe.py:181-190）</h3>
+<pre><code><span class="kw">def</span> <span class="fn">parallelize</span>(self, parallel_dims) -> None:
+    <span class="kw">super</span>().parallelize(parallel_dims)
+    self.token_dispatcher.wire_meshes(
+        ep_mesh=parallel_dims.get_optional_mesh(<span class="st">"ep"</span>),   <span class="cmt"># 把 EP mesh 注入 dispatcher</span>
+    )
+<span class="cmt"># 真实值：RoutedExperts 在 Module.parallelize 后，把 EP mesh 交给 token_dispatcher 供 all-to-all 用</span></code></pre>
+
+<h3>2.4 MoE 边界（moe_sharding.py:299-341）</h3>
+<pre><code><span class="cmt"># set_moe_sharding_config 给 MoE 及子模块填布局：</span>
+moe_cfg.sharding_config = _moe_sharding_config(enable_ep, enable_sp)      <span class="cmt"># MoE 输入/输出重分布</span>
+moe_cfg.router.gate.sharding_config = _router_sharding_config(...)        <span class="cmt"># router：Replicate 权重</span>
+moe_cfg.routed_experts.sharding_config = routed_experts_config            <span class="cmt"># 激活 in/out + local_map</span>
+moe_cfg.routed_experts.inner_experts.sharding_config = inner_experts_config  <span class="cmt"># 专家权重 state</span></code></pre>
+
+<h2 class="section" id="torch">3. 第 3 层 · Torch 层：all-to-all + 专家权重切分</h2>
+<p>EP 的执行核心：<strong>token 分发（all-to-all）+ 专家权重 EP 轴切分</strong>。</p>
+<pre><code><span class="cmt"># ① token 分发 —— AllToAllTokenDispatcher（token_dispatcher.py:203-248）</span>
+<span class="kw">def</span> <span class="fn">_token_count_exchange</span>(self, num_local_tokens_per_expert_E, pg, ep_size):
+    <span class="kw">return</span> all_to_all_single(
+        num_local_tokens_per_expert_E.view(ep_size, -1), None, None, group=self.ep_mesh)
+<span class="cmt">#    真实值：先交换每卡每专家的 token 数（决定切分），再做数据 all-to-all</span>
+
+<span class="cmt"># ② 专家权重本身 —— inner_experts（GroupedExperts）的权重是 DTensor，沿 EP 轴 Shard(0)</span>
+<span class="cmt">#    w1_EFD (160,1536,5120) @ EP=4 → 每卡局部 (40,1536,5120)，placements = (Shard(0)@EP)</span>
+
+<span class="cmt"># ③ combine —— 送回来的 token 乘权重分数再 scatter_add 回原位（moe.py:172-176）</span>
+out_TD = self.token_dispatcher.combine(routed_output_RD, metadata, x_TD)  <span class="cmt"># 反向 all-to-all</span></code></pre>
+<div class="callout purple">
+  <b class="tag">⚙️ EP 的通信是 all-to-all（唯一）</b>
+  all-to-all vs all-gather / reduce-scatter 的本质区别：后两者是"广播/求和"（每卡拿相同结果），
+  而 <b>all-to-all 是"交换"</b>（每卡把自己的 token 送给对应专家所在的卡，同时收到别人发来的 token）。
+  这是 EP 独有的、数据跟着计算走的模式。<br>
+  另外 EP 的专家权重还叠加 FSDP（稀疏 mesh 上的 efsdp 轴），所以专家权重最终是
+  <b>EP 切专家维 × FSDP 切参数维</b>的"混合切分"。
+</div>
+
+<h2 class="section" id="flow">4. 全链路流转 + EP vs TP</h2>
+<div class="flow">
+  <div class="step"><div class="n">1</div><div><span class="who user">用户</span><b>声明</b>：专家权重 <code>expert_param_placement_sparse</code>（EP 切专家维）+ 路由计数 Partial + token 输入布局。</div></div>
+  <div class="step"><div class="n">2</div><div><span class="who titan">Titan</span><b>建稀疏 mesh</b>：<code>resolve_sparse_fsdp_mesh</code> 得到 <code>(dp_replicate, efsdp, ep)</code> mesh。</div></div>
+  <div class="step"><div class="n">3</div><div><span class="who titan">Titan</span><b>分专家权重</b>：<code>_shard_placement_fn</code> 把专家权重放到稀疏 mesh（EFSDP+EP），其它参数放稠密 mesh。</div></div>
+  <div class="step"><div class="n">4</div><div><span class="who titan">Titan</span><b>wire EP mesh</b>：<code>RoutedExperts.parallelize</code> 注入 EP mesh 到 token dispatcher。</div></div>
+  <div class="step"><div class="n">5</div><div><span class="who torch">Torch</span><b>all-to-all 分发</b>：把 token 送到持有目标专家的卡上；专家权重沿 EP 轴 <code>Shard(0)</code> 计算。</div></div>
+  <div class="step"><div class="n">6</div><div><span class="who torch">Torch</span><b>all-to-all 收回 + combine</b>：结果送回原卡，乘以路由分数并 <code>scatter_add</code>。</div></div>
+</div>
+
+<table>
+  <tr><th>对比</th><th>EP（专家并行）</th><th>TP（张量并行）</th></tr>
+  <tr><td>切的对象</td><td><b>专家</b>（token 路由到的专家分卡）</td><td>单个权重维度（colwise/rowwise）</td></tr>
+  <tr><td>通信类型</td><td><b>all-to-all</b>（数据跟着计算走）</td><td>all-gather / reduce-scatter</td></tr>
+  <tr><td>数据是否跨卡</td><td>是（token 来回传送）</td><td>否（每卡算自己的分片）</td></tr>
+  <tr><td>布局来源</td><td><code>expert_param_placement_sparse</code>（EP 轴）</td><td><code>colwise/rowwise_config</code>（TP 轴）</td></tr>
+  <tr><td>是否叠加 FSDP</td><td><b>是</b>（稀疏 mesh efsdp 轴，混合切分）</td><td>有（稠密 mesh）</td></tr>
+</table>
+
+<div class="callout">
+  <b class="tag">💡 一句话串起三层</b>
+  <b>用户</b>声明专家权重布局 + 路由；<b>Titan</b>建稀疏 mesh、分专家权重（di FF），并把 EP mesh 注入 token dispatcher；
+  <b>Torch</b> 的 <code>all_to_all_single</code> 把 token 送到专家所在的卡算完再送回。EP 是唯一用 all-to-all 的并行。
+</div>
+
+<div class="foot">
+  本页基于 <code>torchtitan/models/common/moe_sharding.py</code>、<code>token_dispatcher.py</code>、<code>moe.py</code>、
+  <code>torchtitan/distributed/full_dtensor.py:109-125</code>、<code>fsdp.py:216-302</code>。
+  数值示例 EP=4、num_experts=160、top_k=6。配套页面：<a href="fsdp_three_layers.html">FSDP</a> · <a href="cp_three_layers.html">CP</a> · <a href="pp_three_layers.html">PP</a>
+</div>
+
+</div>
+</body>
+</html>

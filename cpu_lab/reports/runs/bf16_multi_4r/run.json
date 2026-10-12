@@ -1,0 +1,130 @@
+{
+  "combo": "qwen35",
+  "module": "cpu_lab.qwen35",
+  "config": "qwen35_0_8b_bf16_multi",
+  "python": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe",
+  "command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe cpu_lab\\run_cpu_train.py --combo qwen35 -n 4 --threads 2 --module cpu_lab.qwen35 --config qwen35_0_8b_bf16_multi --hf-cache D:/02_source/torchtitan/cpu_lab/hf --no-warmup --log-dir cpu_lab/logs_qwen35/bf16_multi_4r --show-logs",
+  "child_command": "D:\\02_source\\torchtitan\\.venv\\Scripts\\python.exe -u -m cpu_lab_child --module cpu_lab.qwen35 --config qwen35_0_8b_bf16_multi --parallelism.data_parallel_replicate_degree 1 --parallelism.data_parallel_shard_degree 4 --parallelism.context_parallel_degree 1 --parallelism.tensor_parallel_degree 1 --parallelism.pipeline_parallel_degree 1 --dump-folder D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "started": "2026-10-12T21:15:20",
+  "wall_time_s": 246.7,
+  "world_size": 4,
+  "ranks_spawned": 4,
+  "dims": {
+    "dp_replicate": 1,
+    "dp_shard": 4,
+    "cp": 1,
+    "tp": 1,
+    "pp": 1
+  },
+  "overrides": {
+    "seq_len": null,
+    "steps": null,
+    "local_batch_size": null,
+    "dataset_path": null,
+    "sequence_parallel": null
+  },
+  "collectives": false,
+  "probe": false,
+  "results": {
+    "rows": [
+      {
+        "rank": 0,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\bf16_multi_4r\\rank_0.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 1,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\bf16_multi_4r\\rank_1.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 2,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\bf16_multi_4r\\rank_2.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      },
+      {
+        "rank": 3,
+        "log": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\bf16_multi_4r\\rank_3.log",
+        "n_steps": 0,
+        "last_step": null,
+        "last_loss": null,
+        "last_grad_norm": null,
+        "has_real_loss": false,
+        "series": []
+      }
+    ]
+  },
+  "last_step": null,
+  "dump_dir": "D:\\02_source\\torchtitan\\cpu_lab\\outputs\\qwen35",
+  "log_dir": "D:\\02_source\\torchtitan\\cpu_lab\\logs_qwen35\\bf16_multi_4r",
+  "artifacts": [
+    {
+      "rel": "structured_logs/training.global_rank_0.20261012-211121-Q97CGF.jsonl",
+      "bytes": 782116
+    },
+    {
+      "rel": "structured_logs/training.global_rank_1.20261012-211127-PRYL2X.jsonl",
+      "bytes": 782128
+    },
+    {
+      "rel": "structured_logs/training.global_rank_2.20261012-211131-K8WA0S.jsonl",
+      "bytes": 782145
+    },
+    {
+      "rel": "structured_logs/training.global_rank_3.20261012-211136-FW7R1N.jsonl",
+      "bytes": 782150
+    }
+  ],
+  "memory": {
+    "per_rank": {
+      "0": {
+        "peak_rss": 1572208640,
+        "peak_commit": 5288353792,
+        "samples": 245
+      },
+      "1": {
+        "peak_rss": 1589407744,
+        "peak_commit": 5279502336,
+        "samples": 245
+      },
+      "2": {
+        "peak_rss": 1655365632,
+        "peak_commit": 4425261056,
+        "samples": 245
+      },
+      "3": {
+        "peak_rss": 1881018368,
+        "peak_commit": 5275455488,
+        "samples": 245
+      }
+    },
+    "system_low": {
+      "min_avail_phys": 15298560,
+      "min_commit_free": 508325888,
+      "max_commit_used": 48491679744,
+      "commit_limit": 49000005632
+    },
+    "system_after": {
+      "total_phys": 16885276672,
+      "avail_phys": 7464853504,
+      "commit_limit": 49000005632,
+      "commit_used": 28471500800
+    },
+    "source": "windows"
+  }
+}

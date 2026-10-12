@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CP（上下文并行）实现详解 —— 三层视角</title>
+<style>
+  :root {
+    --user:   #1f6feb; --titan: #2da44e; --torch: #bf3989;
+    --ink: #1f2328; --muted: #59636e; --bg: #ffffff; --panel: #f6f8fa;
+    --border: #d1d9e0; --code-bg: #0d1117; --code-ink: #e6edf3;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif; color: var(--ink); background: var(--bg); line-height: 1.65; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 32px 24px 80px; }
+  header.hero { border-bottom: 3px solid var(--ink); padding-bottom: 18px; margin-bottom: 26px; }
+  header.hero h1 { font-size: 26px; margin: 0 0 8px; line-height: 1.35; }
+  header.hero p.sub { color: var(--muted); margin: 0; font-size: 14.5px; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .legend .chip { padding: 5px 12px; border-radius: 20px; color: #fff; font-size: 13px; font-weight: 600; }
+  .chip.user { background: var(--user); } .chip.titan { background: var(--titan); } .chip.torch { background: var(--torch); }
+  nav.toc { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 20px; margin-bottom: 30px; font-size: 14px; }
+  nav.toc ol { margin: 6px 0 0; padding-left: 22px; } nav.toc a { color: var(--user); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.sites { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 26px; font-size: 13px; }
+  nav.sites a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 20px; color: var(--ink); text-decoration: none; background: var(--panel); }
+  nav.sites a.cur { background: var(--ink); color: #fff; }
+  h2.section { font-size: 21px; margin: 44px 0 12px; padding: 10px 14px; background: var(--panel); border-left: 5px solid var(--ink); border-radius: 6px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  p { margin: 8px 0; } ul, ol { margin: 8px 0; padding-left: 24px; }
+  code { font-family: "Cascadia Code",Consolas,"JetBrains Mono",monospace; font-size: 13px; background: #eef1f4; padding: 1px 6px; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 12.7px; line-height: 1.55; font-family: "Cascadia Code",Consolas,monospace; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  .cmt { color: #8b949e; } .kw { color: #ff7b72; } .fn { color: #d2a8ff; } .st { color: #a5d6ff; } .nu { color: #79c0ff; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.4px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; } tr:nth-child(even) td { background: #fafbfc; }
+  .callout { border: 1px solid var(--border); border-left: 4px solid var(--user); background: #f0f6ff; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .callout.green { border-left-color: var(--titan); background: #f0faf1; } .callout.purple { border-left-color: var(--torch); background: #faf0f6; }
+  .callout b.tag { display: inline-block; font-size: 12px; margin-right: 6px; }
+  .layers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0; }
+  .layer { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel); font-size: 13.4px; }
+  .layer .lhead { font-weight: 700; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 2px solid; }
+  .layer.user .lhead { color: var(--user); border-color: var(--user); } .layer.titan .lhead { color: var(--titan); border-color: var(--titan); } .layer.torch .lhead { color: var(--torch); border-color: var(--torch); }
+  .layer ul { padding-left: 18px; margin: 6px 0 0; }
+  .flow { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 13px; }
+  .flow .step { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  .flow .step .n { flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--ink); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+  .flow .step .who { font-size: 11.5px; font-weight: 700; margin-right: 8px; padding: 1px 8px; border-radius: 10px; color: #fff; flex: 0 0 auto; }
+  .who.user { background: var(--user); } .who.titan { background: var(--titan); } .who.torch { background: var(--torch); }
+  .chip-s { background:#2f81f7; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .chip-r { background:#d4a72c; color:#fff; border-radius:3px; padding:0 5px; font-size:11px; font-weight:700; }
+  .tensorbox { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+  .tensor-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tensor { display: flex; border: 1.5px solid var(--ink); border-radius: 4px; overflow: hidden; font-family: Consolas,monospace; font-size: 11px; }
+  .tensor .cell { padding: 6px 9px; border-right: 1px solid #c9d1d9; }
+  .tensor .cell:last-child { border-right: none; }
+  .tensor .cell.rank0 { background: #ddf4ff; } .tensor .cell.rank1 { background: #ffd7d7; }
+  .foot { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 760px) { .layers { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>CP（上下文并行）如何实现 —— 用户 / torchtitan / PyTorch 三层详解</h1>
+  <p class="sub">以本仓库 <code>torchtitan/distributed/context_parallel/</code> 与 <code>models/common/decoder_sharding.py</code> 为准。</p>
+  <div class="legend">
+    <span class="chip user">第 1 层 · 用户 —— 声明 CP 序列切分的激活布局</span>
+    <span class="chip titan">第 2 层 · torchtitan —— 切输入 + 包装注意力 + 做负载均衡</span>
+    <span class="chip torch">第 3 层 · PyTorch —— flex_cp_allgather / DTensor 序列切分</span>
+  </div>
+</header>
+
+<nav class="sites">
+  <a href="fsdp_three_layers.html">FSDP 数据并行</a>
+  <a class="cur">CP 上下文并行</a>
+  <a href="pp_three_layers.html">PP 流水并行</a>
+  <a href="ep_three_layers.html">EP 专家并行</a>
+</nav>
+
+<nav class="toc">
+  <b>本页目录</b>
+  <ol>
+    <li><a href="#scene">场景设定与 CP 的本质</a></li>
+    <li><a href="#user">第 1 层 · 用户层：激活布局 + 内部注意力的 CP 声明</a></li>
+    <li><a href="#titan">第 2 层 · Titan 层：切输入 / 包 forward / 负载均衡</a></li>
+    <li><a href="#torch">第 3 层 · Torch 层：序列切分与 k/v all-gather</a></li>
+    <li><a href="#flow">全链路流转 + CP 与 TP 的关键区别</a></li>
+  </ol>
+</nav>
+
+<h2 class="section" id="scene">0. 场景设定与 CP 的本质</h2>
+<table>
+  <tr><th>维度</th><th>取值</th><th>说明</th></tr>
+  <tr><td>world_size</td><td><code>8</code></td><td>TP=4 × CP=2</td></tr>
+  <tr><td>CP</td><td><code>2</code></td><td>序列切成 2 段，2 卡各算一段</td></tr>
+  <tr><td>序列长度 L</td><td><code>8192</code></td><td>每卡局部 <code>4096</code></td></tr>
+  <tr><td>attention.backend</td><td><code>FlexAttention</code></td><td>CP 用 gather-KV 方案（见下）</td></tr>
+</table>
+<div class="callout">
+  <b class="tag">🎯 CP 要解决什么</b>
+  序列太长，单卡放不下 KV cache。CP 把<b>序列维</b>切给多卡，每卡只算自己那段序列的 attention。
+  但 attention 的 <code>q·kᵀ</code> 要看到<b>完整 key</b>——所以 CP 的通信点集中在：<b>切序列（输入）</b> +
+  <b>gather 完整 k/v（注意力内部）</b>。
+</div>
+
+<h2 class="section" id="user">1. 第 1 层 · 用户层：声明 CP 的激活布局</h2>
+<p>CP 的声明不做在"模型权重"上，而是做在<b>激活布局</b>和<b>内部注意力的 k/v</b>上（models/common/decoder_sharding.py）：</p>
+<pre><code><span class="cmt"># ① 通用激活布局：CP 默认把序列维 Shard(1)（decoder_sharding.py:34-50）</span>
+<span class="kw">def</span> <span class="fn">dense_activation_placement</span>(*, tp, cp=<span class="kw">spmd.S(1)</span>):   <span class="cmt"># ← 关键默认值</span>
+    <span class="kw">return</span> SpmdLayout({DP: spmd.S(0), CP: cp, TP: tp})
+<span class="cmt">#   真实值：x_BLD 在 CP 轴上是 Shard(1)（序列维切分）</span>
+
+<span class="cmt"># ② 内部注意力：q 保持 CP 切分，k/v 却在 CP 上 all-gather（decoder_sharding.py:200-203）</span>
+q_placements      = dense_activation_placement(tp=spmd.S(2))                <span class="cmt"># q：CP 保持 S(1)</span>
+kv_src_placements = dense_activation_placement(tp=spmd.S(2))                <span class="cmt"># k/v 进来：CP:S(1)</span>
+kv_dst_placements = dense_activation_placement(tp=spmd.S(2), cp=<span class="kw">spmd.R</span>)  <span class="cmt"># k/v 进 kernel 前：CP gather 成 R</span>
+<span class="cmt">#   真实值：这里就是 "gather-KV" 的声明——q 分块算，k/v 聚合给 kernel 看完整 key</span>
+
+<span class="cmt"># ③ deepseek_v3/sharding.py:98-105 —— attention 模块入口 x 的 CP 声明</span>
+attention.sharding_config = ShardingConfig(
+    in_src_shardings={ <span class="st">"x"</span>: attn_x_layout },     <span class="cmt"># 进来：CP:S(1)（序列切分）</span>
+    in_dst_shardings={ <span class="st">"x"</span>: dense_activation_placement(tp=spmd.R) },  <span class="cmt"># TP gather，但 CP 仍是 S(1)！</span>
+)
+<span class="cmt">#   真实值：模块级 in_dst 故意不动 CP（CP 靠内部 local_map 处理，见 3.2）</span></code></pre>
+<p><strong>用户层 = 3 条布局声明</strong>：① 激活 CP 切片；② 内部注意力的 q/k/v 布局；③ 模块入口 x 布局。
+注意第 ②③ 步就是之前回答"为什么 TP 聚合而非 CP"的关键——CP 的聚合发生在 inner attention 的 <code>kv_dst</code> 里。</p>
+
+<h2 class="section" id="titan">2. 第 2 层 · Titan 层：切输入 / 包 forward / 负载均衡</h2>
+<h3>2.1 切分输入（trainer 每步调用 prepare_context_parallel_input）</h3>
+<pre><code><span class="cmt"># trainer.py:701-710 → context_parallel/api.py:114-163</span>
+inputs, labels, extra_kwargs = <span class="fn">prepare_context_parallel_input</span>(
+    inputs, labels, extra_kwargs,
+    self.parallel_dims.get_mesh(<span class="st">"cp"</span>),   <span class="cmt"># cp_mesh = size 2</span>
+    self.device, <span class="st">load_balancer_type</span>=<span class="st">"ptrr"</span>)
+<span class="cmt"># → cp_shard()：调用 torch.distributed.tensor.experimental._attention 的 _context_parallel_shard</span>
+<span class="cmt">#   把 inputs/labels/positions 沿序列维 shard 给 CP=2 卡</span>
+<span class="cmt">#   真实值：inputs (B, 8192) → (B, 4096) 每卡</span></code></pre>
+
+<h3>2.2 包装 inner attention（apply_cp_to_forward）</h3>
+<p>CP 的 forward 包装必须在 <code>Module.parallelize()</code> <b>之前</b>调用，
+才会被 <code>local_map</code> 包裹（context_parallel/api.py:35-78）：</p>
+<pre><code><span class="cmt"># models/deepseek_v3/parallelize.py:76-81</span>
+<span class="kw">if</span> parallel_dims.cp_enabled:
+    <span class="fn">apply_cp_to_forward</span>(
+        [block.attention.inner_attention <span class="kw">for</span> block <span class="kw">in</span> model.layers.values()],
+        parallel_dims.get_mesh(<span class="st">"cp"</span>),
+    )
+
+<span class="cmt"># api.py:57-78 —— FlexAttention 分支</span>
+<span class="kw">def</span> <span class="fn">_make_cp_forward</span>(orig_fn, mesh):
+    pg_name = dist._get_process_group_name(mesh.get_group())   <span class="cmt"># CP 进程组</span>
+    <span class="kw">def</span> <span class="fn">cp_forward</span>(q, k, v, **kwargs):
+        k = k.contiguous(); v = v.contiguous()
+        global_k, global_v = flex_cp_allgather(k, v, 1, pg_name)   <span class="cmt"># ← 关键：序列维 all-gather</span>
+        <span class="kw">return</span> orig_fn(q, global_k, global_v, **kwargs)
+    <span class="kw">return</span> cp_forward
+mod.forward = _make_cp_forward(original_forward, cp_mesh)</code></pre>
+
+<div class="callout green">
+  <b class="tag">🔀 顺带一提：负载均衡</b>
+  CP 会切序列，但因为 attention 的因果性，<b>每段序列的注意力负载不均</b>（前面的段要看的 key 少）。
+  torchtitan 用 load balancer 解决：PTRR（FlexAttention）或 HeadTail（SDPA）在 <code>cp_shard</code> 里把切分点挪匀
+  （api.py:217-259）。这也是 CP 特有、TP 没有的额外逻辑。
+</div>
+
+<h2 class="section" id="torch">3. 第 3 层 · Torch 层：序列切分与 k/v gather</h2>
+<p>CP 的两个通信动作都发生在 PyTorch：</p>
+<pre><code><span class="cmt"># ① 输入切分 —— _context_parallel_shard（torch.distributed.tensor.experimental._attention）</span>
+<span class="cmt">#    真实值：inputs (B, 8192) → 每卡 (B, 4096)，用 Shard(1) 于 CP mesh</span>
+
+<span class="cmt"># ② k/v all-gather —— flex_cp_allgather（api.py:21-23 导入）</span>
+global_k, global_v = <span class="fn">flex_cp_allgather</span>(k, v, 1, pg_name)
+<span class="cmt">#    真实值：k/v 在序列维(S(1)@CP)上 all-gather → 每卡拿到完整 k/v</span></code></pre>
+<p>图示（CP=2，L=8192，每卡 4096）：</p>
+<div class="tensorbox">
+  <div class="tensor-row">
+    <div class="tensor"><span class="cell rank0">卡0：q = seq 0..4095</span></div>
+    <div class="tensor"><span class="cell rank1">卡1：q = seq 4096..8191</span></div>
+  </div>
+  <div class="tensor-row">
+    <div class="tensor"><span class="cell rank0">k 卡0：0..4095</span></div>
+    <div class="tensor"><span class="cell rank1">k 卡1：4096..8191</span></div>
+    <span class="arrow">→ all-gather →</span>
+    <div class="tensor"><span class="cell rank0">k 卡0：0..8191</span></div>
+    <div class="tensor"><span class="cell rank1">k 卡1：0..8191</span></div>
+  </div>
+</div>
+<div class="callout purple">
+  <b class="tag">⚙️ 为什么 q 不 gather、只 gather k/v</b>
+  q 每卡只算自己那段序列的注意力，所以 q 保持 <code>Shard(1)</code>；
+  但 <code>q·kᵀ</code> 要对<b>整条序列</b>的 key 算——所以只把 k/v 在 CP 上 all-gather。
+  这正是"gather-KV（GCP）"方案，也是 CP 与"切头不切序列"的 TP 最本质的区别。
+</div>
+
+<h2 class="section" id="flow">4. 全链路流转 + CP vs TP</h2>
+<div class="flow">
+  <div class="step"><div class="n">1</div><div><span class="who user">用户</span><b>声明</b>：激活 CP 切片（<code>dense_activation_placement(cp=S(1))</code>）+ 内部注意力 q/k/v 布局。</div></div>
+  <div class="step"><div class="n">2</div><div><span class="who titan">Titan</span><b>切输入</b>：<code>prepare_context_parallel_input</code> → <code>_context_parallel_shard</code> 把序列 shard 给 CP=2 卡，并做负载均衡。</div></div>
+  <div class="step"><div class="n">3</div><div><span class="who titan">Titan</span><b>包 forward</b>：<code>apply_cp_to_forward</code> 在 parallelize 前包装 inner attention，注入 k/v all-gather。</div></div>
+  <div class="step"><div class="n">4</div><div><span class="who torch">Torch</span><b>内部 k/v all-gather</b>：<code>flex_cp_allgather</code> 把 k/v 沿序列维聚合，q 保持分块。</div></div>
+  <div class="step"><div class="n">5</div><div><span class="who torch">Torch</span><b>注意力计算</b>：每卡用局部 q × 完整 k/v 算自己的那段，互不干扰。</div></div>
+</div>
+
+<table>
+  <tr><th>维度</th><th>CP（上下文并行）</th><th>TP（张量并行，对比）</th></tr>
+  <tr><td>切什么</td><td>序列维 <code>S(1)</code></td><td>头维/特征维</td></tr>
+  <tr><td>q 的布局</td><td>保持切分（分块算）</td><td>序列完整、头切分 <code>S(2)</code></td></tr>
+  <tr><td>k/v</td><td>序列维 all-gather（gather-KV）</td><td>头切分，CP 上再 gather</td></tr>
+  <tr><td>通信动机</td><td>省 KV 显存</td><td>省计算/权重显存</td></tr>
+  <tr><td>特有逻辑</td><td><b>负载均衡</b>（PTRR/HeadTail）</td><td>colwise/rowwise 权重切分</td></tr>
+</table>
+
+<div class="foot">
+  本页基于 <code>torchtitan/distributed/context_parallel/api.py</code>、<code>torchtitan/models/common/decoder_sharding.py:181-220</code>；
+  数值示例 CP=2、L=8192。配套页面：<a href="fsdp_three_layers.html">FSDP</a> · <a href="pp_three_layers.html">PP</a> · <a href="ep_three_layers.html">EP</a>
+</div>
+
+</div>
+</body>
+</html>

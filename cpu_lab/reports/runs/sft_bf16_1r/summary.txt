@@ -1,0 +1,34 @@
+==============================================================================
+RUN SUMMARY
+==============================================================================
+  combo            qwen35
+  module/config    cpu_lab.qwen35 / qwen35_0_8b_sft_bf16
+  parallelism      dp_replicate=1 dp_shard=1 cp=1 tp=1 pp=1
+  world_size       1
+  wall time        819.1 s
+  command          D:\02_source\torchtitan\.venv\Scripts\python.exe cpu_lab\run_cpu_train.py --combo qwen35 -n 1 --threads 4 --module cpu_lab.qwen35 --config qwen35_0_8b_sft_bf16 --hf-cache D:/02_source/torchtitan/cpu_lab/hf --no-warmup --log-dir cpu_lab/logs_qwen35/sft_bf16_1r --show-logs
+
+  per-rank results (real loss only on last-pipeline-stage ranks)
+  rank  steps  last_step  last_loss      last_grad_norm   note
+  0     10     10         0.246050      41.2500          
+
+  last-stage ranks         [0]
+  their last losses        ['0.246050']
+  distinct loss values     1   (1 = all last-stage ranks agree)
+  distinct grad_norms      [41.25]   (1 value across all ranks = clipping synced)
+
+  peak memory per rank (sampled while the ranks ran)
+  rank  peak RSS      peak commit
+  0         7.69 GiB    11.78 GiB
+  sum       7.69 GiB    11.78 GiB   <- what the whole run needs, over 8 processes
+  system commit after run  25.30 / 45.63 GiB   (headroom 20.33 GiB)
+  system low-water mark    commit free 7.67 GiB, avail phys 0.00 GiB   <- during the run; near zero means the job did not fit
+
+
+  artifacts
+    logs                   D:\02_source\torchtitan\cpu_lab\logs_qwen35\sft_bf16_1r
+    dump folder            D:\02_source\torchtitan\cpu_lab\outputs\qwen35
+           150,089 B  checkpoint\step-10\.metadata
+      2,215,466,786 B  checkpoint\step-10\__0_0.distcp
+           887,288 B  structured_logs\training.global_rank_0.20261012-204140-EYROKT.jsonl
+==============================================================================
