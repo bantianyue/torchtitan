@@ -308,7 +308,7 @@ mapped (24 layers x 3) and **0 q_norm/k_norm** keys may exist.
 | `tp` | 2 | loss 11.542720, bit-identical | 3.63 GiB | 7.27 GiB |
 | **`tp_fsdp`** | 4 | loss 11.877500, bit-identical | 2.25 GiB | 9.09 GiB |
 | **`hsdp`** | 4 | loss 12.573080, bit-identical | 2.23 GiB | 8.93 GiB |
-| **`pp_fsdp`** | 4 | **hangs** after step 1 | ~4 GiB | — |
+| **`pp_fsdp`** | 4 | **native crash** in step 2 | 5.0 GiB/r | 20.0 GiB |
 
 Two things worth pulling out of that table:
 
@@ -316,10 +316,95 @@ Two things worth pulling out of that table:
   `view size is not compatible with input tensor's size and stride` (see the
   constraint table above). @ 494M and the plain dense Qwen3 skeleton it
   completes — so that bug is not inherent to TP x FSDP on CPU.
-- **PP x FSDP hangs.** It completes step 1 correctly (loss 3.52383, grad_norm
-  195 identical across ranks) and then makes no further progress, regardless of
-  the 30-minute collective timeout. Not a timeout, not memory — treat 3D
-  combinations involving PP as unavailable on this host until diagnosed.
+- **PP x FSDP does not fit.** It completes step 1 correctly (loss 3.52383,
+  grad_norm 195 identical across ranks) and then a rank dies *natively*. See
+  the next section: this is a sizing wall, not a logic bug, and not a deadlock.
+
+### PP x FSDP: what actually happens
+
+Four runs of the same configuration produced four different-looking failures,
+which is why it read as a deadlock. It is not one:
+
+| run | step 1 | how the rank died |
+|---|---|---|
+| `pp_fsdp` 4r, lb=4 | loss 3.52383, grad_norm 195 | `RuntimeError: could not execute a primitive` (oneDNN), step 2 backward |
+| `pp_fsdp` 4r, lb=4 + `ONEDNN_VERBOSE` | loss 3.52383 | `Fatal Python error: Aborted` inside FSDP `all_gather_into_tensor` |
+| `pp_fsdp` 4r, lb=2 (minimum), threads=1 | loss 3.69696 | `Windows fatal exception: access violation` in `reduce_scatter_tensor` |
+| `pp_fsdp` 4r, lb=2 (minimum), threads=2 | loss 3.69696 | `Windows fatal exception: access violation` in `reduce_scatter_tensor` |
+
+Step 1 is always correct — same loss on both last-stage ranks, same grad_norm on
+all four. The death is always in the FSDP collective, always in step 2, and
+always *after* a Python-level step has already been logged. The survivors then
+block forever in a collective whose peer no longer exists, which is the "hang",
+and which is why the 1800 s timeout never fired: the timeout only helps a rank
+that is still alive to notice, and here the other side of the collective is
+gone.
+
+The crash site is always FSDP's gradient reduction — `perform_reduce_grad()`
+calls `post_backward()` on every parameter group, which reduce-scatters the
+unsharded gradients that pipelining told FSDP to accumulate
+(`set_requires_gradient_sync(False)`). That is the single largest allocation in
+the step, and it is where a starved process finally faults:
+
+```
+system low-water mark    commit free 0.05 GiB, avail phys 0.01 GiB
+peak commit over 4 ranks 19.98 GiB   peak RSS 11.22 GiB
+```
+
+On a CPU-only Windows build there is no catchable OOM: an allocation the OS
+refuses surfaces as an access violation inside whatever touched memory last.
+
+**The control that settles it.** The same `pp_fsdp` x4 combination on TinyGPT
+completes 2 steps in 34 s with bit-identical last-stage losses and one grad_norm
+across all ranks — so the PP x FSDP code path itself is sound. What does not
+fit is the size: at 494M parameters, 4 ranks need ~20 GiB of commit (and
+~11 GiB resident) against ~20 GiB commit-free and ~5 GiB physical-free on this
+host. `local_batch_size=2` is the smallest the schedule accepts
+(`microbatches must be >= stages`), and it is *worse*, not better, than 4.
+
+### What fits, and what to do about the rest
+
+The wall is physical RAM, and it is measured, not estimated. Against ~5 GiB of
+available physical memory (the desktop baseline holds ~11 GiB of the 16 GiB):
+
+| combination | ranks | peak RSS | peak commit | commit left at the end | fits? |
+|---|---|---|---|---|---|
+| `qwen25` (FSDP) | 4 | 7.31 GiB | 7.31 GiB | ample | yes |
+| `tp_fsdp` | 4 | 9.09 GiB | 9.09 GiB | ample | yes |
+| `hsdp` | 4 | 8.93 GiB | 8.93 GiB | ample | yes |
+| `pp` | 2 | 7.88 GiB | 7.88 GiB | ample | yes |
+| **`pp`** | **4** | 9.13 GiB | 12.92 GiB | **6.97 GiB** | **yes** |
+| `pp_fsdp` | 4 | **11.22 GiB** | **19.98 GiB** | **0.05 GiB** | **no** |
+
+The two PP rows are the natural experiment. `pp -n 4` also drives available
+physical memory to 0.00 GiB and still completes, because it leaves 6.97 GiB of
+commit unused. `pp_fsdp` leaves 0.05 GiB, and the process that cannot get an
+allocation dies with an access violation. Physical RAM being exhausted is
+survivable on Windows (it pages); the **commit limit being exhausted is not**.
+
+Three ways forward, in order of cost:
+
+1. **Free host memory.** `pp_fsdp` at `local_batch_size=4` needs ~7.7 GiB
+   resident against ~5 GiB free — about 3 GiB short. Chrome alone holds ~2.4 GiB
+   on this desktop; closing it (plus the terminal tabs that are not in use) is
+   usually enough. The launcher now prints the host's free physical memory and
+   commit before it spawns anything, so this is checkable without a run.
+2. **Use a PP combination that fits.** PP is the one dimension whose cost falls
+   as ranks grow, and `pp -n 4` splits the model four ways with no FSDP unshard
+   buffers at all: 12.92 GiB of commit against `pp_fsdp`'s 19.98 GiB, and it
+   completes — 2 steps, loss 3.136680, grad_norm 184.0 identical across all four
+   ranks (same loss as the `pp -n 2` run, which is the check that matters: same
+   data, same seed, same schedule family). Same model, same data, one rank per
+   quarter of the network.
+3. **More RAM.** ~14 GiB of commit is enough for `local_batch_size=4`; the
+   32 GiB machine discussed earlier runs `pp_fsdp` comfortably. The combination
+   is correct — it just needs room.
+
+Diagnosing this class of failure is now automatic: when a rank dies natively,
+the launcher kills the survivors instead of waiting out the collective timeout,
+names the rank that actually died (the first non-zero exit code is usually a
+rank the watchdog killed, not the one that crashed), and prints the memory
+numbers next to the crash site.
 
 ```bash
 # Single rank, the baseline.
@@ -335,7 +420,15 @@ python cpu_lab/run_cpu_train.py --combo tp -n 2 --threads 4 \
     --module cpu_lab.qwen25 --config qwen25_0_5b_bf16_multi
 
 # PP: needs the untied checkpoint, and checkpointing must be *enabled*.
+# -n 2 and -n 4 both complete; 4 ranks is the PP setup that fits this host.
 python cpu_lab/run_cpu_train.py --combo pp -n 2 --threads 4 \
+    --module cpu_lab.qwen25 --config qwen25_0_5b_pp_bf16 --stagger 5
+python cpu_lab/run_cpu_train.py --combo pp -n 4 --threads 2 \
+    --module cpu_lab.qwen25 --config qwen25_0_5b_pp_bf16 --stagger 5
+
+# PP x FSDP: correct, but needs ~20 GiB of commit this host does not have.
+# Expect a native crash in step 2 -- see "PP x FSDP: what actually happens".
+python cpu_lab/run_cpu_train.py --combo pp_fsdp -n 4 --threads 2 \
     --module cpu_lab.qwen25 --config qwen25_0_5b_pp_bf16 --stagger 5
 ```
 
