@@ -1,0 +1,116 @@
+<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>TinyGPT on CPU — tp_fsdp</title><style>
+:root{color-scheme:light dark;
+--bg:#ffffff;--fg:#16181d;--muted:#6b7280;--line:#e3e5ea;--panel:#f7f8fa;
+--accent:#2f6fd0;--ok:#1a7f4b;--miss:#b4451f;--warn:#8a6100;--code:#f2f3f6;}
+@media (prefers-color-scheme:dark){:root{
+--bg:#15171c;--fg:#e8eaf0;--muted:#9aa1ad;--line:#2b2f38;--panel:#1c1f26;
+--accent:#6ea8ff;--ok:#5ed09a;--miss:#ff9b7a;--warn:#e8c46a;--code:#22262e;}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",Roboto,sans-serif;}
+.wrap{max-width:1040px;margin:0 auto;padding:32px 24px 80px}
+h1{font-size:24px;font-weight:600;margin:0 0 4px}
+h2{font-size:17px;font-weight:600;margin:0 0 6px;display:flex;align-items:center;gap:10px}
+h3{font-size:14px;font-weight:600;margin:22px 0 8px}
+section{border-top:1px solid var(--line);padding:26px 0 6px}
+.num{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
+border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:600;flex:none}
+.sub{margin:2px 0 14px;color:var(--muted)}
+.muted{color:var(--muted)}
+.note{background:var(--panel);border-left:3px solid var(--accent);padding:10px 14px;
+border-radius:6px;margin:12px 0;color:var(--fg)}
+.warn{background:var(--panel);border-left:3px solid var(--warn);padding:10px 14px;border-radius:6px}
+table{width:100%;border-collapse:collapse;margin:8px 0 4px;font-size:13px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;white-space:nowrap}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+table.kv th{width:210px;color:var(--fg);font-weight:500}
+code{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12.5px;
+background:var(--code);padding:1px 5px;border-radius:4px}
+pre.code{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+overflow-x:auto;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.5;margin:8px 0}
+.meta{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 4px}
+.pill{background:var(--panel);border:1px solid var(--line);border-radius:999px;
+padding:5px 12px;font-size:12.5px}
+.pill b{font-weight:600}
+.chip{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:999px;
+padding:0 7px;font-size:11.5px;color:var(--muted);margin-left:6px}
+.ok{color:var(--ok);font-weight:600}
+.miss{color:var(--miss);font-weight:600}
+ul.tight{margin:6px 0;padding-left:20px}
+ul.tight li{margin:5px 0}
+ul.checks{list-style:none;padding-left:0}
+ul.checks li{padding-left:0}
+details{margin:12px 0}
+summary{cursor:pointer;color:var(--accent)}
+.chartbox{border:1px solid var(--line);border-radius:10px;padding:12px;margin:12px 0;background:var(--bg)}
+canvas{width:100%;height:320px;display:block}
+footer{margin-top:36px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px}
+</style></head><body><div class='wrap'><h1>TinyGPT on CPU — tp_fsdp</h1><p class='sub'>一次 8 卡并行策略实验的完整记录：命令、配置、通信、结果、推理验证。由 cpu_lab/report.py 从本次运行的日志生成。</p><div class='meta'><span class='pill'>combo <b>tp_fsdp</b></span><span class='pill'>world_size <b>4</b></span><span class='pill'>parallelism <b>dp_shard=2 x tp=2</b></span><span class='pill'>steps <b>2</b></span><span class='pill'>wall time <b>178.1 s</b></span><span class='pill'>last loss <b>11.877500</b></span></div><section><h2><span class='num'>1</span>执行命令</h2><p class='sub'>这个预设展开成了哪些 torchtitan 参数</p><table class='kv'><tr><th>interpreter</th><td>D:\02_source\torchtitan\.venv\Scripts\python.exe</td><td class='muted'>the project venv; other pythons on this box lack torch</td></tr><tr><th>launcher</th><td>D:\02_source\torchtitan\.venv\Scripts\python.exe cpu_lab\run_cpu_train.py --combo tp_fsdp -n 4 --threads 2 --module cpu_lab.qwen25 --config qwen25_0_5b_bf16_multi --stagger 5 --log-dir cpu_lab/logs_qwen25/tp_fsdp_4r</td><td class='muted'>reproduces this exact run</td></tr><tr><th>torchtitan args</th><td>D:\02_source\torchtitan\.venv\Scripts\python.exe -u -m cpu_lab_child --module cpu_lab.qwen25 --config qwen25_0_5b_bf16_multi --parallelism.data_parallel_replicate_degree 1 --parallelism.data_parallel_shard_degree 2 --parallelism.context_parallel_degree 1 --parallelism.tensor_parallel_degree 2 --parallelism.pipeline_parallel_degree 1 --dump-folder D:\02_source\torchtitan\cpu_lab\outputs\tp_fsdp</td><td class='muted'>what the launcher expands the preset into</td></tr></table><h3>Copy-paste (cmd.exe)</h3><pre class='code'>D:\02_source\torchtitan\.venv\Scripts\python.exe cpu_lab\run_cpu_train.py --combo tp_fsdp -n 4 --threads 2 --module cpu_lab.qwen25 --config qwen25_0_5b_bf16_multi --stagger 5 --log-dir cpu_lab/logs_qwen25/tp_fsdp_4r</pre><h3>Expanded per-rank command</h3><pre class='code'>D:\02_source\torchtitan\.venv\Scripts\python.exe -u -m cpu_lab_child --module cpu_lab.qwen25 --config qwen25_0_5b_bf16_multi --parallelism.data_parallel_replicate_degree 1 --parallelism.data_parallel_shard_degree 2 --parallelism.context_parallel_degree 1 --parallelism.tensor_parallel_degree 2 --parallelism.pipeline_parallel_degree 1 --dump-folder D:\02_source\torchtitan\cpu_lab\outputs\tp_fsdp</pre></section><section><h2><span class='num'>2</span>关键配置、输入的数据、输出内容</h2><p class='sub'>并行策略怎么配的、数据从哪来、写到哪里去</p><h3>并行策略</h3><table class='kv'><tr><th>world_size</th><td><b>4</b></td><td class='muted'>= dp_replicate 1 x dp_shard 2 x cp 1 x tp 2 x pp 1</td></tr><tr><th>model</th><td>qwen25 / <b>0.5B</b></td><td class='muted'>494,032,768 params materialised on this rank</td></tr><tr><th>module</th><td>torchtitan.models.qwen3.model</td><td class='muted'>the model package</td></tr><tr><th>data_parallel_replicate_degree</th><td><b>1</b></td><td class='muted'>replicate the model, average gradients (HSDP&#x27;s H)</td></tr><tr><th>data_parallel_shard_degree</th><td><b>2</b></td><td class='muted'>shard parameters, gradients and optimiser state (FSDP)</td></tr><tr><th>context_parallel_degree</th><td><b>1</b></td><td class='muted'>split the sequence across ranks</td></tr><tr><th>tensor_parallel_degree</th><td><b>2</b></td><td class='muted'>split weight matrices / attention heads</td></tr><tr><th>pipeline_parallel_degree</th><td><b>1</b></td><td class='muted'>split the layer stack into stages</td></tr><tr><th>expert_parallel_degree</th><td><b>1</b></td><td class='muted'>split MoE experts (unused here, single expert)</td></tr><tr><th>enable_sequence_parallel</th><td>True</td><td class='muted'>shard the sequence across TP ranks instead of replicating activations</td></tr><tr><th>pipeline_parallel_schedule</th><td>1F1B</td><td class='muted'>looped schedules are required: only the multi-stage family implements torchtitan&#x27;s step() calling convention</td></tr></table><h3>解析后的进程网格 (rank 0 的坐标)</h3><table><tr><th>mesh</th><th>size</th><th>this rank at</th></tr><tr><td>batch</td><td>2</td><td class='muted'>(0,)</td></tr><tr><td>loss</td><td>2</td><td class='muted'>(0,)</td></tr><tr><td>tp</td><td>2</td><td class='muted'>(0,)</td></tr><tr><td>fsdp</td><td>2</td><td class='muted'>(0,)</td></tr></table><h3>输入数据与一步的规模</h3><table class='kv'><tr><th>dataloader</th><td>ChatDataLoader.Config</td><td class='muted'>which loader class</td></tr><tr><th>dataset name</th><td></td><td class='muted'>key in torchtitan&#x27;s DATASETS registry (kept even when the path is overridden)</td></tr><tr><th>dataset path</th><td><code>D:\02_source\torchtitan\tests\assets\sft_test\data.json</code></td><td class='muted'>the directory actually read</td></tr><tr><th>dataset contents</th><td>1.05 KB</td><td class='muted'>vendored and offline</td></tr><tr><th>tokenizer</th><td><code>D:\02_source\torchtitan\cpu_lab\hf25\tokenizer.json</code></td><td class='muted'>byte-level, vocab 2020 -- one id per character</td></tr><tr><th>seq_len</th><td>128</td><td class='muted'>tokens per sequence</td></tr><tr><th>local_batch_size</th><td>1</td><td class='muted'>sequences per rank per step</td></tr><tr><th>global_batch_size</th><td><b>2</b></td><td class='muted'>local 1 x batch degree 2</td></tr><tr><th>tokens per step</th><td><b>256</b></td><td class='muted'>= 2 x 128</td></tr><tr><th>gradient accumulation</th><td>1</td><td class='muted'>extra micro-steps per update</td></tr><tr><th>steps</th><td>2</td><td class='muted'>requested</td></tr></table><h3>输出位置</h3><table class='kv'><tr><th>dump folder</th><td><code>D:\02_source\torchtitan\cpu_lab\outputs\tp_fsdp</code></td><td class='muted'>everything this run wrote</td></tr><tr><th>checkpoint folder</th><td><code>D:\02_source\torchtitan\cpu_lab\outputs\tp_fsdp\checkpoint</code></td><td class='muted'>enabled=False, interval=2, model_only=True</td></tr></table></section><section><h2><span class='num'>3</span>执行过程中的关键通信</h2><p class='sub'>FSDP 的 All-Gather、TP 的 All-Reduce、PP 的 P2P</p><p class='note'>本次运行没有采集通信（加 <code>--collectives</code> 开启）。</p></section><section><h2><span class='num'>4</span>结果</h2><p class='sub'>loss 曲线、各 rank 数值、正确性判据、权重位置</p><div class='chartbox'><canvas id='lossChart' width='900' height='320'>loss curve</canvas></div><p class='note'>loss 与 grad_norm 取自 rank 0（最后一个 pipeline stage）。虚线为 grad_norm，右轴。</p><h3>各 rank 的最终结果</h3><table><tr><th>rank</th><th>steps</th><th>last loss</th><th>last grad_norm</th><th>note</th></tr><tr><td class='num'>0</td><td class='num'>2</td><td class='num'>11.877500</td><td class='num'>82.0000</td><td><span class='muted'>—</span></td></tr><tr><td class='num'>1</td><td class='num'>2</td><td class='num'>11.877500</td><td class='num'>82.0000</td><td><span class='muted'>—</span></td></tr><tr><td class='num'>2</td><td class='num'>2</td><td class='num'>11.877500</td><td class='num'>82.0000</td><td><span class='muted'>—</span></td></tr><tr><td class='num'>3</td><td class='num'>2</td><td class='num'>11.877500</td><td class='num'>82.0000</td><td><span class='muted'>—</span></td></tr></table><h3>正确性判据</h3><ul class='tight checks'><li><span class='ok'>PASS</span> 末 stage 组内 loss 一致：1 个不同值 [11.8775]<br><span class='muted'>TP 不对 batch 分片，同一 stage 内各 rank 的 loss 必须逐位相同；不一致说明有集合通信漏了</span></li><li><span class='ok'>PASS</span> grad_norm 全 rank 一致：[82.0]<br><span class='muted'>梯度裁剪在并行网格上做了同步</span></li></ul><h3>每个 rank 的内存峰值</h3><table><tr><th>rank</th><th>peak RSS</th><th>peak commit</th></tr><tr><td class='num'>0</td><td class='num'>2.39 GB</td><td class='num'>3.40 GB</td></tr><tr><td class='num'>1</td><td class='num'>2.37 GB</td><td class='num'>3.40 GB</td></tr><tr><td class='num'>2</td><td class='num'>2.25 GB</td><td class='num'>3.40 GB</td></tr><tr><td class='num'>3</td><td class='num'>2.08 GB</td><td class='num'>3.40 GB</td></tr><tr><td><b>sum</b></td><td class='num'><b>9.09 GB</b></td><td class='num'><b>13.61 GB</b></td></tr></table><p class='note'>采样来自启动器在运行期间对每个 rank 进程的轮询（每 0.5s），不是各 rank 自报——峰值也出现在首步 all-gather 和存 checkpoint 时。<b>RSS</b> 是实际驻留内存，<b>commit</b> 是进程向系统预留的字节；Windows 拒绝分配是按 commit 对 RAM+页面文件计账的，所以能否启动看 commit，能否不抖动地跑看 RSS。 运行结束后系统 commit 使用 27.09 GB / 45.63 GB，余量 18.54 GB。</p><h3>权重落在哪</h3><p class='note'>D:\02_source\torchtitan\cpu_lab\outputs\tp_fsdp 下，0 个分片共 0 B。格式是 DCP（分布式 checkpoint）：<code>.metadata</code> 是索引，每个 <code>.distcp</code> 是一个 rank 的分片。不是 safetensors，也不是 <code>.pt</code>。</p><table><tr><th>文件</th><th>大小</th></tr></table><pre class='code'># 把权重读回模型（单进程也可以：DCP 会把各 rank 的分片合起来）
+import torch.distributed.checkpoint as dcp
+spec = model_registry(&#x27;0.5B&#x27;)      # 必须用训练时的 flavor
+model = spec.model.build(); model.init_states()
+state = model.state_dict()
+dcp.load(state, checkpoint_id=r&#x27;D:\02_source\torchtitan\cpu_lab\outputs\tp_fsdp\checkpoint\step-2&#x27;)
+model.load_state_dict(state)</pre><details><summary>其他产出</summary><table><tr><th>文件</th><th>大小</th></tr><tr><td><code>structured_logs/training.global_rank_0.20261013-111447-B52J7L.jsonl</code></td><td class='num'>414.07 KB</td></tr><tr><td><code>structured_logs/training.global_rank_1.20261013-111451-GHKSZG.jsonl</code></td><td class='num'>414.12 KB</td></tr><tr><td><code>structured_logs/training.global_rank_2.20261013-111456-J870Z1.jsonl</code></td><td class='num'>413.44 KB</td></tr><tr><td><code>structured_logs/training.global_rank_3.20261013-111501-OOIZ3I.jsonl</code></td><td class='num'>413.46 KB</td></tr></table></details></section><section><h2><span class='num'>5</span>用训练好的模型推理</h2><p class='sub'>证明训练真的改变了模型</p><p class='note'>本次运行没有跑推理探针（加 <code>--probe</code> 开启，并配合 <code>--dataset-path cpu_lab/planted</code> 训练在植入语料上）。</p></section><footer>生成于 2026-10-13 11:16:48 · 日志目录 <code>D:\02_source\torchtitan\cpu_lab\logs_qwen25\tp_fsdp_4r</code> · 所有数字都来自磁盘上的运行产物，报告本身不做计算。</footer></div><script id='chart-data' type='application/json'>{"steps": [1, 2], "loss": [12.02886, 11.8775], "grad": [77.0, 82.0]}</script><script>
+function drawLoss(el, data){
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = el.clientWidth, cssH = el.clientHeight;
+  el.width = cssW * dpr; el.height = cssH * dpr;
+  const c = el.getContext('2d'); c.scale(dpr, dpr);
+  const cs = getComputedStyle(document.body);
+  const M = {l:56,r:58,t:14,b:34};
+  const W = cssW - M.l - M.r, H = cssH - M.t - M.b;
+  const steps = data.steps, loss = data.loss, grad = data.grad;
+  const lmin = Math.min(...loss), lmax = Math.max(...loss);
+  const gmin = 0, gmax = Math.max(...grad) * 1.1;
+  const pad = (lmax - lmin) * 0.15 || 1;
+  const y0 = lmin - pad, y1 = lmax + pad;
+  const X = i => M.l + (steps.length === 1 ? W / 2 : (i / (steps.length - 1)) * W);
+  const Y = v => M.t + H - ((v - y0) / (y1 - y0)) * H;
+  const Y2 = v => M.t + H - ((v - gmin) / (gmax - gmin)) * H;
+
+  c.strokeStyle = cs.getPropertyValue('--line') || '#ddd';
+  c.fillStyle = cs.getPropertyValue('--muted') || '#888';
+  c.font = '11px sans-serif'; c.lineWidth = 1;
+  for (let k = 0; k <= 4; k++){
+    const y = M.t + (H * k) / 4;
+    c.beginPath(); c.moveTo(M.l, y); c.lineTo(M.l + W, y); c.stroke();
+    const lv = y1 - ((y1 - y0) * k) / 4;
+    c.textAlign = 'right'; c.fillText(lv.toFixed(2), M.l - 8, y + 4);
+    const gv = gmax - ((gmax - gmin) * k) / 4;
+    c.textAlign = 'left'; c.fillText(gv.toFixed(1), M.l + W + 8, y + 4);
+  }
+  c.textAlign = 'center';
+  steps.forEach((s, i) => { if (steps.length <= 20 || i % Math.ceil(steps.length/12) === 0) {
+    c.fillText(s, X(i), M.t + H + 18); } });
+
+  c.strokeStyle = '#c8871f'; c.lineWidth = 1.5; c.setLineDash([5,4]); c.beginPath();
+  grad.forEach((v, i) => { const x = X(i), y = Y2(v); i ? c.lineTo(x,y) : c.moveTo(x,y); });
+  c.stroke(); c.setLineDash([]);
+
+  c.strokeStyle = '#2f6fd0'; c.lineWidth = 2.2; c.beginPath();
+  loss.forEach((v, i) => { const x = X(i), y = Y(v); i ? c.lineTo(x,y) : c.moveTo(x,y); });
+  c.stroke();
+  c.fillStyle = '#2f6fd0';
+  loss.forEach((v, i) => { c.beginPath(); c.arc(X(i), Y(v), 3, 0, 7); c.fill(); });
+}
+function legend(){
+  const cs = getComputedStyle(document.body);
+  return "<span style='display:inline-block;width:14px;height:2px;background:#2f6fd0;vertical-align:middle'></span> "
+    + "<span style='color:" + cs.getPropertyValue('--muted') + "'>loss</span> &nbsp; "
+    + "<span style='display:inline-block;width:14px;border-top:2px dashed #c8871f;vertical-align:middle'></span> "
+    + "<span style='color:" + cs.getPropertyValue('--muted') + "'>grad_norm (右轴)</span>";
+}
+document.addEventListener('DOMContentLoaded', function(){
+  const holder = document.getElementById('chart-data');
+  const el = document.getElementById('lossChart');
+  if (holder && el){
+    drawLoss(el, JSON.parse(holder.textContent));
+    const lg = document.createElement('div');
+    lg.style.cssText = 'font-size:12px;margin-top:6px';
+    lg.innerHTML = legend();
+    el.parentNode.appendChild(lg);
+  }
+});
+</script></body></html>

@@ -81,6 +81,9 @@ _COMBOS: dict[str, str] = {
     # Qwen3.5 runs are 40x the parameter count of the TinyGPT presets and their
     # artifacts must not land on top of them.
     "qwen35": "FSDP over all ranks, for the Qwen3.5 CPU runs",
+    # Qwen2.5-0.5B: the model that actually leaves room for several ranks on
+    # this host (494M params, 3.68 GiB of bf16 state vs 6.36 GiB for Qwen3.5).
+    "qwen25": "FSDP over all ranks, for the Qwen2.5 CPU runs",
 }
 
 
@@ -128,6 +131,7 @@ def _resolve_combo(combo: str, n: int) -> dict[str, int]:
         # _clear_outputs() wipes a combo's folder, so sharing "fsdp" would
         # destroy the scaling-ladder artifacts.
         "qwen35": dict(dp_replicate=1, dp_shard=n, cp=1, tp=1, pp=1),
+        "qwen25": dict(dp_replicate=1, dp_shard=n, cp=1, tp=1, pp=1),
     }
     if combo not in table:
         raise SystemExit(f"unknown preset {combo!r}; known: {', '.join(sorted(table))}")

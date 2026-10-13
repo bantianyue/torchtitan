@@ -257,6 +257,106 @@ numerical, and anything under PP, needs a real run. (Fixing this needed
 `NGPU`, not from `WORLD_SIZE`, so every `--dry-run` with `-n > 1` used to fail
 with `NGPU environment variable must be set`.)
 
+## Training Qwen2.5-0.5B on CPU (494M — the model that leaves room for ranks)
+
+Qwen3.5-0.8B fits one rank here and nothing else. Qwen2.5-0.5B is 42% smaller,
+and because FSDP's per-rank all-gather buffer scales with the model, that
+discount applies to the rank overhead too:
+
+| | Qwen3.5-0.8B | Qwen2.5-0.5B |
+|---|---|---|
+| parameters (tied) | 852,985,920 | 494,032,768 |
+| bf16 params + grads + Adam | 6.36 GiB | 3.68 GiB |
+| per-rank FSDP overhead | ~4.8 GiB | ~3.2 GiB |
+| 4-rank FSDP total | ~26 GiB (does not fit) | ~13 GiB (fits) |
+
+**torchtitan ships no `models/qwen2_5`**, so `cpu_lab/qwen25/` builds it on top
+of the shipped Qwen3 dense skeleton. Qwen2.5 is Qwen3 minus two things, and
+both are expressible without touching `torchtitan/`:
+
+| Delta | How it is expressed | Why it is dangerous |
+|---|---|---|
+| Qwen3 applies RMSNorm to q and k; Qwen2.5 does not | `make_gqa_config(..., qk_norm=None)` | Silent — the norms would be randomly initialised and every conversion check would still pass |
+| Qwen2.5's q/k/v have a bias; Qwen3's do not | `Linear.Config(bias=True)` on the fused `wqkv` only (`o_proj` and the MLP have none) | Silent — a dropped bias keeps its zero init, and loss stays at the random-init value forever |
+
+`make_gqa_config` does not expose `bias`, so the config is rebuilt with
+`dataclasses.replace`. `parallelize_qwen3`, `set_qwen3_sharding_config` and
+`pipeline_llm` are reused as-is; none of them inspects either difference.
+
+Only three host patches are needed (flex backward, BlockMask, Windows checkpoint
+paths) — no `fla` shim, because Qwen2.5 is a plain dense transformer.
+
+```bash
+# Convert once. --dry-check first: it verifies names and shapes without loading.
+python cpu_lab/convert_qwen25_hf.py --dry-check
+python cpu_lab/convert_qwen25_hf.py
+python cpu_lab/convert_qwen25_hf.py --untied \
+    --output-dir cpu_lab/checkpoints/qwen25_0_5b_hf_untied   # for PP
+```
+
+The conversion asserts the two deltas explicitly: **72 qkv biases** must be
+mapped (24 layers x 3) and **0 q_norm/k_norm** keys may exist.
+
+### Measured on this host (real runs, not `--dry-run`)
+
+| combo | ranks | result | peak RSS/rank | total |
+|---|---|---|---|---|
+| `qwen25` | 1 | loss 12.4346 (random init) | 5.51 GiB | 5.51 GiB |
+| `qwen25` + SFT | 1 | loss 2.0005 from real weights | 4.94 GiB | 4.94 GiB |
+| `qwen25` (FSDP) | 2 | loss 11.502740, **bit-identical** | 2.70 GiB | 5.38 GiB |
+| `qwen25` (FSDP) | 4 | loss 12.054090, bit-identical | 1.84 GiB | 7.31 GiB |
+| `tp` | 2 | loss 11.542720, bit-identical | 3.63 GiB | 7.27 GiB |
+| **`tp_fsdp`** | 4 | loss 11.877500, bit-identical | 2.25 GiB | 9.09 GiB |
+| **`hsdp`** | 4 | loss 12.573080, bit-identical | 2.23 GiB | 8.93 GiB |
+| **`pp_fsdp`** | 4 | **hangs** after step 1 | ~4 GiB | — |
+
+Two things worth pulling out of that table:
+
+- **TP x FSDP works here.** On Qwen3.5-0.8B the same combination died with
+  `view size is not compatible with input tensor's size and stride` (see the
+  constraint table above). @ 494M and the plain dense Qwen3 skeleton it
+  completes — so that bug is not inherent to TP x FSDP on CPU.
+- **PP x FSDP hangs.** It completes step 1 correctly (loss 3.52383, grad_norm
+  195 identical across ranks) and then makes no further progress, regardless of
+  the 30-minute collective timeout. Not a timeout, not memory — treat 3D
+  combinations involving PP as unavailable on this host until diagnosed.
+
+```bash
+# Single rank, the baseline.
+python cpu_lab/run_cpu_train.py --combo qwen25 -n 1 --threads 8 \
+    --module cpu_lab.qwen25 --config qwen25_0_5b_bf16
+
+# FSDP: 2 and 4 ranks both complete, losses bit-identical across ranks.
+python cpu_lab/run_cpu_train.py --combo qwen25 -n 4 --threads 2 \
+    --module cpu_lab.qwen25 --config qwen25_0_5b_bf16_multi --stagger 5
+
+# TP (capped at 2: n_kv_heads is 2, same as Qwen3.5).
+python cpu_lab/run_cpu_train.py --combo tp -n 2 --threads 4 \
+    --module cpu_lab.qwen25 --config qwen25_0_5b_bf16_multi
+
+# PP: needs the untied checkpoint, and checkpointing must be *enabled*.
+python cpu_lab/run_cpu_train.py --combo pp -n 2 --threads 4 \
+    --module cpu_lab.qwen25 --config qwen25_0_5b_pp_bf16 --stagger 5
+```
+
+### Two traps that cost a run each
+
+1. **`checkpoint.enable=False` silently disables `initial_load_path`.**
+   `CheckpointManager.__init__` returns before reading it
+   (`torchtitan/components/checkpoint.py`), so a config that sets
+   `initial_load_path` but leaves `enable` off trains from random init — no
+   error, no warning. The only symptom is a loss of ~12 instead of ~2. That is
+   why `qwen25_0_5b_pp_bf16` passes `enable_checkpoint=True`.
+2. **`curl --max-time` truncates large files silently.** The tokenizer download
+   was cut at 1.23 MB of 7.03 MB; `exit code` was 0. It surfaced much later as
+   `EOF while parsing a value at line 52359` from the tokenizers library.
+   Always compare against `Content-Length` after downloading.
+
+### Reading a PP run
+
+Only the last stage has the loss; every other rank logs a `-1` sentinel. Judge
+the run by the last-stage rank alone. `grad_norm` is the value all ranks share.
+
 ## Reading the results
 
 ```bash
