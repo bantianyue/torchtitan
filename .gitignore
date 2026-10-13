@@ -74,6 +74,7 @@ venv/
 
 cpu_lab/checkpoints/
 cpu_lab/hf/
+cpu_lab/hf25/
 qlora_lab/hf/
 qlora_lab/model/
 qlora_lab/runs/
