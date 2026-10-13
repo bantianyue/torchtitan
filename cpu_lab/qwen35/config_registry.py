@@ -194,6 +194,68 @@ def qwen35_0_8b_bf16_multi() -> Trainer.Config:
     )
 
 
+def qwen35_0_8b_pp_bf16() -> Trainer.Config:
+    """Same budget as ``qwen35_0_8b_bf16_multi``, but shaped for pipeline parallel.
+
+    **``weight_tying=False`` is forced, not chosen.** torchtitan raises
+    ``NotImplementedError: Weight tying is not supported with Pipeline Parallel``
+    as soon as ``enable_weight_tying and pipeline_parallel_degree > 1``
+    (``torchtitan/models/common/decoder.py``). The reason is structural: tying
+    makes ``tok_embeddings.weight`` and ``lm_head.weight`` the *same* tensor,
+    but PP puts the embedding on the first stage and the head on the last, and
+    one tensor cannot live on two stages.
+
+    That collides with a hard requirement of this checkpoint -- HF's
+    ``tie_word_embeddings=true`` means the safetensors on disk contain no
+    ``lm_head.weight`` at all, which is why every other config here ties. So a
+    PP run additionally needs the *untied* DCP checkpoint produced by
+    ``cpu_lab/untie_checkpoint.py``, which materialises ``lm_head.weight`` as a
+    copy of the embedding. Budget for it: the model goes from 852,985,920 to
+    ~1.107B parameters, i.e. bf16 state from 6.83 GiB to ~8.85 GiB.
+
+    The second change is ``local_batch_size=4``. PP slices the
+    batch into ``local_batch_size // pipeline_parallel_microbatch_size``
+    microbatches, and with the default microbatch of 1 that number *is* the
+    batch size. At ``local_batch_size=1`` a 4-stage pipeline therefore runs one
+    microbatch: every stage idles while one works, so the pipeline is fully
+    serialized -- it still saves memory, but it cannot be any faster than a
+    single rank, and the P2P overhead makes it slower. Four microbatches is the
+    smallest batch that lets a 2- or 4-stage pipeline actually overlap.
+
+    The memory arithmetic that makes this the affordable way to grow the batch:
+    PP cuts the *resident* state by the stage count before the batch multiplies
+    the activations. At ``pp=4`` each rank owns 6 of the 24 layers, so
+    4 microbatches cost roughly what 1 microbatch costs on the full model.
+
+    Trainer enforces ``local_batch_size % pp_microbatch_size == 0``, which is
+    satisfied for any microbatch <= 4 here. Raise the microbatch with
+    ``--parallelism.pipeline_parallel_microbatch_size`` only if the batch also
+    goes up.
+
+    Also note the reporting caveat that comes with PP: only the last stage has
+    the loss, so every other rank logs a ``-1`` sentinel. Judge a PP run by the
+    last-stage rank's loss alone; ``grad_norm`` is the only value all ranks
+    share.
+    """
+    return _config(
+        seq_len=128,
+        local_batch_size=4,
+        steps=2,
+        lr=1e-5,
+        save=False,
+        dtype="bfloat16",
+        mixed_precision_param="bfloat16",
+        fsdp_reshard_after_forward="always",
+        # Forced by PP; see the docstring. Pair this config with the untied
+        # checkpoint from cpu_lab/untie_checkpoint.py.
+        weight_tying=False,
+        comm=CommConfig(
+            init_timeout_seconds=1800,
+            train_timeout_seconds=1800,
+        ),
+    )
+
+
 def qwen35_0_8b_smoke() -> Trainer.Config:
     """Two steps from random init: does the stack run on CPU at all?
 

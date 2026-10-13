@@ -153,6 +153,10 @@ def main() -> int:
     parser.add_argument("--dry-check", action="store_true",
                         help="build on the meta device and only verify the "
                              "HF<->torchtitan mapping (names and shapes)")
+    parser.add_argument("--untied", action="store_true",
+                        help="materialise a real lm_head.weight (a copy of the "
+                             "embedding) instead of tying it. Required by "
+                             "pipeline parallel; see qwen35_0_8b_pp_bf16.")
     args = parser.parse_args()
 
     # cpu_compat first: it degrades torch.compile before torchtitan's attention
@@ -172,8 +176,11 @@ def main() -> int:
 
     t0 = time.time()
     # build_model_spec (not model_registry directly): it enables weight tying,
-    # which the HF checkpoint requires -- see its docstring.
-    spec = qwen35_cpu.build_model_spec(args.flavor, attn_backend="flex")
+    # which the HF checkpoint requires -- see its docstring. --untied turns that
+    # off, because PP cannot tie (see the flag's help and the PP config).
+    spec = qwen35_cpu.build_model_spec(
+        args.flavor, attn_backend="flex", weight_tying=not args.untied
+    )
     model_config = spec.model
     if args.dry_check:
         with torch.device("meta"):
@@ -195,6 +202,22 @@ def main() -> int:
     hf_state_dict = adapter.to_hf(wrapped._get_state_dict())
     print(f"[convert] to_hf: {len(hf_state_dict)} tensors in {time.time() - t0:.1f}s, "
           f"peak RSS {_peak_rss_gib():.2f} GiB")
+
+    # With --untied the HF view now contains lm_head.weight, but the safetensors
+    # on disk do not (HF ties it). Drop it before the coverage report and the
+    # load so neither looks for a key that cannot exist, then restore it by
+    # copying the embedding -- which is exactly what tying would have done at
+    # runtime, just written out instead.
+    head_key, emb_key = "lm_head.weight", "model.embed_tokens.weight"
+    if args.untied:
+        if head_key not in hf_state_dict:
+            raise SystemExit(f"[convert] --untied but {head_key} absent")
+        if emb_key not in hf_state_dict:
+            raise SystemExit(f"[convert] --untied but {emb_key} absent")
+        del hf_state_dict[head_key]
+        print(f"[convert] --untied: {head_key} withheld from the load "
+              f"(absent on disk), will be copied from {emb_key}")
+
     _report_coverage(args.input_dir, hf_state_dict, adapter)
     mismatches = _shape_check(args.input_dir, hf_state_dict)
 
@@ -209,6 +232,11 @@ def main() -> int:
     dcp.load(hf_state_dict, storage_reader=HuggingFaceStorageReader(path=args.input_dir))
     print(f"[convert] loaded HF weights in {time.time() - t0:.1f}s, "
           f"peak RSS {_peak_rss_gib():.2f} GiB")
+
+    if args.untied:
+        hf_state_dict[head_key] = hf_state_dict[emb_key].clone()
+        print(f"[convert] --untied: copied {emb_key} -> {head_key} "
+              f"{tuple(hf_state_dict[head_key].shape)}")
 
     t0 = time.time()
     tt_state_dict = adapter.from_hf(hf_state_dict)
