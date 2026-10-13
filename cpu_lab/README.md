@@ -163,6 +163,100 @@ Blocked by this environment: `cp`, `tp_cp` (CPU SDPA has no DTensor sharding
 strategy). Caveats on `pp_tp_fsdp` and `hsdp` are printed by `--list` and are
 explained in [TinyGPT's README](../torchtitan/models/tinygpt/README.md).
 
+## Hybrid parallelism on this host (measured 2026-10-13)
+
+The presets above were validated with **TinyGPT**. Running them against
+**Qwen3.5-0.8B** turns up three constraints that are about the *model*, not the
+machine, and they cut the hybrid space down a lot:
+
+| Constraint | Where it bites | Consequence |
+|---|---|---|
+| **PP cannot tie embeddings** | `torchtitan/models/common/decoder.py` raises `NotImplementedError` as soon as `enable_weight_tying and pp > 1` | Structural, not a bug: tying makes `tok_embeddings.weight` and `lm_head.weight` the same tensor, but PP puts the embedding on stage 0 and the head on the last stage |
+| **TP is capped at 2** | `tensor_parallel_degree (4) must divide n_kv_heads (2)` | Qwen3.5-0.8B has 2 KV heads, so `tp>2` is impossible at any rank count |
+| **TP x FSDP hits a stride bug** | `view size is not compatible with input tensor's size and stride` | Reproduced at `tp=2 x dp_shard=2`; still open |
+
+### Ordering the dimensions by what they cost
+
+On CPU the goal is *fitting*, not speed — 2 ranks measured **slower** than 1
+(140 s vs 64 s per step) because gloo ships 1.71 GiB per all-gather over TCP on
+4 cores. So rank the dimensions by traffic, cheapest first:
+
+| Dimension | What moves per step | Shards params/grads/Adam? |
+|---|---|---|
+| **PP** | activations across stage boundaries (P2P) | yes, 1/pp — and no full-sized all-gather buffer |
+| **TP** | activations, one all-reduce per layer | yes, 1/tp |
+| **FSDP** | **full params all-gather + grads reduce-scatter** | yes, but each rank carries a ~4.8 GiB transient buffer regardless of rank count |
+
+Which is why the memory models diverge so sharply at `bf16`:
+
+```
+pure FSDP, N ranks :  6.83 GiB + 4.8 GiB x N      -> N=4: 26 GiB   (too big here)
+PP=4, dp_shard=1   :  6.83/4 GiB per rank + ~0.5  ->       ~8.8 GiB
+```
+
+### Recipes
+
+```bash
+# 0. Fit check: single rank, bf16. This is the baseline everything else is
+#    compared against (64 s/step, peak RSS 7.69 GiB).
+python cpu_lab/run_cpu_train.py --combo qwen35 -n 1 --threads 4 \
+    --module cpu_lab.qwen35 --config qwen35_0_8b_bf16 \
+    --hf-cache cpu_lab/hf --no-warmup
+
+# 1. Shard the data, 2 ranks. Verified working with the relaxed timeouts.
+python cpu_lab/run_cpu_train.py --combo qwen35 -n 2 --threads 3 \
+    --module cpu_lab.qwen35 --config qwen35_0_8b_bf16_multi \
+    --hf-cache cpu_lab/hf --no-warmup --stagger 5
+
+# 2. Hybrid shard + replicate, 2x2. Cheaper than dp_shard=4 because the
+#    all-reduce only crosses the two replica groups.
+python cpu_lab/run_cpu_train.py --combo hsdp -n 4 --threads 2 \
+    --module cpu_lab.qwen35 --config qwen35_0_8b_bf16_multi \
+    --hf-cache cpu_lab/hf --no-warmup --stagger 5
+
+# 3. Tensor parallel (capped at 2 here), optionally over FSDP.
+python cpu_lab/run_cpu_train.py --combo tp      -n 2 --threads 4 \
+    --module cpu_lab.qwen35 --config qwen35_0_8b_bf16_multi \
+    --hf-cache cpu_lab/hf --no-warmup
+python cpu_lab/run_cpu_train.py --combo tp_fsdp -n 4 --threads 2 \
+    --module cpu_lab.qwen35 --config qwen35_0_8b_bf16_multi \
+    --hf-cache cpu_lab/hf --no-warmup --stagger 5
+
+# 4. Pipeline parallel -- needs the UNTIED checkpoint first, see below.
+python cpu_lab/convert_qwen35_hf.py --untied \
+    --output-dir cpu_lab/checkpoints/qwen35_0_8b_hf_untied
+python cpu_lab/run_cpu_train.py --combo pp -n 2 --threads 4 \
+    --module cpu_lab.qwen35 --config qwen35_0_8b_pp_bf16 \
+    --checkpoint.initial-load-path cpu_lab/checkpoints/qwen35_0_8b_hf_untied \
+    --hf-cache cpu_lab/hf --no-warmup --stagger 5
+```
+
+`--untied` exists only because of the PP/tying collision: it materialises
+`lm_head.weight` as a copy of the embedding (that is exactly what tying does at
+runtime, just written out). It costs 852,985,920 -> ~1.107B parameters, i.e.
+bf16 state 6.83 -> ~8.85 GiB. `qwen35_0_8b_pp_bf16` sets `weight_tying=False`
+to match, and `local_batch_size=4` so a 2- or 4-stage pipeline has more than one
+microbatch to overlap (at batch 1 a pipeline is fully serialised).
+
+### `--dry-run` cannot validate multi-rank runs
+
+Worth knowing before trusting one: `fake_backend` performs **no** communication.
+Consequences measured here:
+
+- **PP always dies under `--dry-run`.** Stage initialisation exchanges shape
+  metadata over P2P (`_recv_meta`), so with no real P2P the received shape is
+  garbage — observed as `tried to allocate 4517329193108106637 bytes` or
+  `_pickle.UnpicklingError: invalid load key`.
+- **TP / FSDP / HSDP "succeed" with `nan`.** The all-reduce and all-gather are
+  no-ops, so the run is numerically meaningless: `Loss is not finite
+  (global_avg_loss=nan) at step 2`.
+
+Use `--dry-run` to confirm that a config parses and a mesh builds. Anything
+numerical, and anything under PP, needs a real run. (Fixing this needed
+`NGPU` to be exported for the child: torchtitan reads the mesh's world size from
+`NGPU`, not from `WORLD_SIZE`, so every `--dry-run` with `-n > 1` used to fail
+with `NGPU environment variable must be set`.)
+
 ## Reading the results
 
 ```bash

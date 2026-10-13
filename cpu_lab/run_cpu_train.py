@@ -921,6 +921,14 @@ def main() -> int:
         )
         if args.collectives:
             env["CPU_LAB_COLLECTIVES"] = "1"
+        if args.dry_run:
+            # fake_backend performs no real communication but still builds a
+            # device mesh, and torchtitan reads the mesh's world size from NGPU
+            # rather than from RANK/WORLD_SIZE. Without this, every --dry-run
+            # with -n > 1 dies with "NGPU environment variable must be set
+            # when using comm_mode=fake_backend" -- i.e. the cheapest way to
+            # validate a multi-dimensional (PP/TP/FSDP) config was unusable.
+            env["NGPU"] = str(world_size)
         log_name = "train.log" if ranks_to_spawn == 1 else f"rank_{rank}.log"
         log_file = open(
             os.path.join(log_dir, log_name), "w", encoding="utf-8", errors="replace"
