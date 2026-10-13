@@ -43,7 +43,9 @@ def _requested_module() -> str:
     return ""
 
 
-if any(tag in _requested_module() for tag in ("qwen3_5", "qwen35")):
+_REQUESTED = _requested_module()
+
+if any(tag in _REQUESTED for tag in ("qwen3_5", "qwen35")):
     # Only for Qwen3.5: the shim registers a synthetic `fla` package, which
     # would otherwise paper over a genuinely missing dependency elsewhere.
     # Both tags are matched because the module is reached through two names:
@@ -54,6 +56,14 @@ if any(tag in _requested_module() for tag in ("qwen3_5", "qwen35")):
     import qwen35_cpu
 
     qwen35_cpu.apply()
+elif "qwen25" in _REQUESTED:
+    # Qwen2.5 needs only the three host-level patches (flex backward, block
+    # mask, Windows checkpoint paths), which qwen25_cpu reuses from qwen35_cpu.
+    # It must NOT get the fla shim: Qwen2.5 has no linear-attention kernels, and
+    # registering a fake `fla` would hide a real missing dependency.
+    import qwen25_cpu
+
+    qwen25_cpu.apply()
 
 import run_logging
 
