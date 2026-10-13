@@ -389,6 +389,99 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# Signatures of a *native* crash, i.e. the process died in C++ rather than
+# raising a Python exception. They matter because they are how a memory-exhausted
+# Windows host reports a failed allocation: there is no catchable torch OOM on
+# CPU, so the failure surfaces inside whatever native code touched memory last
+# (an FSDP all-gather, a reduce-scatter, a oneDNN kernel). A rank that dies this
+# way leaves its peers blocked in a collective with a peer that no longer exists,
+# which is what makes the run look like a hang instead of a crash.
+_NATIVE_CRASH_SIGNATURES = (
+    "Windows fatal exception: access violation",
+    "could not execute a primitive",
+    "could not create a primitive",
+    "Fatal Python error: Aborted",
+    "Fatal Python error: Segmentation fault",
+)
+
+
+def _native_crash_scan(log_dir: str, ranks: int) -> list[dict]:
+    """Find which rank died natively, and where.
+
+    Scans every rank's log, not just the first failure: the launcher's watchdog
+    kills the survivors of a dead rank, so the first non-zero exit code is often
+    a rank that was killed *because* another one crashed. The rank whose log
+    contains a native signature is the one that actually died first.
+    """
+    found: list[dict] = []
+    for rank in range(ranks):
+        name = "train.log" if ranks == 1 else f"rank_{rank}.log"
+        path = os.path.join(log_dir, name)
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+        for index, line in enumerate(lines):
+            if any(sig in line for sig in _NATIVE_CRASH_SIGNATURES):
+                # Keep a little context: the signature line plus the innermost
+                # frames that follow it, which name the native call site.
+                context = "".join(lines[index : index + 14])
+                found.append(
+                    {"rank": rank, "log": path, "signature": line.strip(), "context": context}
+                )
+                break
+    return found
+
+
+def _report_native_crash(log_dir: str, ranks: int, memory_peaks: dict) -> bool:
+    """Explain a native crash as the memory wall it usually is. True if found."""
+    crashes = _native_crash_scan(log_dir, ranks)
+    if not crashes:
+        return False
+    first = crashes[0]
+    print(
+        f"\n[hint] rank {first['rank']} died in native code, not in Python:",
+        file=sys.stderr,
+    )
+    print(f"       {first['signature']}", file=sys.stderr)
+    # The innermost frames after the signature name the native call site.
+    frames = [
+        ln.strip()
+        for ln in first["context"].splitlines()
+        if ln.strip().startswith("File ") or "reduce_scatter" in ln or "all_gather" in ln
+    ]
+    for frame in frames[:6]:
+        print(f"       {frame}", file=sys.stderr)
+    per_rank = memory_peaks.get("per_rank") or {}
+    if per_rank:
+        total_rss = sum(e["peak_rss"] for e in per_rank.values())
+        total_commit = sum(e["peak_commit"] for e in per_rank.values())
+        low = memory_peaks.get("system_low") or {}
+        print(
+            f"\n       peak commit over {len(per_rank)} ranks: "
+            f"{hostmem.gib(total_commit):.2f} GiB, peak RSS {hostmem.gib(total_rss):.2f} GiB.",
+            file=sys.stderr,
+        )
+        if low.get("min_commit_free") is not None:
+            print(
+                f"       during the run: commit free fell to "
+                f"{hostmem.gib(low['min_commit_free']):.2f} GiB and available "
+                f"physical memory to {hostmem.gib(low['min_avail_phys']):.2f} GiB.",
+                file=sys.stderr,
+            )
+        print(
+            "\n       On a CPU-only Windows build a failed allocation has no catchable\n"
+            "       error: it surfaces as a crash inside whatever allocated last --\n"
+            "       here an FSDP collective or a oneDNN kernel. The other ranks then\n"
+            "       block forever on a collective whose peer is already gone, which is\n"
+            "       why the run reads as a hang and why a longer timeout cannot help.\n"
+            "       Compare the numbers above with the host's free memory; if they do\n"
+            "       not fit, this is a sizing problem, not a training bug.",
+            file=sys.stderr,
+        )
+    return True
+
+
 def _tail(path: str, n: int = 25) -> str:
     if not os.path.exists(path):
         return ""
@@ -591,6 +684,70 @@ def _artifact_files(dump_dir: str) -> list[dict]:
 def _cmdline(parts: list[str]) -> str:
     """Join a command for copy-paste, quoting only what needs it."""
     return " ".join(f'"{part}"' if " " in part else part for part in parts)
+
+
+def _kill_tree(pid: int) -> None:
+    """Kill a rank and everything it spawned.
+
+    The venv's ``python.exe`` is a trampoline: the pid ``Popen`` returned is not
+    the process holding the model, so killing only that pid leaves the real rank
+    running -- and still attached to the TCPStore, which keeps the rendezvous
+    (and the next run's port) alive.
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            timeout=60,
+        )
+    except Exception:  # pragma: no cover - best effort
+        pass
+
+
+def _wait_for_ranks(procs: list) -> list[tuple[int, int]]:
+    """Wait for every rank, but do not let a dead rank hold the others hostage.
+
+    A rank that exits non-zero while its peers still run means the peers are
+    blocked in a collective whose other half will never be posted -- the
+    PP x FSDP failure, where rank 1 died inside a stage backward and ranks 0/2/3
+    then sat in gloo until the 30-minute timeout. Waiting for the peers turns a
+    three-second crash into a half-hour hang that reads like a training bug, so
+    the survivors are killed and reported instead. A rank that exits *cleanly*
+    while peers still run is normal (PP stages finish at slightly different
+    times) and is not treated as a failure.
+    """
+    codes: list[tuple[int, int]] = []
+    pending = {rank: (proc, log_file) for proc, log_file, rank in procs}
+    while pending:
+        for rank in sorted(pending):
+            proc, log_file = pending[rank]
+            rc = proc.poll()
+            if rc is None:
+                continue
+            log_file.close()
+            codes.append((rank, rc))
+            del pending[rank]
+        failed = [r for r, rc in codes if rc != 0]
+        if failed and pending:
+            print(
+                f"[launcher] rank {failed} exited non-zero while "
+                f"{sorted(pending)} still running. Killing the survivors: they "
+                "are waiting on a collective with a peer that is already gone, "
+                "so waiting for them only burns the gloo timeout.",
+                file=sys.stderr,
+                flush=True,
+            )
+            for rank in sorted(pending):
+                _kill_tree(pending[rank][0].pid)
+            for rank in sorted(pending):
+                proc, log_file = pending[rank]
+                rc = proc.wait()
+                log_file.close()
+                codes.append((rank, rc))
+            pending.clear()
+            break
+        time.sleep(0.5)
+    return codes
 
 
 def _start_memory_sampler(procs) -> None:
@@ -878,6 +1035,23 @@ def main() -> int:
     procs = []
     t0 = time.time()
 
+    # Preflight: state how much room the host has before spending minutes on a
+    # run that may not fit. The per-combo footprint is measured, not guessed --
+    # see the "Measured on this host" table in cpu_lab/README.md -- but printing
+    # the free memory here makes the comparison possible without leaving the
+    # console, and it is the number that decides whether a multi-rank job pages.
+    try:
+        sysmem = hostmem.system_memory()
+        print(
+            f"[launcher] host memory before launch: available physical "
+            f"{hostmem.gib(sysmem['avail_phys']):.2f} GiB, commit free "
+            f"{hostmem.gib(sysmem['commit_limit'] - sysmem['commit_used']):.2f} GiB"
+            f" (measured footprints: see cpu_lab/README.md)",
+            flush=True,
+        )
+    except Exception:  # pragma: no cover - diagnostics only
+        pass
+
     shared_cache = (
         os.path.abspath(args.hf_cache)
         if args.hf_cache
@@ -956,11 +1130,7 @@ def main() -> int:
             time.sleep(args.stagger)
 
     _start_memory_sampler(procs)
-    codes = []
-    for proc, log_file, rank in procs:
-        rc = proc.wait()
-        log_file.close()
-        codes.append((rank, rc))
+    codes = _wait_for_ranks(procs)
 
     # Sampled while the ranks were alive; stopping here is what freezes the peaks.
     memory_peaks = _stop_memory_sampler()
@@ -979,6 +1149,10 @@ def main() -> int:
         tail = _tail(os.path.join(log_dir, primary))
         print(f"\n--- tail of {primary} ---", file=sys.stderr)
         print(tail, file=sys.stderr)
+        # A native crash is the memory wall wearing a training bug's clothes, and
+        # the first non-zero exit code is usually a rank the watchdog killed, not
+        # the one that died -- so scan all of them before drawing a conclusion.
+        _report_native_crash(log_dir, ranks_to_spawn, memory_peaks)
 
         if "arg_mbs" in tail:
             print(

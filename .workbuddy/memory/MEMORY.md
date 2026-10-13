@@ -53,7 +53,9 @@
 - 需条件：pp_tp_fsdp 必须 `--sp false`；hsdp 在 4 rank（2×2）可用，8 rank（2×4）挂
 - 不可用：cp 系（CPU SDPA 派发到
   `_scaled_dot_product_flash_attention_for_cpu`，无 DTensor 分片策略）
-  → PP×TP×FSDP×CP 四维组合本机不可达；去掉 CP 的三维组合可跑
+  → PP×TP×FSDP×CP 四维组合本机不可达
+- 装不下而非逻辑错：Qwen2.5-0.5B 的 `pp_fsdp`×4（TinyGPT 同组合能跑完 ⇒ 逻辑没问题），
+  需 ~20 GiB commit 而宿主只剩 ~20 且物理 RAM 只余 ~5 ⇒ 原生崩溃，见下方修正记录
 
 ## 校验并行正确性的判据
 TP 不对 batch 做分片 → **所有 rank 的 loss 必须逐位相同**。不一致说明漏了集合通信。
@@ -119,7 +121,13 @@ TP 不对 batch 做分片 → **所有 rank 的 loss 必须逐位相同**。不�
 
 **改法**：`CommConfig(init_timeout_seconds=1800, train_timeout_seconds=1800)`。
 已加配置 `qwen35_0_8b_bf16_multi`。这是**诊断手段不是生产设置**：
-放宽后能跑完 ⇒ 「装得下但在换页」；1800 s 仍超时 ⇒ 真死锁。
+放宽后能跑完 ⇒ 「装得下但在换页」；放宽后仍卡住 ⇒ **先确认是否还有 rank 活着**——
+Qwen2.5 pp_fsdp 的「死锁」最后查明是某 rank 原生崩溃（access violation / oneDNN
+原语失败 / SIGABRT 三种死法）、幸存者等一个已死的 peer，超时对死者无效。
+判据：看哪个 rank 的日志里有原生崩溃签名，别看第一个非零退出码。
+**Windows 上真正的硬墙是 commit 上限耗尽**（无 catchable OOM，崩在 whoever
+allocated last）；物理 RAM 耗尽只是换页，能活（pp4 实测 avail_phys 0.00 仍跑完，
+pp_fsdp commit 余 0.05 GiB 就崩）。
 
 **无效手段（已测）**：`PYTORCH_CPU_ALLOC_CONF=expandable_segments:True` 在
 torch 2.12.1 上**被静默接受但无效**（仅 CUDA）。分配 churn A/B 实测无差异。
