@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 import spmd_types as spmd
 
+from torchtitan.models.common.decoder import TransformerBlock
+
 from torchtitan.models.common.decoder_sharding import (
     dense_activation_placement,
     dense_sequence_parallel_placement,
@@ -19,7 +21,7 @@ from torchtitan.models.common.decoder_sharding import (
 )
 
 if TYPE_CHECKING:
-    from torchtitan.models.llama3.model import Llama3Model, Llama3TransformerBlock
+    from torchtitan.models.llama3.model import Llama3Model
 
 
 def set_llama3_sharding_config(
@@ -42,7 +44,7 @@ def set_llama3_sharding_config(
 
 
 def _set_llama3_layer_sharding(
-    layer_cfg: "Llama3TransformerBlock.Config",
+    layer_cfg: TransformerBlock.Config,
     *,
     enable_sp: bool,
 ) -> None:

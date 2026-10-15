@@ -16,7 +16,7 @@ out_proj (RowwiseParallel); the FLA kernel and depthwise Conv1d run on local
 tensors via local_map.
 """
 
-from typing import TYPE_CHECKING
+from typing import cast, TYPE_CHECKING
 
 import spmd_types as spmd
 
@@ -122,7 +122,7 @@ def set_qwen35_sharding_config(
     layer_input_layout = dense_sequence_parallel_placement()
     for layer_idx, layer_cfg in enumerate(config.layers):
         _set_qwen35_layer_sharding(
-            layer_cfg,
+            cast("Qwen35TransformerBlock.Config", layer_cfg),
             attention_input_layout=(
                 first_layer_input_layout if layer_idx == 0 else layer_input_layout
             ),

@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -546,11 +547,17 @@ class MuseGlimmerModel(Decoder):
         # windowed variants cannot drift apart.
         masks: dict[str, BlockMask] = {_window_mask_key(None): _build_mask(base_mods)}
         window_sizes = {
-            layer.attention.window_size
-            for layer in self.config.layers
-            if layer.attention.window_size is not None
+            attention_cfg.window_size
+            for layer_cfg in self.config.layers
+            if (
+                (
+                    attention_cfg := cast(Attention.Config, layer_cfg.attention)
+                ).window_size
+                is not None
+            )
         }
         for window_size in window_sizes:
+            assert window_size is not None
             masks[_window_mask_key(window_size)] = _build_mask(
                 [*base_mods, get_sliding_window_mask_mod(window_size)]
             )

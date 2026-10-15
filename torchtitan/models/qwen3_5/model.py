@@ -647,9 +647,10 @@ class Qwen35Model(Decoder):
             if tp > 1:
                 dn_cfg = next(
                     (
-                        layer_cfg.delta_net
+                        delta_net
                         for layer_cfg in self.layers
-                        if layer_cfg.delta_net is not None
+                        if (delta_net := getattr(layer_cfg, "delta_net", None))
+                        is not None
                     ),
                     None,
                 )

@@ -33,7 +33,7 @@ Reference: https://huggingface.co/coderian/TinyGPT
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import cast, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -340,7 +340,8 @@ class TinyGPTModel(Decoder):
                 # The MLP is sharded colwise on c_fc and rowwise on c_proj, so
                 # the 4x expansion must split evenly across ranks.
                 for i, layer_cfg in enumerate(self.layers):
-                    ffn_dim = layer_cfg.feed_forward.c_fc.out_features
+                    tinygpt_layer = cast(TinyGPTBlock.Config, layer_cfg)
+                    ffn_dim = tinygpt_layer.feed_forward.c_fc.out_features
                     if ffn_dim % tp != 0:
                         raise ValueError(
                             f"tensor_parallel_degree ({tp}) must divide the "
@@ -363,7 +364,7 @@ class TinyGPTModel(Decoder):
             )
 
         def get_nparams_and_flops(self, model, seq_len: int) -> tuple[int, int]:
-            attention = self.layers[0].attention
+            attention = cast(TinyGPTAttention.Config, self.layers[0].attention)
             head_dim = attention.head_dim or (self.dim // attention.n_heads)
             return get_dense_model_nparams_and_flops(
                 model,

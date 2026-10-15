@@ -6,6 +6,7 @@
 
 from collections.abc import Callable
 from functools import partial
+from typing import cast
 
 import torch.nn as nn
 
@@ -25,6 +26,7 @@ from torchtitan.models.common.config_utils import (
     make_routed_experts_config,
     make_router_config,
 )
+from torchtitan.models.common.decoder import TransformerBlock
 from torchtitan.models.common.nn_modules import LayerNorm
 from torchtitan.models.common.param_init import depth_scaled_std  # noqa: F401
 from torchtitan.models.common.vision_encoder import (
@@ -320,9 +322,9 @@ def _build_qwen35_layers(
     full_attention_interval: int = 4,
     attn_backend: str,
     fla_backend: GatedDeltaBackend = "fla_chunked",
-) -> list[Qwen35TransformerBlock.Config]:
+) -> list[TransformerBlock.Config]:
     """Build per-layer configs for dense Qwen3.5 models."""
-    layers = []
+    layers: list[Qwen35TransformerBlock.Config] = []
     for layer_id in range(n_layers):
         is_full = (layer_id + 1) % full_attention_interval == 0
 
@@ -368,7 +370,7 @@ def _build_qwen35_layers(
                 ffn_norm=_offset_norm(dim),
             )
         )
-    return layers
+    return cast(list[TransformerBlock.Config], layers)
 
 
 def _build_qwen35_moe_layers(
@@ -393,9 +395,9 @@ def _build_qwen35_moe_layers(
     fla_backend: GatedDeltaBackend = "fla_chunked",
     moe_comm_backend: str = "standard",
     non_blocking_capacity_factor: float | None = None,
-) -> list[Qwen35TransformerBlock.Config]:
+) -> list[TransformerBlock.Config]:
     """Build per-layer configs for MoE Qwen3.5 models with shared expert."""
-    layers = []
+    layers: list[Qwen35TransformerBlock.Config] = []
     for layer_id in range(n_layers):
         is_full = (layer_id + 1) % full_attention_interval == 0
 
@@ -460,7 +462,7 @@ def _build_qwen35_moe_layers(
                 ffn_norm=_offset_norm(dim),
             )
         )
-    return layers
+    return cast(list[TransformerBlock.Config], layers)
 
 
 def _debugmodel(attn_backend: str) -> Qwen35Model.Config:

@@ -13,6 +13,7 @@ import torch.nn as nn
 from torchtitan.models.common import ComplexRoPE, Embedding, Linear
 from torchtitan.models.common.attention import QKVLinear
 from torchtitan.models.common.config_utils import get_attention_config, make_ffn_config
+from torchtitan.models.common.decoder import TransformerBlock
 from torchtitan.models.common.nn_modules import GELU, LayerNorm, RMSNorm
 from torchtitan.models.common.param_init import depth_scaled_std
 from torchtitan.models.common.vision_encoder import (
@@ -188,7 +189,7 @@ def _build_muse_glimmer_layers(
     max_seq_len: int,
     window_pattern: list[int],
     attn_backend: str,
-) -> list[MuseGlimmerTransformerBlock.Config]:
+) -> list[TransformerBlock.Config]:
     hidden_dim = int(_FFN_DIM_MULTIPLIER * dim)
     layers = []
     for layer_id in range(n_layers):

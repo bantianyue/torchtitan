@@ -10,6 +10,8 @@ import spmd_types as spmd
 
 from torchtitan.models.common.attention import GQAttention
 
+from torchtitan.models.common.decoder import TransformerBlock
+
 from torchtitan.models.common.decoder_sharding import (
     dense_activation_placement,
     dense_param_placement,
@@ -24,7 +26,7 @@ from torchtitan.models.common.moe_sharding import set_moe_sharding_config
 from torchtitan.protocols.sharding import ShardingConfig
 
 if TYPE_CHECKING:
-    from torchtitan.models.qwen3.model import Qwen3Model, Qwen3TransformerBlock
+    from torchtitan.models.qwen3.model import Qwen3Model
 
 
 _GROUPED_EXPERTS_PARAM_LAYOUT: dict[str, spmd.PerMeshAxisSpmdType] = {
@@ -57,7 +59,7 @@ def set_qwen3_sharding_config(
 
 
 def _set_qwen3_layer_sharding(
-    layer_cfg: "Qwen3TransformerBlock.Config",
+    layer_cfg: TransformerBlock.Config,
     *,
     enable_sp: bool,
     enable_ep: bool,

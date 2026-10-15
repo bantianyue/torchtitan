@@ -4,9 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import TYPE_CHECKING
+from typing import cast, TYPE_CHECKING
 
 import spmd_types as spmd
+
+from torchtitan.models.common.decoder import TransformerBlock
 
 from torchtitan.models.common.decoder_sharding import (
     colwise_config,
@@ -23,7 +25,7 @@ from torchtitan.models.common.decoder_sharding import (
 from torchtitan.protocols.sharding import LocalMapConfig, ShardingConfig, SpmdLayout
 
 if TYPE_CHECKING:
-    from .model import MuseGlimmerModel, MuseGlimmerTransformerBlock
+    from .model import MuseGlimmerModel
     from .vision_encoder import MuseGlimmerVisionAdapter, MuseGlimmerVisionEncoder
 
 
@@ -174,7 +176,7 @@ def _set_multimodal_sharding(
 
 
 def _set_muse_glimmer_layer_sharding(
-    layer_cfg: "MuseGlimmerTransformerBlock.Config",
+    layer_cfg: TransformerBlock.Config,
     *,
     enable_sp: bool,
     attention_input_layout: SpmdLayout | None = None,
@@ -190,8 +192,9 @@ def _set_muse_glimmer_layer_sharding(
     downstream of the attention (post-attention norm, FFN, residuals) is plain SP
     regardless.
     """
-    from .model import Attention
+    from .model import Attention, MuseGlimmerTransformerBlock
 
+    layer_cfg = cast(MuseGlimmerTransformerBlock.Config, layer_cfg)
     attention = layer_cfg.attention
     assert isinstance(attention, Attention.Config)
 
