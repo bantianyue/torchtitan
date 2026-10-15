@@ -21,11 +21,13 @@ strategy combination.
 
 from collections.abc import Callable
 from functools import partial
+from typing import cast
 
 import torch.nn as nn
 
 from torchtitan.distributed.pipeline_parallel import pipeline_llm
 from torchtitan.models.common.attention import ScaledDotProductAttention
+from torchtitan.models.common.decoder import TransformerBlock
 from torchtitan.models.common.embedding import Embedding
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.nn_modules import GELU, LayerNorm
@@ -88,7 +90,7 @@ def _build_tinygpt_layers(
     n_heads: int,
     ffn_dim: int,
     head_dim: int | None = None,
-) -> list[TinyGPTBlock.Config]:
+) -> list[TransformerBlock.Config]:
     """Per-layer configs, with GPT-2's depth-scaled init on residual outputs.
 
     ``wo`` and ``c_proj`` are the two projections that write into the residual
@@ -100,7 +102,7 @@ def _build_tinygpt_layers(
     per-rank scale factor or it is counted once per rank -- a subtlety that adds
     nothing to what these runs are for. LayerNorm keeps its affine parameters.
     """
-    layers = []
+    layers: list[TinyGPTBlock.Config] = []
     for layer_id in range(n_layers):
         layers.append(
             TinyGPTBlock.Config(
@@ -127,9 +129,7 @@ def _build_tinygpt_layers(
                     ),
                     inner_attention=ScaledDotProductAttention.Config(),
                 ),
-                ffn_norm=LayerNorm.Config(
-                    normalized_shape=dim, param_init=_NORM_INIT
-                ),
+                ffn_norm=LayerNorm.Config(normalized_shape=dim, param_init=_NORM_INIT),
                 feed_forward=TinyGPTMLP.Config(
                     c_fc=Linear.Config(
                         in_features=dim,
@@ -145,7 +145,7 @@ def _build_tinygpt_layers(
                 ),
             )
         )
-    return layers
+    return cast(list[TransformerBlock.Config], layers)
 
 
 def _tinygpt(

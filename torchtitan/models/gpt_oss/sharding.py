@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 import spmd_types as spmd
 
+from torchtitan.models.common.decoder import TransformerBlock
+
 from torchtitan.models.common.decoder_sharding import (
     dense_activation_placement,
     dense_param_placement,
@@ -22,7 +24,7 @@ from torchtitan.models.gpt_oss.model import Attention
 from torchtitan.protocols.sharding import LocalMapConfig, ShardingConfig
 
 if TYPE_CHECKING:
-    from torchtitan.models.gpt_oss.model import GptOssModel, GptOssTransformerBlock
+    from torchtitan.models.gpt_oss.model import GptOssModel
 
 
 # Routed-expert layout for ``GptOssGroupedExperts`` (mlp1/mlp2 fused
@@ -76,7 +78,7 @@ def set_gpt_oss_sharding_config(
 
 
 def _set_gpt_oss_layer_sharding(
-    layer_cfg: "GptOssTransformerBlock.Config",
+    layer_cfg: TransformerBlock.Config,
     *,
     enable_sp: bool,
     enable_ep: bool,
