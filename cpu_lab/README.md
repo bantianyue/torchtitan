@@ -1,9 +1,11 @@
 # cpu_lab
 
 > **Moving to a new machine?** Start with
-> [`bootstrap.py`](bootstrap.py) and [`MIGRATION.md`](MIGRATION.md) — the repo
-> is committed without venvs, weights or checkpoints, and that script puts them
-> back.
+> [`../README_NEW_MACHINE.md`](../README_NEW_MACHINE.md) (task goals, current
+> progress, verification ladder, next steps), then run
+> [`bootstrap.py`](bootstrap.py). The full rebuild recipe is in
+> [`MIGRATION.md`](MIGRATION.md) — the repo is committed without venvs,
+> weights or checkpoints, and that script puts them back.
 
 A harness for running [TinyGPT](../torchtitan/models/tinygpt) with real
 distributed collectives on a **CPU-only** torch build, without modifying

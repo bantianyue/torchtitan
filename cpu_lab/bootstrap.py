@@ -23,6 +23,11 @@ What it does
     dcp      convert those HF weights into torchtitan's DCP layout
     data     build the planted corpus and pre-warm the dataset cache
     smoke    run a 2-step single-rank training to prove the stack works
+    qlora    OPTIONAL (off by default) build qlora_lab/.venv, the separate
+             environment used by the HF/PEFT fine-tuning track
+
+Steps other than ``qlora`` run by default; pass ``--steps qlora`` to build
+only that environment.
 
 Every step is idempotent and each can be skipped, so a partial failure does not
 force starting over::
@@ -78,11 +83,17 @@ DCP_DIR = REPO_ROOT / "cpu_lab" / "checkpoints" / "qwen35_0_8b_hf"
 MODEL_REPO = "Qwen/Qwen3.5-0.8B"
 REQUIREMENTS = HERE / "requirements-cpu.txt"
 
-# Straight to the mirror: huggingface.co is not reachable from this network.
+# Straight to the mirror: huggingface.co was not reachable from the network
+# this was developed on. Override with --hf-endpoint if the new machine can
+# reach the origin directly.
 # Xet is disabled because its backend wedges mid-transfer here.
 HF_ENDPOINT = "https://hf-mirror.com"
 
-ALL_STEPS = ("venv", "deps", "assets", "dcp", "data", "smoke")
+# qlora is opt-in: the torchtitan track does not need it, and it pulls a
+# second, much newer torch (2.14.1) that must never land in the main .venv.
+CORE_STEPS = ("venv", "deps", "assets", "dcp", "data", "smoke")
+OPTIONAL_STEPS = ("qlora",)
+ALL_STEPS = CORE_STEPS + OPTIONAL_STEPS
 
 
 def _run(cmd: list[str], *, cwd: Path = REPO_ROOT, env: dict[str, str]) -> int:
@@ -103,10 +114,10 @@ def _resolve_uv() -> str | None:
     return None
 
 
-def base_env() -> dict[str, str]:
+def base_env(endpoint: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
-        HF_ENDPOINT=HF_ENDPOINT,
+        HF_ENDPOINT=endpoint or HF_ENDPOINT,
         HF_HOME=str(HF_CACHE),
         HF_DATASETS_CACHE=str(HF_CACHE / "datasets"),
         HF_HUB_DISABLE_XET="1",
@@ -245,6 +256,46 @@ def step_smoke(env: dict[str, str], args: argparse.Namespace) -> int:
                  "--show-logs"], env=env)
 
 
+def step_qlora(env: dict[str, str], args: argparse.Namespace) -> int:
+    """Build ``qlora_lab/.venv`` -- the HF/PEFT track's own environment.
+
+    Why a second venv at all: Qwen3.5 needs ``transformers >= 5.2.0``, which
+    in turn wants a torch newer than the 2.12.1 the torchtitan track is pinned
+    to. Installing both into one environment silently breaks one of them, so
+    the two tracks stay separate and ``qlora_lab/`` never imports
+    ``cpu_lab``'s venv.
+
+    Also replaces ``qlora_lab/setup_env.sh``: that is a bash script, and the
+    target machine is Windows 11, where bash is optional.
+    """
+    lab = REPO_ROOT / "qlora_lab"
+    venv = lab / ".venv"
+    py = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    uv = _resolve_uv()
+
+    if py.exists():
+        print(f"[bootstrap] qlora venv already present at {venv}")
+    else:
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        if uv:
+            rc = _run([uv, "venv", str(venv), "--python", "3.11"], env=env)
+        else:
+            rc = _run([sys.executable, "-m", "venv", str(venv)], env=env)
+        if rc != 0:
+            return rc
+
+    # One install pass. The pins in qlora_lab/requirements.txt already carry the
+    # +cpu local version (torch==2.14.1+cpu), and the CPU index serves it, so
+    # unlike the main .venv there is no need for the two-phase split.
+    if uv:
+        return _run([uv, "pip", "install", "--python", str(py),
+                     "--index-url", "https://download.pytorch.org/whl/cpu",
+                     "-r", str(lab / "requirements.txt")], env=env)
+    return _run([str(py), "-m", "pip", "install",
+                 "--index-url", "https://download.pytorch.org/whl/cpu",
+                 "-r", str(lab / "requirements.txt")], env=env)
+
+
 STEPS = {
     "venv": step_venv,
     "deps": step_deps,
@@ -252,6 +303,7 @@ STEPS = {
     "dcp": step_dcp,
     "data": step_data,
     "smoke": step_smoke,
+    "qlora": step_qlora,
 }
 
 
@@ -266,8 +318,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--steps",
-        default=",".join(ALL_STEPS),
-        help=f"comma-separated subset of: {','.join(ALL_STEPS)} (default: all)",
+        default=",".join(CORE_STEPS),
+        help=f"comma-separated subset of: {','.join(ALL_STEPS)} "
+        f"(default: {','.join(CORE_STEPS)})",
     )
     p.add_argument(
         "--skip",
@@ -280,11 +333,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=max(1, (os.cpu_count() or 4)),
         help="OMP threads for the smoke run (default: all cores)",
     )
+    p.add_argument(
+        "--hf-endpoint",
+        default=HF_ENDPOINT,
+        help=f"HF hub endpoint for the assets step (default: {HF_ENDPOINT}). "
+        "Use https://huggingface.co if the new network reaches the origin.",
+    )
     return p
 
 
-def main() -> int:
-    args = build_parser()
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     wanted = {s.strip() for s in args.steps.split(",") if s.strip()}
     skipped = {s.strip() for s in args.skip.split(",") if s.strip()}
@@ -302,7 +361,7 @@ def main() -> int:
     print(f"[bootstrap] uv cache  : {UV_CACHE}")
     print(f"[bootstrap] plan      : {' -> '.join(plan)}")
 
-    env = base_env()
+    env = base_env(args.hf_endpoint)
     for name in plan:
         print(f"\n{'=' * 66}\n[bootstrap] step: {name}\n{'=' * 66}", flush=True)
         rc = STEPS[name](env, args)
@@ -325,4 +384,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
