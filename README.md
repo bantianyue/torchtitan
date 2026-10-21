@@ -19,6 +19,17 @@
 
 </div>
 
+> ### Working on this fork? Start here
+>
+> This checkout carries a **CPU-only training lab** (`cpu_lab/`) that runs torchtitan's
+> Trainer, FSDP, TP and PP on a CPU-only torch build with gloo, plus a separate
+> HF/PEFT fine-tuning track (`qlora_lab/`). Nothing under `torchtitan/` is modified —
+> all CPU compatibility lives in `cpu_lab/` as runtime patches.
+>
+> **On a new machine:** read [`README_NEW_MACHINE.md`](README_NEW_MACHINE.md) first
+> (task goals, current progress, verification ladder, next steps), then run
+> `python cpu_lab/bootstrap.py`. Full rebuild recipe: `cpu_lab/MIGRATION.md`.
+
 `torchtitan` is a clean-room, PyTorch-native implementation of large-scale
 training. One readable codebase takes a model from pretraining through
 supervised fine-tuning to reinforcement learning, composing FSDP, tensor,
